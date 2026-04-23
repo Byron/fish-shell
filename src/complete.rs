@@ -1045,7 +1045,12 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
 
     /// Return the position of the short option that may take the rest of the token as its
     /// parameter. If no such option exists, return the last valid short option in the token.
-    fn short_option_pos(&mut self, arg: &wstr, options: &CompletionEntry) -> Option<usize> {
+    fn short_option_pos(
+        &mut self,
+        arg: &wstr,
+        options: &CompletionEntry,
+        check_conditions: bool,
+    ) -> Option<usize> {
         if arg.len() <= 1 || leading_dash_count(arg) != 1 {
             return None;
         }
@@ -1055,7 +1060,7 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
             let matched = options.iter().find(|o| {
                 o.typ == CompleteOptionType::Short
                     && o.option.char_at(0) == arg_char
-                    && self.conditions_test(&o.conditions)
+                    && (!check_conditions || self.conditions_test(&o.conditions))
             });
 
             let Some(matched) = matched else {
@@ -1470,7 +1475,7 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
     ) -> Result<FileCompletionPolicy, CompletionOverflow> {
         let mut file_policy = FileCompletionPolicy::Inherit;
 
-        let short_opt_pos = self.short_option_pos(s, options);
+        let short_opt_pos = self.short_option_pos(s, options, true);
         // We want last_option_requires_param to default to false but distinguish between when
         // a previous completion has set it to false and when it has its default value.
         let mut last_option_requires_param = None;
@@ -1540,7 +1545,7 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
                 // No old style option matched, or we are not using old style options. We check if
                 // any short (or gnu style) options do.
                 if !old_style_match {
-                    let prev_short_opt_pos = self.short_option_pos(popt, options);
+                    let prev_short_opt_pos = self.short_option_pos(popt, options, true);
                     for o in options {
                         // Gnu-style options with _optional_ arguments must be specified as a single
                         // token, so that it can be differed from a regular argument.
@@ -1703,6 +1708,20 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
     ) -> Result<FileCompletionPolicy, CompletionOverflow> {
         let mut file_policy = FileCompletionPolicy::Inherit;
 
+        let all_options = self.command_options_for_completion(cmd_orig);
+
+        // Now release the lock and test each option that we captured above. We have to do this outside
+        // the lock because callouts (like the condition) may add or remove completions. See issue #2.
+        for options in all_options {
+            let fp =
+                self.complete_param_for_command_from_options(s, popt, &options, use_switches)?;
+            file_policy = file_policy.max(fp);
+        }
+
+        Ok(file_policy)
+    }
+
+    fn command_options_for_completion(&mut self, cmd_orig: &wstr) -> Vec<Arc<CompletionEntry>> {
         let cmd_string = CmdString::new(cmd_orig, self.ctx.vars());
         let cmd_name = cmd_string.basename(cmd_orig);
 
@@ -1727,19 +1746,411 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
             self.needs_load.push(cmd_name.to_owned());
         }
 
-        // Make a list of lists of all options that we care about.
-        let all_options: Vec<Arc<CompletionEntry>> =
-            Self::complete_entry_options_for_command(&cmd_string, cmd_name);
+        Self::complete_entry_options_for_command(&cmd_string, cmd_name)
+    }
 
-        // Now release the lock and test each option that we captured above. We have to do this outside
-        // the lock because callouts (like the condition) may add or remove completions. See issue #2.
-        for options in all_options {
-            let fp =
-                self.complete_param_for_command_from_options(s, popt, &options, use_switches)?;
-            file_policy = file_policy.max(fp);
+    fn complete_option_as_autosuggestion(
+        &mut self,
+        cmd_orig: &wstr,
+        popt: &wstr,
+        s: &wstr,
+        use_switches: bool,
+    ) {
+        if !use_switches || s.is_empty() || !s.starts_with('-') {
+            return;
         }
 
-        Ok(file_policy)
+        let mut candidate: Option<(WString, Completion)> = None;
+        let all_options = self.command_options_for_completion(cmd_orig);
+        for options in all_options {
+            let short_opt_pos = self.short_option_pos(s, &options, false);
+            // We want last_option_requires_param to default to false but distinguish between when
+            // a previous completion has set it to false and when it has its default value.
+            let mut last_option_requires_param = None;
+            let mut use_common = true;
+            if s.char_at(0) == '-' {
+                // Check if we are entering a combined option and argument (like --color=auto or
+                // -I/usr/include).
+                for o in options.iter() {
+                    let arg_offset = if o.typ == CompleteOptionType::Short {
+                        let Some(short_opt_pos) = short_opt_pos else {
+                            continue;
+                        };
+                        if o.option.char_at(0) != s.char_at(short_opt_pos) {
+                            continue;
+                        }
+                        Some(short_opt_pos + 1)
+                    } else {
+                        param_match2(o, s)
+                    };
+
+                    if o.typ == CompleteOptionType::Short {
+                        // Only override a true last_option_requires_param value with a false one.
+                        *last_option_requires_param
+                            .get_or_insert(o.argument_policy.requires_param) &=
+                            o.argument_policy.requires_param;
+                    }
+                    if arg_offset.is_some() && o.argument_policy.requires_param {
+                        use_common = false;
+                    }
+                }
+            } else if popt.char_at(0) == '-' {
+                // Set to true if we found a matching old-style switch.
+                // Here we are testing the previous argument,
+                // to see how we should complete the current argument.
+                let mut old_style_match = false;
+
+                // If we are using old style long options, check for them first.
+                for o in options.iter() {
+                    if o.typ == CompleteOptionType::SingleLong && param_match(o, popt) {
+                        old_style_match = false;
+                        if o.argument_policy.requires_param {
+                            use_common = false;
+                        }
+                    }
+                }
+
+                // No old style option matched, or we are not using old style options. We check if
+                // any short (or gnu style) options do.
+                if !old_style_match {
+                    let prev_short_opt_pos = self.short_option_pos(popt, &options, false);
+                    for o in options.iter() {
+                        // Gnu-style options with _optional_ arguments must be specified as a single
+                        // token, so that it can be differed from a regular argument.
+                        // Here we are testing the previous argument for a GNU-style match,
+                        // to see how we should complete the current argument.
+                        if !o.argument_policy.requires_param {
+                            continue;
+                        }
+
+                        let mut r#match = false;
+                        if o.typ == CompleteOptionType::Short {
+                            if let Some(prev_short_opt_pos) = prev_short_opt_pos {
+                                r#match = prev_short_opt_pos + 1 == popt.len()
+                                    && o.option.char_at(0) == popt.char_at(prev_short_opt_pos);
+                            }
+                        } else if o.typ == CompleteOptionType::DoubleLong {
+                            r#match = param_match(o, popt);
+                        }
+                        if r#match {
+                            use_common = false;
+                        }
+                    }
+                }
+            }
+
+            if !use_common {
+                continue;
+            }
+
+            // Set a default value for last_option_requires_param only if one hasn't been set
+            let last_option_requires_param = last_option_requires_param.unwrap_or(false);
+
+            // Now try to find exactly one matching option family.
+            for o in options.iter() {
+                if o.option.is_empty() {
+                    continue;
+                }
+                let desc = o.desc.localize().to_owned();
+                let (family, completion) = if o.typ == CompleteOptionType::Short {
+                    let optchar = o.option.char_at(0);
+                    if let Some(short_opt_pos) = short_opt_pos {
+                        // Only complete when the last short option has no parameter yet..
+                        if short_opt_pos + 1 != s.len() {
+                            continue;
+                        }
+                        // .. and it does not require one ..
+                        if last_option_requires_param {
+                            continue;
+                        }
+                        // .. and the option is not already there.
+                        if s.contains(optchar) {
+                            continue;
+                        }
+                    } else {
+                        // str has no short option at all (but perhaps it is the
+                        // prefix of a single long option).
+                        // Only complete short options if there is no character after the dash.
+                        if s != L!("-") {
+                            continue;
+                        }
+                    }
+                    let family = WString::from(sprintf!("-%c", optchar));
+                    (family, Completion::with_desc(o.option.clone(), desc))
+                } else {
+                    if o.typ != CompleteOptionType::SingleLong
+                        && o.typ != CompleteOptionType::DoubleLong
+                    {
+                        continue;
+                    }
+
+                    let whole_opt = L!("-").repeat(o.expected_dash_count()) + o.option.as_utfstr();
+                    if whole_opt.len() < s.len() {
+                        continue;
+                    }
+                    let anchor_start = !self.flags.fuzzy_match();
+                    let Some(r#match) = string_fuzzy_match_string(s, &whole_opt, anchor_start)
+                    else {
+                        continue;
+                    };
+
+                    let offset = if r#match.requires_full_replacement() {
+                        0
+                    } else {
+                        s.len()
+                    };
+                    let completion = whole_opt.slice_from(offset);
+                    if completion.is_empty() {
+                        continue;
+                    }
+                    (
+                        whole_opt.clone(),
+                        Completion::new(
+                            completion.to_owned(),
+                            desc,
+                            r#match,
+                            CompleteFlags::default(),
+                        ),
+                    )
+                };
+
+                match &candidate {
+                    Some((existing_family, _)) if *existing_family == family => {}
+                    Some(_) => return,
+                    None => candidate = Some((family, completion)),
+                }
+            }
+        }
+
+        if let Some((_, completion)) = candidate {
+            _ = self.completions.add(completion);
+        }
+    }
+
+    fn perform_complete_option_as_autosuggestion(&mut self, cmdline: WString) {
+        let cursor_pos = cmdline.len();
+
+        // Find the process to operate on. The cursor may be past it (#1261), so backtrack
+        // until we know we're no longer in a space. But the space may actually be part of the
+        // argument (#2477).
+        let mut position_in_statement = cursor_pos;
+        while position_in_statement > 0 && cmdline.char_at(position_in_statement - 1) == ' ' {
+            position_in_statement -= 1;
+        }
+
+        // Get all the arguments.
+        let mut tokens = Vec::new();
+        get_process_extent(&cmdline, position_in_statement, Some(&mut tokens));
+        let actual_token_count = tokens.len();
+
+        let prefixed_supercommand_count = tokens
+            .iter()
+            .take_while(|token| {
+                parser_keywords_is_subcommand(&unescape_keyword(
+                    token.type_,
+                    token.get_source(&cmdline),
+                ))
+            })
+            .count();
+        tokens.drain(..prefixed_supercommand_count);
+
+        // Consume variable assignments in tokens strictly before the cursor.
+        let mut var_assignments = Vec::new();
+        for tok in &tokens {
+            if tok.location_in_or_at_end_of_source_range(cursor_pos) {
+                break;
+            }
+            let tok_src = tok.get_source(&cmdline);
+            if variable_assignment_equals_pos(tok_src).is_none() {
+                break;
+            }
+            var_assignments.push(tok_src.to_owned());
+        }
+        tokens.drain(..var_assignments.len());
+
+        let [first_token, ..] = tokens.as_slice() else {
+            return;
+        };
+
+        let effective_cmdline = if tokens.len() == actual_token_count {
+            &cmdline
+        } else {
+            &cmdline[first_token.offset()..]
+        };
+
+        if tokens.last().unwrap().type_ == TokenType::Comment {
+            return;
+        }
+        tokens.retain(|tok| tok.type_ != TokenType::Comment);
+        if tokens.is_empty() {
+            return;
+        }
+
+        let cmd_tok = tokens.first().unwrap();
+        let cur_tok = tokens.last().unwrap();
+        if cmd_tok.type_ != TokenType::String || cur_tok.type_ == TokenType::Error {
+            return;
+        }
+        if cur_tok.type_ != TokenType::String {
+            return;
+        }
+
+        if cmd_tok.location_in_or_at_end_of_source_range(cursor_pos) {
+            return;
+        }
+
+        let current_token = cur_tok.get_source(&cmdline);
+        let cursor_in_whitespace = !cur_tok.location_in_or_at_end_of_source_range(cursor_pos);
+        if cursor_in_whitespace {
+            return;
+        }
+
+        let mut in_redirection = false;
+        let mut had_ddash = false;
+        let current_argument = current_token;
+        let mut previous_argument = L!("");
+        if tokens.len() >= 2 {
+            let prev_tok = &tokens[tokens.len() - 2];
+            if prev_tok.type_ == TokenType::String {
+                previous_argument = prev_tok.get_source(&cmdline);
+            }
+            in_redirection = prev_tok.type_ == TokenType::Redirect;
+        }
+
+        if in_redirection {
+            return;
+        }
+
+        for tok in &tokens[..tokens.len() - 1] {
+            if tok.get_source(&cmdline) == "--" {
+                had_ddash = true;
+                break;
+            }
+        }
+
+        if !current_argument.starts_with('-') {
+            return;
+        }
+
+        let bias = cmdline.len() - effective_cmdline.len();
+        let command_range = SourceRange::new(cmd_tok.offset() - bias, cmd_tok.length());
+
+        let mut exp_command = cmd_tok.get_source(&cmdline).to_owned();
+        if !expand_command_token(self.ctx, &mut exp_command) {
+            return;
+        }
+
+        let previous_argument = unescape_string(previous_argument, UnescapeStringStyle::default());
+        let current_argument = unescape_string(
+            current_argument,
+            UnescapeStringStyle::Script(UnescapeFlags {
+                incomplete: true,
+                ..Default::default()
+            }),
+        );
+        let (Some(previous_argument), Some(current_argument)) =
+            (previous_argument, current_argument)
+        else {
+            return;
+        };
+
+        let mut arg_data = CustomArgData::new(&mut var_assignments);
+        arg_data.previous_argument = previous_argument;
+        arg_data.current_argument = current_argument;
+        arg_data.had_ddash = had_ddash;
+
+        // Allow wrapped commands to contribute option autosuggestions too.
+        self.walk_wrap_chain_option_autosuggestion(
+            &exp_command,
+            effective_cmdline,
+            command_range,
+            &mut arg_data,
+        );
+    }
+
+    fn walk_wrap_chain_option_autosuggestion(
+        &mut self,
+        cmd: &wstr,
+        cmdline: &wstr,
+        cmdrange: SourceRange,
+        ad: &mut CustomArgData,
+    ) {
+        if ad.wrap_depth > 24 || self.ctx.check_cancel() {
+            return;
+        }
+
+        self.complete_option_as_autosuggestion(
+            cmd,
+            &ad.previous_argument,
+            &ad.current_argument,
+            !ad.had_ddash,
+        );
+
+        if !self.completions.is_empty() {
+            return;
+        }
+
+        let targets = complete_get_wrap_targets(cmd);
+        let wrap_depth = ad.wrap_depth;
+        let mut ad = ScopeGuard::new(ad, |ad| ad.wrap_depth = wrap_depth);
+        ad.wrap_depth += 1;
+
+        for wt in targets {
+            let saved_var_count = ad.var_assignments.len();
+            let mut ad = ScopeGuard::new(&mut ad, |ad| {
+                assert!(
+                    ad.var_assignments.len() >= saved_var_count,
+                    "Should not delete var assignments"
+                );
+                ad.var_assignments.truncate(saved_var_count);
+            });
+
+            let mut wrapped_command = None;
+            let mut wrapped_command_offset_in_wt = None;
+            let tokenizer = Tokenizer::new(&wt, TokFlags::default());
+            for tok in tokenizer {
+                let mut tok_src = tok.get_source(&wt).to_owned();
+                if variable_assignment_equals_pos(&tok_src).is_some() {
+                    ad.var_assignments.push(tok_src);
+                } else {
+                    expand_command_token(self.ctx, &mut tok_src);
+
+                    wrapped_command_offset_in_wt = Some(tok.offset());
+                    wrapped_command = Some(tok_src);
+
+                    break;
+                }
+            }
+
+            let Some((wrapped_command, wrapped_command_offset_in_wt)) =
+                Option::zip(wrapped_command, wrapped_command_offset_in_wt)
+            else {
+                continue;
+            };
+
+            if !ad.visited_wrapped_commands.insert(wrapped_command.clone()) {
+                continue;
+            }
+
+            let mut faux_commandline = cmdline.as_char_slice().to_vec();
+            faux_commandline.splice(std::ops::Range::from(cmdrange), wt.chars());
+            let faux_commandline = WString::from(faux_commandline);
+
+            let faux_source_range = SourceRange::new(
+                cmdrange.start() + wrapped_command_offset_in_wt,
+                wrapped_command.len(),
+            );
+            self.walk_wrap_chain_option_autosuggestion(
+                &wrapped_command,
+                &faux_commandline,
+                faux_source_range,
+                ***ad,
+            );
+
+            if !self.completions.is_empty() {
+                return;
+            }
+        }
     }
 
     /// Perform generic (not command-specific) expansions on the specified string.
@@ -2547,6 +2958,21 @@ pub fn complete(
     )
 }
 
+pub fn complete_option_as_autosuggestion(
+    cmd_with_subcmds: &wstr,
+    ctx: &mut OperationContext<'_>,
+) -> (Vec<Completion>, Vec<WString>) {
+    let cmdsubst = get_cmdsubst_extent(cmd_with_subcmds, cmd_with_subcmds.len());
+    let cmd = cmd_with_subcmds[cmdsubst].to_owned();
+    let mut completer = Completer::new(ctx, CompletionRequestOptions::Autosuggestion);
+    completer.perform_complete_option_as_autosuggestion(cmd);
+
+    (
+        completer.acquire_completions(),
+        completer.acquire_needs_load(),
+    )
+}
+
 /// Print the short switch `opt`, and the argument `arg` to the specified
 /// [`WString`], but only if `argument` isn't an empty string.
 fn append_switch_short_arg(out: &mut WString, opt: char, arg: &wstr) {
@@ -2792,7 +3218,8 @@ mod tests {
     use super::{
         ArgumentPolicy, CompleteFlags, CompleteOptionType, CompletionRequestOptions,
         FileCompletionPolicy, complete, complete_add, complete_add_wrapper,
-        complete_get_wrap_targets, complete_remove_wrapper, sort_and_prioritize,
+        complete_get_wrap_targets, complete_option_as_autosuggestion, complete_remove,
+        complete_remove_wrapper, sort_and_prioritize,
     };
     use crate::{
         abbrs::{self, Abbreviation, with_abbrs_mut},
@@ -3508,5 +3935,172 @@ mod tests {
         perform_one_autosuggestion_should_ignore_test!("echo PIPE_TEST&");
         perform_one_autosuggestion_should_ignore_test!("echo PIPE_TEST#comment");
         perform_one_autosuggestion_should_ignore_test!("echo PIPE_TEST;");
+    }
+
+    #[test]
+    #[serial]
+    fn test_conditioned_option_autosuggestions() {
+        test_init();
+
+        let command = L!("echo").to_owned();
+        let condition = vec![L!("__fish_use_subcommand").to_owned()];
+        let mode = ArgumentPolicy::default();
+
+        complete_add(
+            command.clone(),
+            false,
+            L!("autosuggest-color").to_owned(),
+            CompleteOptionType::DoubleLong,
+            mode,
+            condition.clone(),
+            WString::new(),
+            WString::new(),
+            CompleteFlags::default(),
+        );
+        complete_add(
+            command.clone(),
+            false,
+            L!("autosuggest-alpha").to_owned(),
+            CompleteOptionType::DoubleLong,
+            mode,
+            condition.clone(),
+            WString::new(),
+            WString::new(),
+            CompleteFlags::default(),
+        );
+        complete_add(
+            command.clone(),
+            false,
+            L!("autosuggest-alpine").to_owned(),
+            CompleteOptionType::DoubleLong,
+            mode,
+            condition.clone(),
+            WString::new(),
+            WString::new(),
+            CompleteFlags::default(),
+        );
+        complete_add(
+            command.clone(),
+            false,
+            L!("autosuggest-optional").to_owned(),
+            CompleteOptionType::DoubleLong,
+            mode,
+            condition.clone(),
+            L!("auto always never").to_owned(),
+            WString::new(),
+            CompleteFlags::default(),
+        );
+        complete_add(
+            command.clone(),
+            false,
+            L!("autosuggest-required").to_owned(),
+            CompleteOptionType::DoubleLong,
+            ArgumentPolicy {
+                requires_param: true,
+                ..ArgumentPolicy::default()
+            },
+            condition.clone(),
+            WString::new(),
+            WString::new(),
+            CompleteFlags::default(),
+        );
+        complete_add(
+            command.clone(),
+            false,
+            L!("autosuggest-replacement").to_owned(),
+            CompleteOptionType::DoubleLong,
+            mode,
+            condition,
+            WString::new(),
+            WString::new(),
+            CompleteFlags::default(),
+        );
+
+        assert!(
+            complete(
+                L!("echo --autosuggest-col"),
+                CompletionRequestOptions::Autosuggestion,
+                &mut OperationContext::empty(),
+            )
+            .0
+            .is_empty()
+        );
+
+        let mut completions = complete_option_as_autosuggestion(
+            L!("echo --autosuggest-col"),
+            &mut OperationContext::empty(),
+        )
+        .0;
+        sort_and_prioritize(&mut completions, CompletionRequestOptions::Autosuggestion);
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].completion, L!("or"));
+
+        let completions = complete_option_as_autosuggestion(
+            L!("echo --autosuggest-al"),
+            &mut OperationContext::empty(),
+        )
+        .0;
+        assert_eq!(completions, []);
+
+        let mut completions = complete_option_as_autosuggestion(
+            L!("echo --autosuggest-opt"),
+            &mut OperationContext::empty(),
+        )
+        .0;
+        sort_and_prioritize(&mut completions, CompletionRequestOptions::Autosuggestion);
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].completion, L!("ional"));
+
+        let completions = complete_option_as_autosuggestion(
+            L!("echo -- --autosuggest-repl"),
+            &mut OperationContext::empty(),
+        )
+        .0;
+        assert_eq!(completions, []);
+
+        for opt in [
+            L!("autosuggest-color"),
+            L!("autosuggest-alpha"),
+            L!("autosuggest-alpine"),
+            L!("autosuggest-optional"),
+            L!("autosuggest-required"),
+            L!("autosuggest-replacement"),
+        ] {
+            complete_remove(command.clone(), false, opt, CompleteOptionType::DoubleLong);
+        }
+
+        let command = L!("autosuggest-short-command").to_owned();
+        for (option, requires_param) in [("q", false), ("z", false), ("r", true)] {
+            complete_add(
+                command.clone(),
+                false,
+                str2wcstring(option),
+                CompleteOptionType::Short,
+                ArgumentPolicy {
+                    requires_param,
+                    ..ArgumentPolicy::default()
+                },
+                vec![L!("false").to_owned()],
+                WString::new(),
+                WString::new(),
+                CompleteFlags::default(),
+            );
+        }
+        let completions = complete_option_as_autosuggestion(
+            L!("autosuggest-short-command -qr"),
+            &mut OperationContext::empty(),
+        )
+        .0;
+        assert_eq!(completions, []);
+        let completions = complete_option_as_autosuggestion(
+            L!("autosuggest-short-command -qz"),
+            &mut OperationContext::empty(),
+        )
+        .0;
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].completion, L!("r"));
+        for opt in [L!("q"), L!("z"), L!("r")] {
+            complete_remove(command.clone(), false, opt, CompleteOptionType::Short);
+        }
     }
 }

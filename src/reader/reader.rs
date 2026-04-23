@@ -29,7 +29,8 @@ use crate::{
     common::{get_program_name, shell_modes},
     complete::{
         CompleteFlags, Completion, CompletionList, CompletionRequestOptions, ReplacementScope,
-        WantsEscaping, WantsSuffix, WillReplaceToken, complete, complete_load, sort_and_prioritize,
+        WantsEscaping, WantsSuffix, WillReplaceToken, complete, complete_load,
+        complete_option_as_autosuggestion, sort_and_prioritize,
     },
     editable_line::{Edit, EditableLine, line_at_cursor, range_of_line_at_cursor},
     env::{EnvMode, EnvStack, Environment, Statuses},
@@ -5478,8 +5479,14 @@ fn get_autosuggestion_performer(
         // Try normal completions.
         let complete_flags = CompletionRequestOptions::Autosuggestion;
         let mut would_be_cursor = line_range.end;
-        let (mut completions, needs_load) =
+        let (mut completions, mut needs_load) =
             complete(&command_line[..would_be_cursor], complete_flags, ctx);
+        if completions.is_empty() {
+            let (option_completions, option_needs_load) =
+                complete_option_as_autosuggestion(&command_line[..would_be_cursor], ctx);
+            completions = option_completions;
+            needs_load.extend(option_needs_load);
+        }
 
         let suggestion = if completions.is_empty() {
             // If there are no completions to suggest, fall back to icase history.
