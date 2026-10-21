@@ -89,10 +89,9 @@ impl Session {
                 self.status = 0;
                 match args.first().map_or("", String::as_str) {
                     "is-interactive" | "-i" => {
-                        self.status =
-                            i32::from(!std::io::IsTerminal::is_terminal(&std::io::stdin()));
+                        self.status = i32::from(!self.interactive);
                     }
-                    "is-login" | "-l" => self.status = 1,
+                    "is-login" | "-l" => self.status = i32::from(!self.login),
                     "is-block" | "-b" => self.status = i32::from(self.scopes.len() <= 1),
                     "is-command-substitution" => self.status = i32::from(!output.capture),
                     "fish-path" => self.write(

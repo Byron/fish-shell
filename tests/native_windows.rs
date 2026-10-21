@@ -57,7 +57,7 @@ fn shell(name: &str, cwd: &Path) -> Command {
         _ => unreachable!(),
     };
     let mut command = Command::new(executable);
-    command.current_dir(cwd).stdin(Stdio::null());
+    command.arg("-N").current_dir(cwd).stdin(Stdio::null());
     command
 }
 
@@ -341,4 +341,38 @@ fn native_process_probe() {
     println!("probe:env:{}", std::env::var("NATIVE_CHILD_VALUE").unwrap());
     eprintln!("probe:stderr");
     std::process::exit(23);
+}
+
+#[test]
+fn native_fish_startup_and_mode_queries_use_invocation_state() {
+    let scratch = Scratch::new();
+    std::fs::create_dir(scratch.join("fish")).unwrap();
+    let config = scratch.join("fish/config.fish");
+    std::fs::write(&config, "set -g configured yes; return; echo unreachable").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_fish"))
+        .env("XDG_CONFIG_HOME", &scratch.0)
+        .args([
+            "--login",
+            "-c",
+            "echo $configured; status is-login; echo $status; status is-interactive; echo $status",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(stdout(&output), "yes\n0\n1\n");
+    let output = shell("fish", &scratch.0)
+        .env("XDG_CONFIG_HOME", &scratch.0)
+        .args(["-c", "set -q configured; echo $status"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(stdout(&output), "1\n");
+    std::fs::write(&config, "exit 7").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_fish"))
+        .env("XDG_CONFIG_HOME", &scratch.0)
+        .args(["-c", "echo unreachable"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(7));
+    assert!(output.stdout.is_empty());
 }

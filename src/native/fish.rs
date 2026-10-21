@@ -45,6 +45,8 @@ pub struct Session {
     pipeline: Vec<i32>,
     last_pid: Option<u32>,
     fish_pid: u32,
+    interactive: bool,
+    login: bool,
     flow: Flow,
     depth: usize,
     loops: usize,
@@ -175,6 +177,8 @@ impl Session {
             pipeline: vec![0],
             last_pid: None,
             fish_pid: std::process::id(),
+            interactive: false,
+            login: false,
             flow: Flow::Normal,
             depth: 0,
             loops: 0,
@@ -220,6 +224,51 @@ impl Session {
                 (name.into_bytes(), value.into_bytes())
             })
             .collect()
+    }
+
+    pub fn set_mode(&mut self, interactive: bool, login: bool) {
+        self.interactive = interactive;
+        self.login = login;
+    }
+
+    pub fn interrupt(&mut self) {
+        self.status = 130;
+        self.pipeline = vec![130];
+        self.flow = Flow::Normal;
+    }
+
+    pub fn completion_context(&self) -> (Vec<String>, Option<std::ffi::OsString>) {
+        (
+            self.functions.keys().cloned().collect(),
+            Some(self.values("PATH").join(";").into()),
+        )
+    }
+
+    pub fn load_config(&mut self, path: &std::path::Path, host: &mut impl Host) -> Result<()> {
+        let source = std::fs::read_to_string(path)?;
+        self.source_depth += 1;
+        let result = self.eval_source(&source, host, &mut Output::default());
+        self.source_depth -= 1;
+        if self.flow == Flow::Return {
+            self.flow = Flow::Normal;
+        }
+        result
+    }
+
+    pub fn prompt(&mut self, host: &mut impl Host) -> Result<Option<String>> {
+        if !self.functions.contains_key("fish_prompt") {
+            return Ok(None);
+        }
+        let status = self.status;
+        let pipeline = self.pipeline.clone();
+        let mut output = Output {
+            capture: true,
+            ..Default::default()
+        };
+        let result = self.eval_source("fish_prompt", host, &mut output);
+        self.status = status;
+        self.pipeline = pipeline;
+        result.map(|()| Some(String::from_utf8_lossy(&output.bytes).into_owned()))
     }
 
     pub fn set_args(&mut self, args: Vec<String>) {
@@ -745,10 +794,10 @@ fn valid_name(name: &str) -> Result<()> {
     }
 }
 
-#[path = "fish_builtins.rs"]
-mod builtins;
 #[path = "fish_blocks.rs"]
 mod blocks;
+#[path = "fish_builtins.rs"]
+mod builtins;
 
 #[cfg(test)]
 mod tests {

@@ -103,13 +103,57 @@ Windows `PATH` uses semicolons, inherited `Path` is imported as `PATH`, and comm
 lookup supports the `.exe` suffix. Prefer quoted Windows paths or forward slashes
 in shell source. Rash source and internal values remain byte-oriented.
 
-With a terminal and no command or script, the native frontend offers a basic line
-prompt. It has no Fish editor, completion, persistent history, automatic Fish
-configuration, or Fish prompt integration yet. `-N` is accepted for invocation
-compatibility; native Fish does not load configuration even without it. The
-portable process host supports pipelines and owned jobs as described below.
+With a terminal and no command or script, the native Windows frontend offers
+interactive line editing and history, described below. The portable process host
+supports pipelines and owned jobs as described below.
 Signal traps and `exec` replacement remain unavailable. Rash's other language limits
 remain documented in [rash-compatibility.md](rash-compatibility.md).
+
+## Interactive editing and startup
+
+Native Windows Fish and Rash use a Unicode line editor that works through ConPTY.
+Left/Right, Home/End, Backspace and Delete edit the current input; Up/Down recall
+history. Tab completes filenames and command names from builtins, the session's
+functions and its current `PATH`. Completion quotes spaces and shell punctuation
+in filenames without evaluating shell source. Input can span multiple lines;
+completed multiline submissions are stored as one history entry. Ctrl-C cancels
+the current edit and returns to the prompt. Ctrl-Z at the prompt does not suspend
+the shell itself.
+
+Native Fish reads `fish/config.fish` under `XDG_CONFIG_HOME`, or under `%APPDATA%`
+when that variable is not set. Without either location it uses
+`~/.config/fish/config.fish`. `-N`/`--no-config` skips this file. The configuration
+runs in the native evaluator and must use its supported Fish syntax and builtins.
+Native Fish calls a defined `fish_prompt` function before each new command and
+uses its output as the prompt, preserving the previous command's `$status` and
+`$pipestatus`. Without that function it displays `fish>`. Function autoloading,
+vendor configuration and prompt/cwd terminal escape sequences are not provided.
+Rash displays `rash>` and uses its separate Bash startup files with
+`--bash-startup`; `-N` also skips those files.
+
+History is stored under `fish/native_fish_history` or `fish/native_rash_history`
+in `XDG_DATA_HOME`, falling back to `%LOCALAPPDATA%`, then `~/.local/share`.
+The editor appends completed submissions with file locking so concurrent sessions
+preserve each other's entries. Leading-space commands and consecutive duplicates
+are omitted. These files use a separate format and do not overwrite or import
+the existing POSIX Fish histories. `--private`/`-P` prevents loading and saving
+history while retaining recall within the current session.
+
+This is a native editor with basic completion, not the full POSIX Fish reader.
+Programmable completion scripts, Fish keybinding configuration, syntax coloring,
+autosuggestions and prompt/cwd terminal integration remain separate work. The
+standalone Rash executable on Unix retains its simple line-input fallback.
+Run the isolated Windows editor check with native Windows Python:
+
+```powershell
+python tests/native_interactive_tmuxx.py .\target\x86_64-pc-windows-msvc\debug\fish.exe C:/Apps/Rustty/tmuxx.exe
+```
+
+It uses a fresh tmuxx owner and private configuration/history directories, leaving
+existing terminal sessions and user files unchanged. The check covers Unicode
+editing, filename/command/PATH completion, multiline input, Ctrl-C/Ctrl-Z recovery,
+history reload and private mode, Fish configuration and `fish_prompt` status,
+function completion, and separate Rash history.
 
 ## Pipelines and Windows job control
 
@@ -189,12 +233,10 @@ a server automatically. Existing servers retain their selected shell and argv.
 Rustty recognizes `fish.exe` as a shell accepting `-c`; use explicit `-e` argv for
 `rash.exe`, which older Rustty versions do not recognize for command-string launch.
 
-The x64 MSVC executable has been checked through an isolated tmuxx ConPTY owner:
-a Fish list/loop command printed its values and retained exit status 7, a Rash
-command printed its marker and retained exit status 9, and a no-argument Fish
-session displayed its prompt and executed text sent through `send-keys`.
-That check left the existing Rustty/tmuxx session and user configuration unchanged;
-it does not certify the full GUI or editor behavior.
+The x64 MSVC executables have passed the isolated tmuxx ConPTY editor and job
+checks described above. Command/script smoke checks also retained exit statuses
+for both languages. These checks preserve existing Rustty/tmuxx sessions and user
+configuration; full Rustty GUI qualification remains separate work.
 
 To retain the full MSYS2 Fish environment instead, launch it through that MSYS2
 installation, for example from PowerShell:
@@ -222,7 +264,7 @@ or running tmuxx settings. A terminal still configured to use
    behavior checks against the POSIX implementation.
 2. Extend descriptor handling, traps, pipeline state sharing and Windows
    foreground/background input behavior beyond the current owned-job support.
-3. Port the interactive editor, completion, configuration, history and terminal
-   integration, including cwd and prompt reporting to Rustty/tmuxx.
+3. Extend the native editor and completion toward full Fish behavior and add
+   terminal integration, including cwd and prompt reporting to Rustty/tmuxx.
 4. Add native installation and packaging, and qualify additional Windows targets
    and terminal environments.

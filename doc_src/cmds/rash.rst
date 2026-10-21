@@ -17,7 +17,7 @@ Bash wherever this Fish instance is. Rash's experimental Bash evaluator ships in
 
 On POSIX builds, ``rash`` is a Fish function that launches the current Fish executable with ``--rash-shell``. The child uses the Rust Rash evaluator for Bash input and Fish's editor, completions, prompt, history and terminal handling. Cargo also builds a standalone ``rash`` executable with a portable process host, including native Windows support. Neither form depends on an installed Bash runtime.
 
-The following startup and interactive UI behavior describes the POSIX Fish function. The standalone executable and native Windows frontend have a basic prompt and the separate limits described below.
+The following startup and interactive UI behavior describes the POSIX Fish function. The standalone executable and native Windows frontend have their own startup and interactive behavior, described under Windows below.
 
 The child inherits exported variables, the current directory and standard descriptors. Its variables, functions, aliases and directory changes belong to the child. Parent Fish functions and private variables are not shared with Bash evaluation. Use ``exit`` to leave Rash and return to the parent Fish prompt. Fish-only commands such as ``fish_input_mode`` are not Bash builtins in the child.
 
@@ -69,7 +69,11 @@ Cargo builds native ``fish.exe`` and ``rash.exe`` with Rust's Windows toolchain:
     .\target\x86_64-pc-windows-msvc\debug\fish.exe --script-language=bash .\script.sh
     rustty.exe -e C:/src/fish-shell/target/x86_64-pc-windows-msvc/debug/fish.exe --rash-shell
 
-The standalone ``rash`` executable and native ``fish --rash-shell`` accept ``-c``, script files, standard input, and a basic interactive prompt. Bash startup files are opt-in with ``--bash-startup``; add ``--login`` for login profiles. They do not load Fish UI configuration or provide Fish's editor, completion, persistent history, pipelines, background jobs, signal traps or job control. Native Windows paths and arguments use Unicode and external processes run through the Windows process API.
+The standalone ``rash`` executable and native ``fish --rash-shell`` accept ``-c``, script files, standard input, and interactive input. On Windows the Unicode line editor supports cursor editing, filename and command completion, and persistent history. ``--private`` (``-P``) keeps history within the current session. Rash history is stored separately from native Fish history and existing POSIX Fish history. The standalone Unix executable retains a simple line-input prompt.
+
+Bash startup files are opt-in with ``--bash-startup``; add ``--login`` for login profiles. ``--no-config`` (``-N``) skips startup files. These native Rash entry points do not load Fish UI configuration or run ``fish_prompt``. Programmable Fish completion, autosuggestions and signal traps remain unavailable.
+
+Both native shells support concurrent pipelines and background jobs. ``jobs``, ``wait``, ``fg``, ``bg``, ``disown`` and ``kill`` operate on jobs owned by the shell. On Windows, Ctrl-C cancels foreground work; ``kill -STOP %1`` suspends an owned job and ``bg`` or ``fg`` resumes it. Windows has no POSIX terminal foreground process groups, and a background job's input cannot be reassigned by ``fg``. Native paths and arguments use Unicode and external processes run through the Windows process API.
 
 The MSYS2/Cygwin target and WSL retain the full POSIX Fish host. Select the backend with Cargo's target and the corresponding toolchain; there is no MSYS2 feature toggle. Native Cargo builds do not yet provide CMake installation or packaging. See ``doc_internal/native-windows.md`` for build commands, supported native Fish syntax, isolated tmuxx launch examples and remaining work.
 

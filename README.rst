@@ -216,10 +216,12 @@ From PowerShell in the source directory:
 
 An MSVC host toolchain also selects this backend with ordinary ``cargo build``.
 Cargo's target selects native Windows or POSIX support; no feature toggle or
-MSYS environment variable is needed. The native build has an initial Fish
-evaluator, a portable Rash host and a basic prompt. The full editor and job
-control remain in the POSIX build. Native CMake installation and packaging are
-not yet provided. See `Native Windows support <doc_internal/native-windows.md>`__.
+MSYS environment variable is needed. Native Fish and Rash support Unicode line
+editing, basic completion, persistent history, pipelines and owned job control.
+Native Fish also reads ``config.fish`` and supports a simple ``fish_prompt``
+function. Fish and Bash language support remain incomplete, and programmable completion,
+autosuggestions, signal traps, native CMake installation and packaging remain
+unavailable. See `Native Windows support <doc_internal/native-windows.md>`__.
 
 Building the POSIX target with MSYS2
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

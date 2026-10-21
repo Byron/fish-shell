@@ -1,16 +1,16 @@
-//! Initial native shell frontend. The POSIX frontend retains the full editor,
-//! configuration, and job-control implementation while these are ported.
+//! Native command/script and interactive shell frontend.
 
 #[cfg(windows)]
 pub mod fish;
 pub mod host;
+pub mod interactive;
 #[cfg(windows)]
 pub mod syntax;
 pub mod worker;
 
 use rash::{Error, Result};
 use std::ffi::OsString;
-use std::io::{self, BufRead as _, IsTerminal as _, Read as _, Write as _};
+use std::io::{self, IsTerminal as _, Read as _, Write as _};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Language {
@@ -36,6 +36,8 @@ struct Options {
     syntax_only: bool,
     interactive: bool,
     startup: bool,
+    no_config: bool,
+    private: bool,
     login: bool,
 }
 
@@ -57,6 +59,8 @@ fn parse_options(
         syntax_only: false,
         interactive: false,
         startup: false,
+        no_config: false,
+        private: false,
         login: false,
     };
     let mut args = args.into_iter();
@@ -79,7 +83,8 @@ fn parse_options(
             Some("-n" | "--no-execute") => options.syntax_only = true,
             Some("-i" | "--interactive") => options.interactive = true,
             Some("-l" | "--login") => options.login = true,
-            Some("-N" | "--no-config") => {}
+            Some("-N" | "--no-config") => options.no_config = true,
+            Some("-P" | "--private") => options.private = true,
             Some("--rash-shell" | "--script-language=bash") => options.language = Language::Rash,
             Some("--script-language=fish") => options.language = Language::Fish,
             Some("--bash-startup") => options.startup = true,
@@ -171,8 +176,8 @@ fn run(language: Language) -> i32 {
             let _ = writeln!(
                 io::stdout(),
                 "Usage: {} [OPTIONS] [SCRIPT [ARG ...]]\n\
-                 Options: -c COMMAND, -n, -i, -N, --rash-shell, --script-language=fish|bash\n\
-                 Native backend: initial command/script support and a basic line prompt.\n\
+                 Options: -c COMMAND, -n, -i, -N, -P/--private, --rash-shell, --script-language=fish|bash\n\
+                 Native backend: command/script execution, interactive editing and owned jobs.\n\
                  See doc_internal/native-windows.md for supported syntax and limitations.",
                 language.name()
             );
@@ -247,6 +252,7 @@ impl Engine {
             #[cfg(windows)]
             Language::Fish => {
                 let mut session = fish::Session::new()?;
+                session.set_mode(interactive, options.login);
                 session.set_args(
                     options
                         .args
@@ -300,6 +306,60 @@ impl Engine {
         }
     }
 
+    fn completion_context(&self) -> (Vec<String>, Option<OsString>) {
+        match self {
+            Self::Rash(session) => (
+                session
+                    .functions
+                    .keys()
+                    .filter_map(|name| String::from_utf8(name.clone()).ok())
+                    .collect(),
+                session
+                    .value(b"PATH")
+                    .ok()
+                    .flatten()
+                    .and_then(|value| rash::os::from_bytes(&value).ok()),
+            ),
+            #[cfg(windows)]
+            Self::Fish(session) => session.completion_context(),
+        }
+    }
+
+    fn interrupt(&mut self) {
+        match self {
+            Self::Rash(session) => {
+                session.status = 130;
+                session.pipeline = vec![130];
+            }
+            #[cfg(windows)]
+            Self::Fish(session) => session.interrupt(),
+        }
+    }
+
+    fn prompt(&mut self, language: Language, host: &mut host::NativeHost) -> String {
+        #[cfg(windows)]
+        if let Self::Fish(session) = self {
+            match session.prompt(host) {
+                Ok(Some(prompt)) => return prompt,
+                Err(error) => {
+                    report(language, error);
+                }
+                _ => (),
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = host;
+        format!("{}> ", language.name())
+    }
+
+    fn status(&self) -> i32 {
+        match self {
+            Self::Rash(session) => session.status,
+            #[cfg(windows)]
+            Self::Fish(session) => session.status(),
+        }
+    }
+
     fn exited(&self) -> bool {
         match self {
             Self::Rash(session) => session.exited.is_some(),
@@ -329,45 +389,84 @@ fn execute(options: Options) -> Result<i32> {
             && io::stdin().is_terminal());
     let mut engine = Engine::new(&options, interactive)?;
     let mut host = host::NativeHost::new()?;
-    if options.startup && !options.syntax_only {
+    if !options.no_config && !options.syntax_only {
+        #[cfg(windows)]
+        if let Engine::Fish(session) = &mut engine {
+            if let Some(path) = interactive::startup_file("fish") {
+                if let Err(error) = session.load_config(&path, &mut host) {
+                    report(options.language, error);
+                }
+            }
+        }
+    }
+    if options.startup && !options.no_config && !options.syntax_only {
         if let Engine::Rash(session) = &mut engine {
             session.startup(&mut host)?;
         }
     }
-    let mut status = 0;
+    let mut status = engine.status();
     if !engine.exited() {
         if interactive {
+            let mut editor =
+                match interactive::Editor::new(options.language.name(), !options.private) {
+                    Ok(editor) => editor,
+                    Err(error) => {
+                        report(options.language, error);
+                        interactive::Editor::with_history_path(options.language.name(), None)?
+                    }
+                };
             let mut source = Vec::new();
             loop {
                 host.clear_console_requests();
                 for notice in host.poll_jobs()? {
                     writeln!(io::stderr(), "{notice}")?;
                 }
-                write!(
-                    io::stdout(),
-                    "{}> ",
-                    if source.is_empty() {
-                        options.language.name()
-                    } else {
-                        "..."
-                    }
-                )?;
-                io::stdout().flush()?;
-                let mut line = Vec::new();
-                if io::stdin().lock().read_until(b'\n', &mut line)? == 0 {
-                    if !source.is_empty() {
-                        status = engine
-                            .evaluate(&source, &mut host, false)
-                            .unwrap_or_else(|error| report(options.language, error));
-                    }
+                let (commands, path) = engine.completion_context();
+                editor.set_completion_context(commands, path);
+                let prompt = if source.is_empty() {
+                    engine.prompt(options.language, &mut host)
+                } else {
+                    "...> ".into()
+                };
+                if engine.exited() {
+                    status = engine.status();
                     break;
                 }
-                if cfg!(windows) && line.ends_with(b"\r\n") {
-                    line.remove(line.len() - 2);
+                match editor.read_line(&prompt)? {
+                    interactive::ReadEvent::Line(line) => {
+                        source.extend(line.as_bytes());
+                        source.push(b'\n');
+                    }
+                    interactive::ReadEvent::Eof => {
+                        if !source.is_empty() {
+                            status = engine
+                                .evaluate(&source, &mut host, false)
+                                .unwrap_or_else(|error| report(options.language, error));
+                        }
+                        break;
+                    }
+                    interactive::ReadEvent::Interrupted => {
+                        host.clear_console_requests();
+                        engine.interrupt();
+                        status = 130;
+                        source.clear();
+                        continue;
+                    }
+                    interactive::ReadEvent::SuspendRequested => {
+                        writeln!(
+                            io::stderr(),
+                            "Use kill -STOP %job to suspend an owned job, then bg or fg to resume it."
+                        )?;
+                        continue;
+                    }
                 }
-                source.extend(line);
                 if engine.incomplete(&source) {
                     continue;
+                }
+                if let Err(error) =
+                    editor.add_history(std::str::from_utf8(&source).unwrap_or_default())
+                {
+                    report(options.language, error);
                 }
                 status = engine
                     .evaluate(&source, &mut host, false)
