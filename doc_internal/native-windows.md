@@ -136,8 +136,18 @@ Continuation lines are indented using the shared Fish grammar, including nested
 blocks and substitutions. Quoted contents and backslash continuations receive
 only the requested newline, preserving their literal contents. Existing lines
 are not automatically reformatted when `end` or `else` is typed. Ctrl-V and
-Shift-Insert insert clipboard text as one edit; terminal-handled paste and
-bracketed-paste sequences are not yet handled by the native reader.
+Shift-Insert insert clipboard text as one edit.
+
+Terminals that support bracketed paste, including Rustty/tmuxx, can paste a
+multiline command as one editable, undoable insertion. Pasted newlines do not
+execute commands; Enter submits the completed buffer. Paste preserves Unicode,
+tabs and quoted text, normalizing Windows line endings to newlines. Key bindings
+and abbreviation expansion do not run on pasted characters. Bracketed paste is
+enabled while reading input and disabled before launching a command. Terminals
+that send unbracketed keystrokes still need clipboard insertion for atomic paste.
+Escape uses Fish's 30 ms delay to distinguish it from Alt-prefixed keys;
+`fish_escape_delay_ms` accepts values from 10 through 4999 (invalid values use
+the default).
 
 Use `fish_vi_key_bindings` to select vi editing, or
 `fish_default_key_bindings` to return to the default mode. Setting
@@ -249,6 +259,8 @@ history while retaining recall within the current session.
 This is a separate native editor, not the full POSIX Fish reader.
 Dynamic completion scripts and full Fish keymap compatibility remain separate work. The
 standalone Rash executable on Unix retains its simple line-input fallback.
+The native dependency carries a small [Windows input patch](../vendor/rustyline/FISH_PATCHES.md)
+to Rustyline; its Unix backend and the POSIX Fish reader are unchanged.
 Run the isolated Windows editor check with native Windows Python:
 
 ```powershell

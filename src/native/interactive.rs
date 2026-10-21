@@ -230,6 +230,13 @@ mod windows {
                 .set_edit_mode(crate::native::interactive_abbreviations::edit_mode(
                     variables,
                 ));
+            let escape_delay = variables
+                .get("fish_escape_delay_ms")
+                .and_then(|values| values.first())
+                .and_then(|value| value.parse::<u16>().ok())
+                .filter(|delay| (10..5000).contains(delay))
+                .unwrap_or(30);
+            self.editor.set_keyseq_timeout(Some(escape_delay));
         }
         pub(super) fn set_registrations(
             &mut self,

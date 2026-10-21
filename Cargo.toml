@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/*"]
+exclude = ["vendor/rustyline"]
 
 [workspace.package]
 edition = "2024"
@@ -183,6 +184,7 @@ features = [
 
 [target.'cfg(windows)'.dependencies.rustyline]
 version = "14.0.0"
+path = "vendor/rustyline"
 default-features = false
 features = ["custom-bindings", "with-file-history"]
 

@@ -1316,8 +1316,6 @@ dependencies = [
 [[package]]
 name = "rustyline"
 version = "14.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7803e8936da37efd9b6d4478277f4b2b9bb5cdb37a113e8d63222e58da647e63"
 dependencies = [
  "bitflags",
  "cfg-if",

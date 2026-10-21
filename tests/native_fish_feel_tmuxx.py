@@ -43,6 +43,16 @@ def main():
         directory = root / "FEEL_path_directory"
         directory.mkdir()
         (root / "FEEL_path_file.txt").write_text("not a directory\n", encoding="utf-8")
+        mode_probe = root / "console_mode.py"
+        mode_probe.write_text(
+            "import ctypes, msvcrt\n"
+            "mode = ctypes.c_ulong()\n"
+            "assert ctypes.windll.kernel32.GetConsoleMode("
+            "ctypes.c_void_p(msvcrt.get_osfhandle(0)), ctypes.byref(mode))\n"
+            "assert mode.value & 0x207 == 7, hex(mode.value)\n"
+            "print('FEEL_console_mode_restored')\n",
+            encoding="utf-8",
+        )
         commands = root / "commands"
         commands.mkdir()
         shutil.copy2(fish, commands / "FEEL-context-probe.exe")
@@ -109,6 +119,9 @@ def main():
 
         def keys(*names):
             call("send-keys", "-t", pane, *names)
+            if names and names[-1] == "Escape":
+                # Distinguish a standalone Escape from Alt+the next character.
+                time.sleep(0.06)
 
         def literal(source):
             call("send-keys", "-t", pane, "-l", source)
@@ -116,6 +129,14 @@ def main():
         def send(source):
             literal(source)
             keys("Enter")
+
+        def paste(source):
+            # Exercise terminal mode negotiation too: tmuxx emits delimiters
+            # only when the pane has enabled bracketed paste.
+            path = root / "paste.txt"
+            path.write_bytes(source.encode("utf-8"))
+            call("load-buffer", "-b", "feel", str(path))
+            call("paste-buffer", "-p", "-r", "-b", "feel", "-t", pane)
 
         def suggestion(marker, acceptance):
             source = f"echo {marker} alpha beta"
@@ -301,7 +322,57 @@ def main():
             keys("End", "Enter")
             expect("FEEL_pager_result:alpha FEEL_pager_result:tail")
 
+            send("set -g fish_autosuggestion_enabled 0")
+            expect_input("")
+            paste("printf '<%s>\\n' 'FEEL_paste_🐟\r\nline'\r\necho FEEL_paste_second\n")
+            wait_for(lambda text: "echo FEEL_paste_second" in text,
+                     "multiline terminal paste did not enter the edit buffer")
+            assert "FEEL_paste_second" not in capture().splitlines()
+            keys("Enter")
+            expect("<FEEL_paste_🐟")
+            expect("line>")
+            expect("FEEL_paste_second")
+
+            literal("echo ")
+            paste("FEEL_paste_undo\necho FEEL_paste_never")
+            wait_for(lambda text: "echo FEEL_paste_never" in text,
+                     "paste undo fixture was not inserted")
+            keys("C-_")
+            expect_input("echo ")
+            keys("C-c")
+            expect_input("")
+
+            # A fragmented paste remains one pending edit across a resize.
+            literal("\x1b[200~echo FEEL_paste_fragment\r\n")
+            call("resize-window", "-t", "feel", "-x", "90", "-y", "50")
+            literal("echo FEEL_paste_after_resize\x1b[20")
+            assert "FEEL_paste_fragment" not in capture().splitlines()
+            literal("1~")
+            wait_for(lambda text: "echo FEEL_paste_after_resize" in text,
+                     "fragmented paste did not finish after resize")
+            assert "FEEL_paste_after_resize" not in capture().splitlines()
+            keys("Enter")
+            expect("FEEL_paste_fragment")
+            expect("FEEL_paste_after_resize")
+            call("resize-window", "-t", "feel", "-x", "140", "-y", "50")
+            send(f"python '{mode_probe.as_posix()}'")
+            expect("FEEL_console_mode_restored")
+
+            literal("FEEL_pager ")
+            keys("Tab")
+            wait_for(lambda text: "Search:" in text, "paste menu fixture did not open")
+            paste("alpha")
+            expect_input("FEEL_pager alpha")
+            keys("Enter")
+            expect("FEEL_pager_result:alpha")
+            send("set -e fish_autosuggestion_enabled")
+            expect_input("")
+
             send("abbr --add fe 'echo FEEL_abbr'")
+            paste("fe ")
+            expect_input("fe ")
+            keys("C-c")
+            expect_input("")
             literal("fe ")
             expect_input("echo FEEL_abbr ")
             literal("space")
@@ -376,6 +447,10 @@ def main():
             keys("Enter")
             expect("FEEL_vi_binding_XZ")
             send("bind --erase --all")
+            paste("echo FEEL_vi_paste_")
+            literal("after")
+            keys("Enter")
+            expect("FEEL_vi_paste_after")
             send("fish_default_key_bindings")
             expect_input("")
 
@@ -447,7 +522,8 @@ def main():
                 raise AssertionError(f"native Fish did not exit:\n{capture()}")
             coverage = ("visible/color hints, full/word acceptance, substring history/draft restore, "
                         "editable multiline/cancellation, variable/command/cd/declarative "
-                        "completion and searchable menu, abbreviations, custom bindings and vi, "
+                        "completion and searchable menu, bracketed paste/undo/resize, "
+                        "abbreviations, custom bindings and vi, "
                         "custom colors/prompts, terminal metadata")
             print("PASS native Fish feel: " + coverage)
         finally:
