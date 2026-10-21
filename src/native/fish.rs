@@ -10,6 +10,8 @@ use rash::host::{Command, Host, OpenMode, RedirectAction, Redirection};
 use rash::{Error, Result};
 use std::collections::BTreeMap;
 
+#[path = "fish_complete.rs"]
+mod complete;
 #[path = "fish_expand.rs"]
 mod expand;
 pub(crate) use expand::unescape_literal;
@@ -41,6 +43,8 @@ pub struct Session {
     variables: BTreeMap<String, Variable>,
     scopes: Vec<BTreeMap<String, Variable>>,
     functions: BTreeMap<String, String>,
+    #[serde(default)]
+    pub(super) completions: Vec<super::interactive_completion::CompletionSpec>,
     status: i32,
     pipeline: Vec<i32>,
     last_pid: Option<u32>,
@@ -173,6 +177,7 @@ impl Session {
             variables,
             scopes: vec![BTreeMap::new()],
             functions: BTreeMap::new(),
+            completions: Vec::new(),
             status: 0,
             pipeline: vec![0],
             last_pid: None,
@@ -237,11 +242,22 @@ impl Session {
         self.flow = Flow::Normal;
     }
 
-    pub fn completion_context(&self) -> (Vec<String>, Option<std::ffi::OsString>) {
+    pub fn completion_context(&self) -> (Vec<String>, Option<std::ffi::OsString>, Vec<String>) {
         (
             self.functions.keys().cloned().collect(),
             Some(self.values("PATH").join(";").into()),
+            self.variable_names(),
         )
+    }
+
+    fn variable_names(&self) -> Vec<String> {
+        let mut names: std::collections::BTreeSet<String> =
+            self.variables.keys().cloned().collect();
+        for scope in &self.scopes[self.scope_start()..] {
+            names.extend(scope.keys().cloned());
+        }
+        names.extend(["status", "pipestatus", "last_pid", "fish_pid", "argv"].map(str::to_owned));
+        names.into_iter().collect()
     }
 
     pub fn load_config(&mut self, path: &std::path::Path, host: &mut impl Host) -> Result<()> {

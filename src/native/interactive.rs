@@ -6,8 +6,6 @@
 #[cfg(windows)]
 use rash::Error;
 use rash::Result;
-#[cfg(windows)]
-use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -24,6 +22,13 @@ pub struct Editor {
 }
 
 impl Editor {
+    #[cfg(windows)]
+    pub(super) fn set_registrations(
+        &mut self,
+        registrations: Vec<super::interactive_completion::CompletionSpec>,
+    ) {
+        self.inner.set_registrations(registrations);
+    }
     pub fn new(language: &str, persistent: bool) -> Result<Self> {
         Self::with_history_path(
             language,
@@ -47,11 +52,16 @@ impl Editor {
 
     /// Refresh from the evaluator before reading a command. In particular, PATH
     /// changes made inside the shell must also affect command completion.
-    pub fn set_completion_context(&mut self, commands: Vec<String>, path: Option<OsString>) {
+    pub fn set_completion_context(
+        &mut self,
+        commands: Vec<String>,
+        path: Option<OsString>,
+        variables: Vec<String>,
+    ) {
         #[cfg(windows)]
-        self.inner.set_completion_context(commands, path);
+        self.inner.set_completion_context(commands, path, variables);
         #[cfg(not(windows))]
-        let _ = (commands, path);
+        let _ = (commands, path, variables);
     }
 
     pub fn read_line(&mut self, prompt: &str) -> Result<ReadEvent> {
@@ -126,6 +136,7 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(windows)]
 mod windows {
     use super::*;
+    use crate::native::interactive_completion::CompletionEngine;
     use crate::native::interactive_keys::{HistoryKey, HistorySearch, SuggestionKey};
     use rustyline::completion::{Completer, Pair};
     use rustyline::error::ReadlineError;
@@ -137,8 +148,6 @@ mod windows {
         Cmd, CompletionType, ConditionalEventHandler, Config, Context, Event, EventContext,
         EventHandler, Helper, KeyCode, KeyEvent, Modifiers, RepeatCount,
     };
-    use std::collections::BTreeSet;
-    use std::path::Path;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -157,6 +166,16 @@ mod windows {
     }
 
     impl Editor {
+        pub(super) fn set_registrations(
+            &mut self,
+            registrations: Vec<crate::native::interactive_completion::CompletionSpec>,
+        ) {
+            self.editor
+                .helper_mut()
+                .unwrap()
+                .engine
+                .set_registrations(registrations);
+        }
         pub(super) fn new(language: &str, history: Option<PathBuf>) -> Result<Self> {
             let config = Config::builder()
                 .max_history_size(10_000)
@@ -223,10 +242,10 @@ mod windows {
             &mut self,
             commands: Vec<String>,
             path: Option<OsString>,
+            variables: Vec<String>,
         ) {
             let completion = self.editor.helper_mut().unwrap();
-            completion.commands = commands;
-            completion.path = path;
+            completion.engine.set_context(commands, path, variables);
         }
 
         pub(super) fn read_line(&mut self, prompt: &str) -> Result<ReadEvent> {
@@ -285,171 +304,15 @@ mod windows {
 
     struct Completion {
         fish: bool,
-        builtins: Vec<String>,
-        commands: Vec<String>,
-        path: Option<OsString>,
+        engine: CompletionEngine,
     }
 
     impl Completion {
-        fn command_exists(&self, name: &str) -> bool {
-            if self
-                .builtins
-                .iter()
-                .chain(&self.commands)
-                .any(|command| command == name)
-            {
-                return true;
-            }
-            let executable = |path: PathBuf| path.is_file() || path.with_extension("exe").is_file();
-            if executable(PathBuf::from(name)) {
-                return true;
-            }
-            self.path.as_ref().is_some_and(|path| {
-                std::env::split_paths(path).any(|directory| executable(directory.join(name)))
-            })
-        }
-
         fn new(language: &str) -> Self {
-            let builtins = if language == "rash" {
-                rash::session::BUILTINS
-                    .iter()
-                    .map(|name| String::from_utf8_lossy(name).into_owned())
-                    .collect()
-            } else {
-                [
-                    ":",
-                    ".",
-                    "[",
-                    "echo",
-                    "set",
-                    "cd",
-                    "pwd",
-                    "count",
-                    "test",
-                    "true",
-                    "false",
-                    "source",
-                    "eval",
-                    "exit",
-                    "return",
-                    "break",
-                    "continue",
-                    "printf",
-                    "math",
-                    "string",
-                    "contains",
-                    "read",
-                    "status",
-                    "type",
-                    "command",
-                    "builtin",
-                    "functions",
-                    "jobs",
-                    "bg",
-                    "fg",
-                    "wait",
-                    "kill",
-                    "disown",
-                    "if",
-                    "else",
-                    "end",
-                    "for",
-                    "while",
-                    "function",
-                    "begin",
-                    "not",
-                    "and",
-                    "or",
-                ]
-                .into_iter()
-                .map(str::to_owned)
-                .collect()
-            };
             Self {
                 fish: language == "fish",
-                builtins,
-                commands: vec![],
-                path: std::env::var_os("PATH"),
+                engine: CompletionEngine::new(language),
             }
-        }
-
-        fn complete_in(&self, line: &str, pos: usize, cwd: &Path) -> (usize, Vec<Pair>) {
-            let word = completion_word(line, pos, self.fish);
-            // Completion must not evaluate shell source. Leave variable and
-            // command substitutions to the evaluator instead of guessing values.
-            if word.value.contains(['$', '`', '\n']) {
-                return (word.start, vec![]);
-            }
-            let value = word.value.replace('\\', "/");
-            let value = if let Some(rest) = value.strip_prefix("~/") {
-                match home_dir().and_then(|home| home.to_str().map(str::to_owned)) {
-                    Some(home) => format!("{}/{rest}", home.replace('\\', "/")),
-                    None => value,
-                }
-            } else {
-                value
-            };
-            let split = value.rfind('/').map_or(0, |at| at + 1);
-            let (directory, prefix) = value.split_at(split);
-            let path = if directory.is_empty() {
-                cwd.to_owned()
-            } else {
-                cwd.join(directory)
-            };
-            let mut matches = BTreeSet::new();
-            if let Ok(entries) = std::fs::read_dir(path) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name();
-                    let Some(name) = name.to_str() else { continue };
-                    if !prefix_matches(name, prefix)
-                        || name.starts_with('.') && !prefix.starts_with('.')
-                    {
-                        continue;
-                    }
-                    let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
-                    if word.command && directory.is_empty() && !is_dir && !executable_name(name) {
-                        continue;
-                    }
-                    matches.insert(format!(
-                        "{directory}{name}{}",
-                        if is_dir { "/" } else { "" }
-                    ));
-                }
-            }
-            if word.command && directory.is_empty() {
-                for name in self.builtins.iter().chain(&self.commands) {
-                    if prefix_matches(name, prefix) {
-                        matches.insert(name.clone());
-                    }
-                }
-                if let Some(path) = &self.path {
-                    for directory in std::env::split_paths(path) {
-                        let Ok(entries) = std::fs::read_dir(cwd.join(directory)) else {
-                            continue;
-                        };
-                        for entry in entries.flatten() {
-                            let name = entry.file_name();
-                            let Some(name) = name.to_str() else { continue };
-                            if prefix_matches(name, prefix)
-                                && executable_name(name)
-                                && entry.file_type().is_ok_and(|kind| kind.is_file())
-                            {
-                                matches.insert(name.into());
-                            }
-                        }
-                    }
-                }
-            }
-            (
-                word.start,
-                matches
-                    .into_iter()
-                    .map(|value| Pair {
-                        replacement: quote_completion(&value),
-                        display: value,
-                    })
-                    .collect(),
-            )
         }
     }
 
@@ -461,7 +324,7 @@ mod windows {
             pos: usize,
             _: &Context<'_>,
         ) -> rustyline::Result<(usize, Vec<Pair>)> {
-            Ok(self.complete_in(line, pos, &std::env::current_dir()?))
+            Ok(self.engine.complete(line, pos, &std::env::current_dir()?))
         }
     }
     impl Highlighter for Completion {
@@ -470,7 +333,10 @@ mod windows {
                 std::borrow::Cow::Owned(crate::native::interactive_highlight::highlight(
                     line,
                     pos,
-                    |name| self.command_exists(name),
+                    |name| {
+                        self.engine
+                            .command_exists(name, &std::env::current_dir().unwrap_or_default())
+                    },
                 ))
             } else {
                 std::borrow::Cow::Borrowed(line)
@@ -507,105 +373,6 @@ mod windows {
     }
     impl Helper for Completion {}
 
-    fn prefix_matches(name: &str, prefix: &str) -> bool {
-        name.to_lowercase().starts_with(&prefix.to_lowercase())
-    }
-
-    fn executable_name(name: &str) -> bool {
-        Path::new(name)
-            .extension()
-            .and_then(OsStr::to_str)
-            .is_some_and(|extension| {
-                ["exe", "com", "bat", "cmd"]
-                    .iter()
-                    .any(|candidate| extension.eq_ignore_ascii_case(candidate))
-            })
-    }
-
-    struct Word {
-        start: usize,
-        value: String,
-        command: bool,
-    }
-
-    fn completion_word(line: &str, pos: usize, fish: bool) -> Word {
-        let mut start = pos;
-        let mut value = String::new();
-        let mut quote = None;
-        let mut command = true;
-        let mut active = false;
-        let mut chars = line[..pos].char_indices().peekable();
-        while let Some((at, c)) = chars.next() {
-            if !active {
-                start = at;
-            }
-            if c == '\\' && quote != Some('\'') {
-                active = true;
-                if let Some((_, next)) = chars.next() {
-                    if quote == Some('"') && !matches!(next, '$' | '`' | '"' | '\\' | '\n') {
-                        value.push('\\');
-                    }
-                    value.push(next);
-                }
-            } else if c == '\\'
-                && fish
-                && quote == Some('\'')
-                && chars
-                    .peek()
-                    .is_some_and(|(_, next)| matches!(next, '\\' | '\''))
-            {
-                active = true;
-                value.push(chars.next().unwrap().1);
-            } else if Some(c) == quote {
-                quote = None;
-            } else if quote.is_none() && matches!(c, '\'' | '"') {
-                active = true;
-                quote = Some(c);
-            } else if quote.is_none() && matches!(c, ';' | '|' | '&' | '\n') {
-                command = true;
-                active = false;
-                value.clear();
-            } else if quote.is_none() && c.is_whitespace() {
-                if active {
-                    command = command
-                        && (matches!(
-                            value.as_str(),
-                            "command"
-                                | "builtin"
-                                | "exec"
-                                | "not"
-                                | "and"
-                                | "or"
-                                | "if"
-                                | "while"
-                                | "else"
-                        ) || value.contains('='));
-                }
-                active = false;
-                value.clear();
-            } else {
-                active = true;
-                value.push(c);
-            }
-        }
-        Word {
-            start: if active { start } else { pos },
-            value,
-            command,
-        }
-    }
-
-    fn quote_completion(value: &str) -> String {
-        if value
-            .chars()
-            .all(|c| c.is_alphanumeric() || "-._/:".contains(c))
-        {
-            value.into()
-        } else {
-            format!("'{}'", value.replace('\'', "'\\''"))
-        }
-    }
-
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -629,36 +396,6 @@ mod windows {
             fn drop(&mut self) {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
-        }
-
-        #[test]
-        fn completion_uses_quoted_unicode_paths_and_updated_command_path() {
-            let directory = Directory::new();
-            std::fs::write(directory.0.join("space 🐟's.txt"), b"").unwrap();
-            std::fs::write(directory.0.join("native-probe.exe"), b"").unwrap();
-            let mut helper = Completion::new("fish");
-            helper.path = Some(directory.0.clone().into_os_string());
-            let (start, paths) = helper.complete_in("echo 'spa", 9, &directory.0);
-            assert_eq!(start, 5);
-            assert_eq!(paths.len(), 1);
-            assert_eq!(paths[0].replacement, "'space 🐟'\\''s.txt'");
-            let (start, commands) =
-                helper.complete_in("echo value; native-p", 20, &directory.0.join("missing"));
-            assert_eq!(start, 12);
-            assert_eq!(
-                commands
-                    .iter()
-                    .map(|candidate| candidate.display.as_str())
-                    .collect::<Vec<_>>(),
-                ["native-probe.exe"]
-            );
-            helper.path = None;
-            assert!(
-                helper
-                    .complete_in("native-p", 8, &directory.0.join("missing"))
-                    .1
-                    .is_empty()
-            );
         }
 
         #[test]

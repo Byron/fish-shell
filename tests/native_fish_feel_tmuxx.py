@@ -36,9 +36,16 @@ def main():
         config = root / "config" / "fish"
         config.mkdir(parents=True)
         (config / "config.fish").write_text(
-            "function fish_prompt; printf 'FEEL> '; end\n",
+            "function fish_prompt; printf 'FEEL> '; end\n"
+            "set -g FEEL_variable FEEL_variable_value\n",
             encoding="utf-8",
         )
+        directory = root / "FEEL_path_directory"
+        directory.mkdir()
+        (root / "FEEL_path_file.txt").write_text("not a directory\n", encoding="utf-8")
+        commands = root / "commands"
+        commands.mkdir()
+        shutil.copy2(fish, commands / "FEEL-context-probe.exe")
         tmux_config = root / "tmuxx.conf"
         tmux_config.write_text("set -gw remain-on-exit on\n", encoding="utf-8")
         env = dict(
@@ -48,6 +55,7 @@ def main():
             XDG_CONFIG_HOME=str(root / "config"),
             XDG_DATA_HOME=str(root / "data"),
             XDG_CACHE_HOME=str(root / "cache"),
+            PATH=str(commands) + os.pathsep + os.environ.get("PATH", ""),
         )
         env.pop("TMUX", None)
         env.pop("TMUXX_ENDPOINT", None)
@@ -199,6 +207,36 @@ def main():
             expect("FEEL_after_block_cancel")
             assert "FEEL_cancelled_block" not in capture().splitlines()
 
+            literal("echo $FEEL_var")
+            keys("Tab", "Enter")
+            expect("FEEL_variable_value")
+            literal("command FEEL-context-p")
+            keys("Tab")
+            literal(" -N -c 'echo FEEL_context_command'")
+            keys("Enter")
+            expect("FEEL_context_command")
+
+            # A file with the same prefix must not compete with cd's directory.
+            literal("cd FEEL_path_")
+            keys("Tab", "Enter")
+            send("pwd")
+            wait_for(lambda text: str(directory).replace("\\", "/") in
+                     [line.replace("\\", "/") for line in text.splitlines()],
+                     "directory-only cd completion did not enter the matching directory")
+            send("cd ..")
+
+            send("function FEEL_context; echo FEEL_declared $argv; end")
+            send("complete -c FEEL_context -f -a 'alpha beta'")
+            send("complete -c FEEL_context -l mode -r -a 'fast slow'")
+            literal("FEEL_context al")
+            keys("Tab", "Enter")
+            expect("FEEL_declared alpha")
+            literal("FEEL_context --mo")
+            keys("Tab")
+            literal(" fa")
+            keys("Tab", "Enter")
+            expect("FEEL_declared --mode fast")
+
             # Inspect colors attached to individual input characters. Capture
             # may combine SGR attributes, so do not depend on escape spelling.
             def styled_input(source):
@@ -246,7 +284,8 @@ def main():
             else:
                 raise AssertionError(f"native Fish did not exit:\n{capture()}")
             coverage = ("visible/color hints, full/word acceptance, substring history/draft restore, "
-                        "editable multiline/cancellation, syntax/error colors")
+                        "editable multiline/cancellation, variable/command/cd/declarative "
+                        "completion, syntax/error colors")
             print("PASS native Fish feel: " + coverage)
         finally:
             if owner.poll() is None:

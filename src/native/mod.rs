@@ -5,6 +5,8 @@ pub mod fish;
 pub mod host;
 pub mod interactive;
 #[cfg(windows)]
+mod interactive_completion;
+#[cfg(windows)]
 mod interactive_highlight;
 #[cfg(windows)]
 mod interactive_keys;
@@ -310,7 +312,7 @@ impl Engine {
         }
     }
 
-    fn completion_context(&self) -> (Vec<String>, Option<OsString>) {
+    fn completion_context(&self) -> (Vec<String>, Option<OsString>, Vec<String>) {
         match self {
             Self::Rash(session) => (
                 session
@@ -323,6 +325,7 @@ impl Engine {
                     .ok()
                     .flatten()
                     .and_then(|value| rash::os::from_bytes(&value).ok()),
+                Vec::new(),
             ),
             #[cfg(windows)]
             Self::Fish(session) => session.completion_context(),
@@ -425,8 +428,12 @@ fn execute(options: Options) -> Result<i32> {
                 for notice in host.poll_jobs()? {
                     writeln!(io::stderr(), "{notice}")?;
                 }
-                let (commands, path) = engine.completion_context();
-                editor.set_completion_context(commands, path);
+                let (commands, path, variables) = engine.completion_context();
+                editor.set_completion_context(commands, path, variables);
+                #[cfg(windows)]
+                if let Engine::Fish(session) = &engine {
+                    editor.set_registrations(session.completions.clone());
+                }
                 let prompt = if source.is_empty() {
                     engine.prompt(options.language, &mut host)
                 } else {

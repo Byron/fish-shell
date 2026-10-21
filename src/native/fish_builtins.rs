@@ -45,6 +45,7 @@ pub(super) fn is_builtin(name: &str) -> bool {
             | "wait"
             | "kill"
             | "disown"
+            | "complete"
     )
 }
 
@@ -97,6 +98,7 @@ impl Session {
             return Ok(());
         }
         match name {
+            "complete" => self.complete_builtin(args, host, output)?,
             "true" | ":" => self.status = 0,
             "false" => self.status = 1,
             "echo" => {
@@ -238,7 +240,7 @@ impl Session {
             "printf" | "string" | "math" | "read" | "status" | "functions" | "type" | "command"
             | "builtin" | "argparse" | "contains" | "random" | "set_color" | "jobs" | "fg"
             | "bg" | "wait" | "disown" | "exec" | "ulimit" | "umask" | "bind" | "commandline"
-            | "complete" | "emit" | "history" | "abbr" => {
+            | "emit" | "history" | "abbr" => {
                 return Err(unsupported(&format!("the {name} builtin")));
             }
             _ => {

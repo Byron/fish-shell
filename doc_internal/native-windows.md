@@ -139,6 +139,32 @@ and malformed escapes in red. Matching delimiters are emphasized at the cursor.
 Coloring uses the shared Fish grammar without executing input or substitutions;
 it does not yet apply the POSIX reader's configurable `fish_color_*` palette.
 
+Completion understands command positions after pipes, logical operators and
+command substitutions. Native Fish offers directory-only `cd` completion,
+session variable names after `$`, common builtin options, and Git/Cargo
+subcommands and options. Matching prefers prefixes, then case-insensitive
+prefixes, then substring/subsequence matches. Executable names normally omit
+`.exe`; a typed suffix is retained. Descriptions accompany completion choices.
+Directories remain open for further completion, while finished arguments gain
+a separating space. Completion never executes the text being edited.
+
+Register literal options and choices in `config.fish` or at the prompt:
+
+```fish
+complete -c mytool -f -a 'build test'
+complete -c mytool -l mode -r -a 'fast thorough' -d 'Select checking mode'
+```
+
+Native `complete` supports `-c`, `-s`, `-l`, `-o`, `-a`, `-d`, `-f`, `-r`, `-x`,
+and `-e` (erase), with their long forms. `complete` lists registrations as Fish
+source; `complete -C 'mytool --m'` prints the editor's annotated choices.
+Registrations belong to the current session and can be recreated by configuration.
+Conditions, wrapper definitions, command-substitution generators, automatic
+completion-script loading, and path completion through `$VARIABLE/` are not yet
+supported. Dynamic registrations report a diagnostic instead of silently
+running as static choices. The completion display is still rustyline's list,
+rather than the POSIX Fish reader's searchable pager.
+
 Native Fish reads `fish/config.fish` under `XDG_CONFIG_HOME`, or under `%APPDATA%`
 when that variable is not set. Without either location it uses
 `~/.config/fish/config.fish`. `-N`/`--no-config` skips this file. The configuration
@@ -158,8 +184,8 @@ are omitted. These files use a separate format and do not overwrite or import
 the existing POSIX Fish histories. `--private`/`-P` prevents loading and saving
 history while retaining recall within the current session.
 
-This is a native editor with basic completion, not the full POSIX Fish reader.
-Programmable completion scripts, Fish keybinding configuration,
+This is a separate native editor, not the full POSIX Fish reader.
+Dynamic completion scripts, Fish keybinding configuration,
 and prompt/cwd terminal integration remain separate work. The
 standalone Rash executable on Unix retains its simple line-input fallback.
 Run the isolated Windows editor check with native Windows Python:
