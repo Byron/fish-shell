@@ -109,7 +109,7 @@ pub struct Group {
 }
 
 impl Group {
-    pub fn new() -> io::Result<Self> {
+    pub fn new(kill_on_close: bool) -> io::Result<Self> {
         // An unnamed private job cannot be opened by name from another shell.
         let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if job.is_null() {
@@ -120,7 +120,7 @@ impl Group {
             roots: Vec::new(),
             suspended: BTreeMap::new(),
         };
-        group.set_lifetime(true)?;
+        group.set_lifetime(kill_on_close)?;
         Ok(group)
     }
 

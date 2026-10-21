@@ -80,7 +80,7 @@ pub struct Group {
 }
 
 impl Group {
-    pub fn new() -> io::Result<Self> {
+    pub fn new(_: bool) -> io::Result<Self> {
         Ok(Self { pid: None })
     }
     pub fn configure(&self, command: &mut Command) {

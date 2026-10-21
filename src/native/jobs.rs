@@ -260,7 +260,10 @@ impl NativeHost {
                 .collect::<Vec<_>>()
                 .join(" | "),
             processes: Vec::new(),
-            group: process::Group::new()?,
+            // Worker descendants are already covered by the ancestor shell's
+            // Windows Job Object. Its lifetime policy must also govern orphaned
+            // descendants after an inner foreground command has completed.
+            group: process::Group::new(!self.worker)?,
             background,
             owned: true,
             notified: None,
@@ -608,6 +611,9 @@ impl NativeHost {
                                 break;
                             }
                             if self.take_console_interrupt() {
+                                // Keep enclosing interpreter loops cancelled
+                                // after consuming the process-wide notification.
+                                self.interrupted = true;
                                 status = 130;
                                 break;
                             }

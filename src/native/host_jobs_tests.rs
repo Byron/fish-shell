@@ -204,6 +204,25 @@ fn foreground_cancellation_latches_until_the_next_evaluation() {
 }
 
 #[test]
+#[cfg(windows)]
+fn wait_next_cancellation_latches_until_the_next_evaluation() {
+    let mut host = NativeHost::new().unwrap();
+    let mut command = action("cancel_wait_next");
+    command.env.insert(
+        b"TEMP".to_vec(),
+        rash::os::to_bytes(std::env::temp_dir().as_os_str()).unwrap(),
+    );
+    let result = host.run_pipeline(&[command], false, true).unwrap();
+    assert_eq!(
+        result.status,
+        0,
+        "{}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+    assert!(String::from_utf8_lossy(&result.stdout).contains("wait-next:130:latched:cleared"));
+}
+
+#[test]
 fn setup_failure_reaps_processes_already_started() {
     let file = tests::TestFile::new();
     let mut first = quiet_action("tick");
@@ -306,6 +325,41 @@ pub(super) fn child_action() {
             host.clear_console_requests();
             assert!(!host.cancelled());
             println!("cancel:130:latched:cleared");
+            std::process::exit(0);
+        }
+        #[cfg(windows)]
+        "cancel_wait_next" => {
+            for fish in [true, false] {
+                let mut host = NativeHost::new().unwrap();
+                host.run_pipeline(&[quiet_action("sleep")], true, false)
+                    .unwrap();
+                let interrupt = std::thread::spawn(|| {
+                    std::thread::sleep(Duration::from_millis(100));
+                    process::request_interrupt_for_test();
+                });
+                // A finite loop catches lost cancellation without hanging the
+                // regression test: continuing after the first wait returns 7.
+                let status = if fish {
+                    let mut session = super::super::fish::Session::new().unwrap();
+                    session
+                        .eval("for iteration in 1 2; wait -n; end", &mut host)
+                        .unwrap()
+                } else {
+                    let cwd =
+                        rash::os::to_bytes(std::env::current_dir().unwrap().as_os_str()).unwrap();
+                    let mut session = rash::Session::new(Default::default(), cwd, false, false);
+                    session
+                        .eval(b"for iteration in 1 2; do wait -n; done", &mut host)
+                        .map_or_else(|error| error.status, |result| result.status)
+                };
+                interrupt.join().unwrap();
+                assert_eq!(status, 130);
+                assert!(host.cancelled());
+                assert_eq!(host.jobs().len(), 1);
+                host.clear_console_requests();
+                assert!(!host.cancelled());
+            }
+            println!("wait-next:130:latched:cleared");
             std::process::exit(0);
         }
         _ => panic!("unknown probe action"),

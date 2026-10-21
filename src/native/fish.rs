@@ -485,7 +485,7 @@ impl Session {
             stages.push(stage);
         }
         let result = host.run_pipeline(&stages, background, output.capture)?;
-        if let Some(file) = result_file {
+        if let Some(file) = result_file.filter(|_| !host.cancelled()) {
             let bytes = std::fs::read(file.path())?;
             if !bytes.is_empty() {
                 let mut updated: Self = super::worker::decode(&bytes)?;

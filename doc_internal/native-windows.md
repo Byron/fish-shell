@@ -170,9 +170,9 @@ echo $saved
 # Start an installed native program, then control the job:
 long-running-program &
 jobs -l
-kill -STOP %1
-bg %1
-fg %1
+kill -STOP %+
+bg %+
+fg %+
 ```
 
 Windows Job Objects keep each pipeline and its descendants together. Ctrl-C
@@ -181,7 +181,10 @@ that ignore console events. `kill -STOP` suspends owned process threads;
 `bg` and `fg` resume them. Ctrl-Break is cancellation too, not a POSIX suspend key.
 `kill -TERM` and `kill -KILL` terminate the owned job. Arbitrary system processes
 cannot be targeted through these builtins. Closing the shell terminates owned
-jobs; `disown` lets a job outlive it.
+jobs. `disown` removes this shell's cleanup policy, including for external
+descendants that remain after their launcher exits. It cannot escape an enclosing
+Windows Job Object or the terminal's own lifetime policy; disowning inside a
+pipeline worker does not detach a process from its parent pipeline.
 
 Windows has no POSIX terminal foreground process groups. Background jobs default
 to null input unless redirected; `fg` cannot replace input already inherited by

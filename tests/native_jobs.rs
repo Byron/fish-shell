@@ -138,3 +138,131 @@ fn fish_negation_preserves_pipeline_status_and_worker_shell_identity() {
         (0, "0 1\n0\n".into(), String::new())
     );
 }
+
+struct MarkerFile(std::path::PathBuf);
+
+impl MarkerFile {
+    fn new() -> Self {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("fish-disown-test-{}-{stamp}", std::process::id()));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for MarkerFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn wait_marker(path: &std::path::Path, expected: &[u8]) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::fs::read(path).unwrap_or_default() != expected {
+        assert!(Instant::now() < deadline, "missing marker {expected:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+#[expect(
+    clippy::zombie_processes,
+    reason = "this Windows-only probe deliberately exits before its child"
+)]
+fn disown_descendant_probe() {
+    let Some(path) = std::env::var_os("FISH_DISOWN_PROBE_FILE") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
+    if std::env::var_os("FISH_DISOWN_PROBE_LEAF").is_some() {
+        wait_marker(&path, b"finish");
+        std::fs::write(path, b"survived").unwrap();
+    } else {
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "disown_descendant_probe", "--nocapture"])
+            .env("FISH_DISOWN_PROBE_LEAF", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::fs::write(&path, b"ready").unwrap();
+        wait_marker(&path, b"release");
+    }
+    std::process::exit(0);
+}
+
+#[test]
+fn disowned_workers_preserve_external_descendants_after_the_launcher_exits() {
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+
+    let helper = std::env::current_exe()
+        .unwrap()
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace('\'', "'\\''");
+    for (language, pid) in [("fish", "$last_pid"), ("rash", "$!")] {
+        let marker = MarkerFile::new();
+        let pid_file = MarkerFile::new();
+        let source = format!(
+            "'{helper}' --exact disown_descendant_probe --nocapture >NUL 2>&1 & echo {pid}; disown"
+        );
+        let executable = if language == "fish" {
+            env!("CARGO_BIN_EXE_fish")
+        } else {
+            env!("CARGO_BIN_EXE_rash")
+        };
+        let status = Command::new(executable)
+            .args(["-N", "-c", &source])
+            .env("FISH_DISOWN_PROBE_FILE", &marker.0)
+            .stdin(Stdio::null())
+            // A disowned worker initially inherits the shell's standard streams.
+            // A file avoids waiting for that worker to close a capture pipe.
+            .stdout(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&pid_file.0)
+                    .unwrap(),
+            )
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{language}: {status:?}");
+        let pid = std::fs::read_to_string(&pid_file.0)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // The external launcher waits for our release, so the owned worker is
+        // still alive when we acquire its handle. No PID reuse race is possible.
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+        assert!(
+            !handle.is_null(),
+            "{language}: worker exited before release"
+        );
+        let worker = unsafe { OwnedHandle::from_raw_handle(handle) };
+        wait_marker(&marker.0, b"ready");
+        std::fs::write(&marker.0, b"release").unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(worker.as_raw_handle(), 5000) },
+            WAIT_OBJECT_0,
+            "{language}: worker did not exit"
+        );
+        // The leaf may progress only after both its launcher and the disowned
+        // interpreter worker have exited and closed their nested job handles.
+        std::fs::write(&marker.0, b"finish").unwrap();
+        wait_marker(&marker.0, b"survived");
+    }
+}

@@ -24,28 +24,30 @@ pub struct NativeHost {
     notifications: VecDeque<String>,
     controls: process::Controls,
     interrupted: bool,
+    worker: bool,
     pending_workers: Vec<super::worker::PayloadFile>,
 }
 
 impl NativeHost {
     pub fn new() -> Result<Self> {
-        Self::with_console_input(true)
+        Self::with_worker(false)
     }
 
     pub(crate) fn new_worker() -> Result<Self> {
-        Self::with_console_input(false)
+        Self::with_worker(true)
     }
 
-    fn with_console_input(receive_ctrl_c: bool) -> Result<Self> {
+    fn with_worker(worker: bool) -> Result<Self> {
         // Fail early if the working directory cannot be represented by this host.
         rash::os::to_bytes(std::env::current_dir()?.as_os_str())?;
-        process::install_controls(receive_ctrl_c)?;
+        process::install_controls(!worker)?;
         Ok(Self {
             jobs: BTreeMap::new(),
             next_job: 1,
             notifications: VecDeque::new(),
             controls: process::controls(),
             interrupted: false,
+            worker,
             pending_workers: Vec::new(),
         })
     }
