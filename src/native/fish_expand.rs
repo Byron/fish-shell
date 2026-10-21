@@ -8,6 +8,29 @@ enum Quote {
     Double,
 }
 
+/// Case arguments are expanded first, then their remaining stars become match
+/// wildcards. A quoted backslash-star pair matches a literal star. Question
+/// marks follow Fish's default question-mark-noglob behavior.
+pub(super) fn wildcard_match(pattern: &str, value: &str) -> bool {
+    let mut items = Vec::new();
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => items.push(Item::Star),
+            '\\' if chars.peek() == Some(&'*') => {
+                chars.next();
+                items.push(Item::Literal('*'));
+            }
+            '\\' if chars.peek() == Some(&'\\') => {
+                chars.next();
+                items.extend([Item::Literal('\\'), Item::Literal('\\')]);
+            }
+            c => items.push(Item::Literal(c)),
+        }
+    }
+    glob::matches(&items, value)
+}
+
 pub(super) fn validate(input: &str) -> Result<()> {
     syntax(input, 0)
 }

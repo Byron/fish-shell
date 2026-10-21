@@ -267,7 +267,6 @@ impl Session {
                 ast::Kind::NotStatement(node) if node.time.is_some() => {
                     return Err(unsupported("the time keyword"));
                 }
-                ast::Kind::SwitchStatement(_) => return Err(unsupported("switch statements")),
                 ast::Kind::DecoratedStatement(node)
                     if node.decoration() == StatementDecoration::Exec =>
                 {
@@ -293,15 +292,6 @@ impl Session {
                     if let Some(range) = ast::Token::as_leaf(token).range() {
                         expand::validate(&source[range.as_usize()].to_string())?;
                     }
-                }
-                ast::Kind::BlockStatement(node) if !node.args_or_redirs.is_empty() => {
-                    return Err(unsupported("redirections on blocks"));
-                }
-                ast::Kind::BraceStatement(node) if !node.args_or_redirs.is_empty() => {
-                    return Err(unsupported("redirections on brace blocks"));
-                }
-                ast::Kind::IfStatement(node) if !node.args_or_redirs.is_empty() => {
-                    return Err(unsupported("redirections on an if block"));
                 }
                 ast::Kind::FunctionHeader(node) if !node.args.is_empty() => {
                     return Err(unsupported("function options"));
@@ -508,7 +498,7 @@ impl Session {
         result.map(|()| scope)
     }
 
-    fn eval_statement(
+    fn eval_statement_body(
         &mut self,
         statement: &ast::Statement,
         source: &wstr,
@@ -560,7 +550,7 @@ impl Session {
                 self.scopes.pop();
                 result
             }
-            ast::Statement::Switch(_) => Err(unsupported("switch statements")),
+            ast::Statement::Switch(node) => self.eval_switch(node, source, host, output),
         }
     }
 
@@ -680,46 +670,7 @@ impl Session {
                     }
                 }
                 ast::ArgumentOrRedirection::Redirection(redir) => {
-                    let raw = WString::from(text(source, &redir.oper));
-                    let parsed = PipeOrRedir::try_from(raw.as_utfstr())
-                        .map_err(|_| Error::new("invalid redirection"))?;
-                    if !(0..=2).contains(&parsed.fd) {
-                        return Err(unsupported("redirection of descriptors above 2"));
-                    }
-                    let target = self.expand_one(&text(source, &redir.target), host)?;
-                    let action = match parsed.mode {
-                        RedirectionMode::Overwrite => RedirectAction::File {
-                            path: target.into_bytes(),
-                            mode: OpenMode::Write,
-                        },
-                        RedirectionMode::Append => RedirectAction::File {
-                            path: target.into_bytes(),
-                            mode: OpenMode::Append,
-                        },
-                        RedirectionMode::Input => RedirectAction::File {
-                            path: target.into_bytes(),
-                            mode: OpenMode::Read,
-                        },
-                        RedirectionMode::Fd if target == "-" => RedirectAction::Close,
-                        RedirectionMode::Fd => RedirectAction::Dup(
-                            target
-                                .parse()
-                                .map_err(|_| Error::new("invalid redirection descriptor"))?,
-                        ),
-                        RedirectionMode::TryInput | RedirectionMode::NoClob => {
-                            return Err(unsupported("try-input and no-clobber redirections"));
-                        }
-                    };
-                    redirects.push(Redirection {
-                        fd: parsed.fd,
-                        action,
-                    });
-                    if parsed.stderr_merge {
-                        redirects.push(Redirection {
-                            fd: 2,
-                            action: RedirectAction::Dup(parsed.fd),
-                        });
-                    }
+                    self.append_redirection(redir, source, host, &mut redirects)?;
                 }
             }
         }
@@ -796,6 +747,8 @@ fn valid_name(name: &str) -> Result<()> {
 
 #[path = "fish_builtins.rs"]
 mod builtins;
+#[path = "fish_blocks.rs"]
+mod blocks;
 
 #[cfg(test)]
 mod tests {

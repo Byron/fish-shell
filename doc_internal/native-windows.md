@@ -59,7 +59,7 @@ produce diagnostics.
 
 The current Fish subset includes simple commands and standard redirects on
 descriptors 0, 1 and 2; list variables, quoting and simple integer indices;
-`if`/`else`, `begin`, `for`, `while`, functions without options, `not`, and logical
+`if`/`else`, `begin`, `for`, `while`, `switch`, functions without options, `not`, and logical
 chains. Initial builtins include `echo`, `set`, `cd`, `pwd`, `count`, `test`, `[`,
 `true`, `false`, `source`, `eval`, `exit`, `return`, `break` and `continue`.
 Native Fish also provides `printf`, `math`, `contains`, `read`, `type`, command
@@ -73,8 +73,12 @@ are supported. Native filesystem globbing expands unquoted `*` and recursive
 literal. Unmatched globs are empty lists for `set`, `count`, and `for`, and produce
 status 124 for ordinary command arguments. Command substitutions retain Fish's
 newline splitting and variable side effects; quoted substitutions preserve
-internal newlines. `switch`, block redirections, function options and the full
-builtin set are not implemented. Regular-expression
+internal newlines. `switch` expands case arguments and selects the first matching
+case; quote wildcard patterns, for example `case '*.txt'`. Blocks support standard
+redirections, with a shared file position across their commands: `while read line;
+echo $line; end < input.txt > output.txt` reads and writes each line in order.
+Nested redirections are restored when a block finishes, including `return` and
+`break`. Function options and the full builtin set are not implemented. Regular-expression
 string operations, advanced read options and locale-specific numeric formatting
 remain unavailable; unsupported options produce diagnostics.
 
