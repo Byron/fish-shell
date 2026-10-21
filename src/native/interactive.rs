@@ -145,6 +145,7 @@ mod windows {
     use super::*;
     use crate::native::interactive_completion::CompletionEngine;
     use crate::native::interactive_keys::{HistoryKey, HistorySearch, SuggestionKey};
+    use crate::native::interactive_pager::{EditorHint, PagerBindings};
     use rustyline::completion::{Completer, Pair};
     use rustyline::error::ReadlineError;
     use rustyline::highlight::Highlighter;
@@ -192,6 +193,8 @@ mod windows {
                 .helper_mut()
                 .unwrap()
                 .engine
+                .lock()
+                .unwrap()
                 .set_registrations(registrations);
         }
         pub(super) fn new(language: &str, history: Option<PathBuf>) -> Result<Self> {
@@ -206,20 +209,33 @@ mod windows {
                 .build();
             let mut editor = rustyline::Editor::with_config(config).map_err(readline_error)?;
             editor.set_helper(Some(Completion::new(language)));
+            let pager = editor.helper().unwrap().pager.clone();
             let suspended = Arc::new(AtomicBool::new(false));
             editor.bind_sequence(
                 KeyEvent::ctrl('Z'),
-                EventHandler::Conditional(Box::new(SuspendKey(Arc::clone(&suspended)))),
+                if language == "fish" {
+                    pager.wrap(Some(EventHandler::Conditional(Box::new(SuspendKey(
+                        Arc::clone(&suspended),
+                    )))))
+                } else {
+                    EventHandler::Conditional(Box::new(SuspendKey(Arc::clone(&suspended))))
+                },
             );
             let search = Arc::new(Mutex::new(HistorySearch::default()));
             if language == "fish" {
+                editor.bind_sequence(Event::Any, pager.wrap(None));
+                editor.bind_sequence(KeyEvent(KeyCode::Tab, Modifiers::NONE), pager.wrap(None));
+                editor.bind_sequence(
+                    KeyEvent(KeyCode::BackTab, Modifiers::NONE),
+                    pager.wrap(None),
+                );
                 for (key, reverse) in [(KeyCode::Up, true), (KeyCode::Down, false)] {
                     editor.bind_sequence(
                         KeyEvent(key, Modifiers::NONE),
-                        EventHandler::Conditional(Box::new(HistoryKey {
+                        pager.wrap(Some(EventHandler::Conditional(Box::new(HistoryKey {
                             search: Arc::clone(&search),
                             reverse,
-                        })),
+                        })))),
                     );
                 }
                 for key in [
@@ -228,17 +244,24 @@ mod windows {
                 ] {
                     editor.bind_sequence(
                         key,
-                        EventHandler::Conditional(Box::new(SuggestionKey { word: false })),
+                        pager.wrap(Some(EventHandler::Conditional(Box::new(SuggestionKey {
+                            word: false,
+                        })))),
                     );
                 }
                 for key in [KeyEvent(KeyCode::Right, Modifiers::ALT), KeyEvent::alt('f')] {
                     editor.bind_sequence(
                         key,
-                        EventHandler::Conditional(Box::new(SuggestionKey { word: true })),
+                        pager.wrap(Some(EventHandler::Conditional(Box::new(SuggestionKey {
+                            word: true,
+                        })))),
                     );
                 }
-                editor.bind_sequence(KeyEvent(KeyCode::Enter, Modifiers::ALT), Cmd::Newline);
-                editor.bind_sequence(KeyEvent::ctrl('_'), Cmd::Undo(1));
+                editor.bind_sequence(
+                    KeyEvent(KeyCode::Enter, Modifiers::ALT),
+                    pager.wrap(Some(Cmd::Newline.into())),
+                );
+                editor.bind_sequence(KeyEvent::ctrl('_'), pager.wrap(Some(Cmd::Undo(1).into())));
             }
             if let Some(path) = &history {
                 match editor.load_history(path) {
@@ -263,11 +286,16 @@ mod windows {
             variables: Vec<String>,
         ) {
             let completion = self.editor.helper_mut().unwrap();
-            completion.engine.set_context(commands, path, variables);
+            completion
+                .engine
+                .lock()
+                .unwrap()
+                .set_context(commands, path, variables);
         }
 
         pub(super) fn read_line(&mut self, prompt: &str) -> Result<ReadEvent> {
             self.suspended.store(false, Ordering::Relaxed);
+            self.editor.helper().unwrap().pager.reset();
             let entries = (0..self.editor.history().len())
                 .filter_map(|index| {
                     self.editor
@@ -322,16 +350,20 @@ mod windows {
 
     struct Completion {
         fish: bool,
-        engine: CompletionEngine,
+        engine: Arc<Mutex<CompletionEngine>>,
+        pager: PagerBindings,
         palette: crate::native::interactive_colors::Palette,
         autosuggestion: bool,
     }
 
     impl Completion {
         fn new(language: &str) -> Self {
+            let engine = Arc::new(Mutex::new(CompletionEngine::new(language)));
+            let pager = PagerBindings::new(Arc::clone(&engine));
             Self {
                 fish: language == "fish",
-                engine: CompletionEngine::new(language),
+                engine,
+                pager,
                 palette: Default::default(),
                 autosuggestion: true,
             }
@@ -346,7 +378,14 @@ mod windows {
             pos: usize,
             _: &Context<'_>,
         ) -> rustyline::Result<(usize, Vec<Pair>)> {
-            Ok(self.engine.complete(line, pos, &std::env::current_dir()?))
+            if let Some(completion) = self.pager.take_completion(line, pos) {
+                return Ok(completion);
+            }
+            Ok(self
+                .engine
+                .lock()
+                .unwrap()
+                .complete(line, pos, &std::env::current_dir()?))
         }
     }
     impl Highlighter for Completion {
@@ -358,6 +397,8 @@ mod windows {
                         pos,
                         |name| {
                             self.engine
+                                .lock()
+                                .unwrap()
                                 .command_exists(name, &std::env::current_dir().unwrap_or_default())
                         },
                         &self.palette,
@@ -373,16 +414,24 @@ mod windows {
         }
 
         fn highlight_hint<'h>(&self, hint: &'h str) -> std::borrow::Cow<'h, str> {
+            if let Some(hint) = self.pager.highlight_hint(hint) {
+                return hint;
+            }
             std::borrow::Cow::Owned(self.palette.highlight_hint(hint))
         }
     }
     impl Hinter for Completion {
-        type Hint = String;
-        fn hint(&self, line: &str, pos: usize, ctx: &Context<'_>) -> Option<String> {
+        type Hint = EditorHint;
+        fn hint(&self, line: &str, pos: usize, ctx: &Context<'_>) -> Option<EditorHint> {
+            if let Some(hint) = self.pager.hint(line, pos) {
+                return Some(hint);
+            }
             if !self.fish || !self.autosuggestion || line.starts_with(char::is_whitespace) {
                 return None;
             }
-            HistoryHinter::new().hint(line, pos, ctx)
+            HistoryHinter::new()
+                .hint(line, pos, ctx)
+                .map(EditorHint::suggestion)
         }
     }
     impl Validator for Completion {

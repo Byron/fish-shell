@@ -265,6 +265,38 @@ def main():
             keys("Tab", "Enter")
             expect("FEEL_declared --mode fast")
 
+            send("function FEEL_pager; echo FEEL_pager_result:$argv; end")
+            send("complete -c FEEL_pager -f -a 'alpha beta 東京 zebra'")
+            expect_input("")
+            literal("FEEL_pager ")
+            keys("Tab")
+            wait_for(lambda text: "Search:" in text and "zebra" in text,
+                     "Tab did not open completion menu")
+            literal("BT")
+            wait_for(lambda text: "Search: BT_" in text and "> beta" in text,
+                     "typing did not filter completion menu")
+            keys("Enter")
+            expect_input("FEEL_pager beta ")
+            assert "FEEL_pager_result:beta" not in capture().splitlines()
+            keys("Enter")
+            expect("FEEL_pager_result:beta")
+
+            literal("FEEL_pager ")
+            keys("Tab", "BTab", "Enter")
+            expect_input("FEEL_pager 東京 ")
+            keys("Enter")
+            expect("FEEL_pager_result:東京")
+
+            # Menu cancellation preserves the exact cursor and suffix.
+            literal("FEEL_pager  tail")
+            keys("Home", *("Right" for _ in "FEEL_pager "), "Tab")
+            literal("nothing_matches")
+            wait_for(lambda text: "No matches" in text, "menu filter did not update")
+            keys("Escape")
+            literal("alpha")
+            keys("End", "Enter")
+            expect("FEEL_pager_result:alpha FEEL_pager_result:tail")
+
             # Inspect colors attached to individual input characters. Capture
             # may combine SGR attributes, so do not depend on escape spelling.
             def styled_input(source):
@@ -333,7 +365,7 @@ def main():
                 raise AssertionError(f"native Fish did not exit:\n{capture()}")
             coverage = ("visible/color hints, full/word acceptance, substring history/draft restore, "
                         "editable multiline/cancellation, variable/command/cd/declarative "
-                        "completion, syntax/error colors")
+                        "completion and searchable menu, custom colors/prompts, terminal metadata")
             print("PASS native Fish feel: " + coverage)
         finally:
             if owner.poll() is None:

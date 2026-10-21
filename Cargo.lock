@@ -428,6 +428,8 @@ dependencies = [
  "strum_macros",
  "tree-sitter",
  "tree-sitter-bash",
+ "unicode-segmentation",
+ "unicode-width 0.2.2",
  "unix_path",
  "windows-sys 0.61.2",
  "xterm-color",

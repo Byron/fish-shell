@@ -160,6 +160,8 @@ xterm-color.workspace = true
 portable-atomic.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
 fish-widestring.workspace = true
 fish-fallback.workspace = true
 fish-feature-flags.workspace = true

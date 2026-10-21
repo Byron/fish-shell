@@ -178,8 +178,15 @@ Registrations belong to the current session and can be recreated by configuratio
 Conditions, wrapper definitions, command-substitution generators, automatic
 completion-script loading, and path completion through `$VARIABLE/` are not yet
 supported. Dynamic registrations report a diagnostic instead of silently
-running as static choices. The completion display is still rustyline's list,
-rather than the POSIX Fish reader's searchable pager.
+running as static choices.
+
+When multiple completions match, Tab opens a searchable menu under the input.
+Type to filter choices; Tab/Shift-Tab or arrows select, Page Up/Down move by a
+page, and Backspace edits the filter. Enter inserts the selected completion
+without executing the command. Escape or Ctrl-G cancels and preserves the
+original text and cursor. Selection stays in the menu until accepted. Menu
+rows are never command text or autosuggestions, and Unicode widths and terminal
+resizing use the same renderer as the editable input.
 
 Native Fish reads `fish/config.fish` under `XDG_CONFIG_HOME`, or under `%APPDATA%`
 when that variable is not set. Without either location it uses
@@ -211,6 +218,7 @@ Run the isolated Windows editor check with native Windows Python:
 
 ```powershell
 python tests/native_interactive_tmuxx.py .\target\x86_64-pc-windows-msvc\debug\fish.exe C:/Apps/Rustty/tmuxx.exe
+python tests/native_fish_feel_tmuxx.py .\target\x86_64-pc-windows-msvc\release\fish.exe C:/Apps/Rustty/tmuxx.exe
 ```
 
 It uses a fresh tmuxx owner and private configuration/history directories, leaving

@@ -13,6 +13,8 @@ mod interactive_highlight;
 #[cfg(windows)]
 mod interactive_keys;
 #[cfg(windows)]
+mod interactive_pager;
+#[cfg(windows)]
 mod interactive_terminal;
 #[cfg(windows)]
 pub mod syntax;
