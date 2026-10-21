@@ -455,6 +455,25 @@ mod windows {
             {
                 if self.space {
                     expansion.text.push(' ');
+                } else {
+                    let mut expanded = ctx.line().to_owned();
+                    expanded.replace_range(expansion.range.clone(), &expansion.text);
+                    let cursor = expansion.range.start + expansion.text.len();
+                    match crate::native::interactive_layout::enter(&expanded, cursor, false) {
+                        Cmd::AcceptLine => {
+                            return Some(Cmd::AcceptLineWithReplacement {
+                                range: expansion.range,
+                                replacement: expansion.text,
+                            });
+                        }
+                        Cmd::Insert(_, continuation) => {
+                            // The abbreviation and its continuation are one
+                            // edit. Keep the rest of the buffer after the cursor
+                            // untouched, including arguments and closing blocks.
+                            expansion.text.push_str(&continuation);
+                        }
+                        _ => return Some(Cmd::Noop),
+                    }
                 }
                 return Some(self.pager.queue_completion(
                     ctx.line(),

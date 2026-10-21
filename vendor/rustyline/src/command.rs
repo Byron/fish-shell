@@ -23,6 +23,34 @@ pub fn execute<H: Helper>(
 ) -> Result<Status> {
     use Status::{Proceed, Submit};
 
+    // Windows Fish abbreviations are edits followed by the same Enter action,
+    // not completion requests or synthetic input. Keep this command outside
+    // repeat handling so an exact UTF-8 range cannot become a one-char edit.
+    #[cfg(windows)]
+    let cmd = if let Cmd::AcceptLineWithReplacement { range, replacement } = cmd {
+        if range.start > range.end
+            || range.end > s.line.len()
+            || !s.line.is_char_boundary(range.start)
+            || !s.line.is_char_boundary(range.end)
+        {
+            return Ok(Proceed);
+        }
+        s.changes.begin();
+        s.line.replace(range, &replacement, &mut s.changes);
+        s.changes.end();
+        s.forced_refresh = true;
+        let refreshed = s.refresh_line_with_msg(None);
+        s.forced_refresh = false;
+        refreshed?;
+        // AcceptLine validates but deliberately submits even incomplete input;
+        // this variant must respect the validator's decision instead.
+        Cmd::AcceptOrInsertLine {
+            accept_in_the_middle: true,
+        }
+    } else {
+        cmd
+    };
+
     match cmd {
         Cmd::EndOfFile | Cmd::AcceptLine | Cmd::AcceptOrInsertLine { .. } | Cmd::Newline => {
             if s.has_hint() || !s.is_default_prompt() || s.highlight_char {

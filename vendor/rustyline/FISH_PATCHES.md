@@ -14,6 +14,9 @@ Local changes:
   resize handling and restoration of console modes.
 - `src/edit.rs` keeps the cursor after pasted text in Windows vi insert mode.
   Vi normal-mode paste retains the upstream cursor behavior.
+- `src/keymap.rs` and `src/command.rs` provide a Windows-only command to replace
+  an abbreviation and submit the corrected input with validation in one key
+  press. Fish's native editor computes expansions and continuation indentation.
 
 The pure decoder tests run through `tests/native_windows_vt.rs` in Fish. Live
 ConPTY coverage uses the native release Fish executable and a private tmuxx

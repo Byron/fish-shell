@@ -25,14 +25,14 @@ Install Rust through `rustup`, the Visual C++ Build Tools and the Windows SDK.
 From PowerShell in this checkout:
 
 ```powershell
-cargo build --locked --bins --target x86_64-pc-windows-msvc
-.\target\x86_64-pc-windows-msvc\debug\fish.exe -N -c 'echo native Fish'
-.\target\x86_64-pc-windows-msvc\debug\rash.exe -c 'printf "%s\n" "native Rash"'
+cargo build --locked --release --bins --target x86_64-pc-windows-msvc
+.\target\x86_64-pc-windows-msvc\release\fish.exe -N -c 'echo native Fish'
+.\target\x86_64-pc-windows-msvc\release\rash.exe -c 'printf "%s\n" "native Rash"'
 ```
 
-With an MSVC host toolchain, `cargo build --locked --bins` selects the native
-backend automatically and writes to `target/debug`. Use `--release` for optimized
-builds. This milestone supports native Cargo builds; CMake installation and
+With an MSVC host toolchain, `cargo build --locked --release --bins` selects the
+native backend automatically and writes optimized executables to `target/release`.
+This milestone supports native Cargo builds; CMake installation and
 packaging still use the POSIX build. `fish_indent` and `fish_key_reader` currently
 build as native executables that report their functionality is unavailable.
 
@@ -85,9 +85,9 @@ remain unavailable; unsupported options produce diagnostics.
 Use `rash`, `fish --rash-shell`, or `fish --script-language=bash` for Bash syntax:
 
 ```powershell
-.\target\x86_64-pc-windows-msvc\debug\rash.exe -c 'x=world; printf "hello %s\n" "$x"'
-.\target\x86_64-pc-windows-msvc\debug\fish.exe --rash-shell -c 'printf "%s\n" "$PWD"'
-.\target\x86_64-pc-windows-msvc\debug\fish.exe --script-language=bash .\script.sh argument
+.\target\x86_64-pc-windows-msvc\release\rash.exe -c 'x=world; printf "hello %s\n" "$x"'
+.\target\x86_64-pc-windows-msvc\release\fish.exe --rash-shell -c 'printf "%s\n" "$PWD"'
+.\target\x86_64-pc-windows-msvc\release\fish.exe --script-language=bash .\script.sh argument
 ```
 
 The standalone `rash` executable uses the portable host on Unix as well as
@@ -163,8 +163,9 @@ abbr --add gs 'git status'
 bind ctrl-t complete
 ```
 
-Space expands a matching bare command word while editing. Enter displays an
-expansion before a second Enter executes it. Quoted words, ordinary arguments
+Space expands a matching bare command word while editing. Enter expands and
+executes complete input in one press; unfinished expansions continue in the
+editable buffer with normal indentation. Quoted words, ordinary arguments
 and noninteractive scripts are not expanded. Abbreviations inside command
 substitutions, regex/function generators and cursor markers are not supported.
 Definitions belong to the session; put them in `config.fish` to recreate them.
@@ -264,7 +265,7 @@ to Rustyline; its Unix backend and the POSIX Fish reader are unchanged.
 Run the isolated Windows editor check with native Windows Python:
 
 ```powershell
-python tests/native_interactive_tmuxx.py .\target\x86_64-pc-windows-msvc\debug\fish.exe C:/Apps/Rustty/tmuxx.exe
+python tests/native_interactive_tmuxx.py .\target\x86_64-pc-windows-msvc\release\fish.exe C:/Apps/Rustty/tmuxx.exe
 python tests/native_fish_feel_tmuxx.py .\target\x86_64-pc-windows-msvc\release\fish.exe C:/Apps/Rustty/tmuxx.exe
 ```
 
@@ -320,7 +321,7 @@ background isolation, descendant suspension/resumption/termination, and cleanup.
 Run it with native Windows Python, the native Fish executable, and tmuxx paths:
 
 ```powershell
-python tests/native_job_control_tmuxx.py .\target\x86_64-pc-windows-msvc\debug\fish.exe C:/Apps/Rustty/tmuxx.exe
+python tests/native_job_control_tmuxx.py .\target\x86_64-pc-windows-msvc\release\fish.exe C:/Apps/Rustty/tmuxx.exe
 ```
 
 Standard descriptors 0, 1 and 2 support ordered redirection and merged stderr
@@ -332,8 +333,8 @@ jobs inside command substitutions remain unsupported in the native host.
 Launch native Fish directly with an absolute Windows executable path:
 
 ```powershell
-rustty.exe -e C:/src/fish-shell/target/x86_64-pc-windows-msvc/debug/fish.exe -i
-rustty.exe -e C:/src/fish-shell/target/x86_64-pc-windows-msvc/debug/rash.exe -i
+rustty.exe -e C:/src/fish-shell/target/x86_64-pc-windows-msvc/release/fish.exe -i
+rustty.exe -e C:/src/fish-shell/target/x86_64-pc-windows-msvc/release/rash.exe -i
 ```
 
 For a separate native tmuxx instance, start an owner in one terminal, then create
@@ -345,7 +346,7 @@ only that instance. `-f NUL` skips the user's tmuxx configuration.
 tmuxx.exe -D -L native-fish-trial -f NUL
 
 # Second terminal: explicit argv selects the native executable.
-tmuxx.exe -L native-fish-trial new-session -d -s work C:/src/fish-shell/target/x86_64-pc-windows-msvc/debug/fish.exe -i
+tmuxx.exe -L native-fish-trial new-session -d -s work C:/src/fish-shell/target/x86_64-pc-windows-msvc/release/fish.exe -i
 rustty.exe --tmuxx=local:native-fish-trial
 ```
 
@@ -372,7 +373,7 @@ disable automatic argument conversion for that invocation so shell source is
 passed intact:
 
 ```sh
-MSYS2_ARG_CONV_EXCL='*' ./target/x86_64-pc-windows-msvc/debug/rash.exe -c 'printf "%s\n" "$PWD"'
+MSYS2_ARG_CONV_EXCL='*' ./target/x86_64-pc-windows-msvc/release/rash.exe -c 'printf "%s\n" "$PWD"'
 ```
 
 That variable controls the invoking MSYS shell's argument conversion; it does not

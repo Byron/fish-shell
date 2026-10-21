@@ -21,6 +21,17 @@ pub enum Cmd {
     ///
     /// See also AcceptOrInsertLine
     AcceptLine,
+    /// Replace a UTF-8 byte range, show the edited line without a hint, and
+    /// accept it if the validator succeeds. An incomplete line stays editable.
+    /// Unlike a repeatable movement, the supplied range is never rewritten by
+    /// a numeric key argument. Invalid ranges leave the line unchanged.
+    #[cfg(windows)]
+    AcceptLineWithReplacement {
+        /// The exact range to replace in the current input.
+        range: std::ops::Range<usize>,
+        /// Replacement source, excluding any displayed autosuggestion.
+        replacement: String,
+    },
     /// beginning-of-history
     BeginningOfHistory,
     /// capitalize-word

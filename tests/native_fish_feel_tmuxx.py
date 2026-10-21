@@ -380,13 +380,32 @@ def main():
             expect("FEEL_abbr space")
             literal("fe")
             keys("Enter")
-            # Expansion can suggest the earlier suffix, but neither Enter
-            # accepts that suggestion: the second executes just the expansion.
-            expect_input("echo FEEL_abbr space")
-            assert "FEEL_abbr" not in capture().splitlines()
-            keys("Enter")
+            # Enter expands and submits the accepted source without accepting
+            # the earlier command's history suggestion as an extra argument.
             expect("FEEL_abbr")
             assert capture().splitlines().count("FEEL_abbr space") == 1
+            paste("fe suffix")
+            keys("Home", "Right", "Right", "Enter")
+            expect("FEEL_abbr suffix")
+            send("abbr --add fb begin")
+            literal("fb")
+            keys("Enter")
+            keys("C-_")
+            expect_input("fb")
+            keys("C-c")
+            expect_input("")
+            literal("fb")
+            keys("Enter")
+            literal("echo FEEL_abbr_block")
+            wait_for(lambda text: "    echo FEEL_abbr_block" in text,
+                     "unfinished abbreviation did not indent continued input")
+            keys("Enter")
+            send("end")
+            expect("FEEL_abbr_block")
+            send("abbr --add multi 'echo FEEL_abbr_first; echo FEEL_abbr_second'")
+            send("multi")
+            expect("FEEL_abbr_first")
+            expect("FEEL_abbr_second")
             send("echo fe argument")
             expect("fe argument")
 
