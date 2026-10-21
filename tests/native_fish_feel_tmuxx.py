@@ -153,6 +153,32 @@ def main():
             assert pane.startswith("%"), pane
             expect_input("")
 
+            def metadata(format_string):
+                return call("display-message", "-pt", pane, format_string).strip()
+
+            def expect_metadata(format_string, expected):
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    actual = metadata(format_string)
+                    if format_string == "#{pane_current_path}":
+                        actual = actual.replace("\\", "/").rstrip("/")
+                        expected = expected.rstrip("/")
+                    if actual == expected:
+                        return
+                    time.sleep(0.03)
+                raise AssertionError(f"metadata {format_string}: {actual!r} != {expected!r}")
+
+            expect_metadata("#{pane_current_path}", str(root).replace("\\", "/"))
+            assert metadata("#{pane_last_prompt_time}"), "prompt marker not reported"
+            send("false")
+            expect_input("")
+            expect_metadata("#{pane_command_line}|#{pane_command_status}|#{pane_command_running}",
+                            "false|1|0")
+            literal("echo FEEL_metadata_cancelled")
+            keys("C-c")
+            expect_input("")
+            expect_metadata("#{pane_command_line}", "false")
+
             suggestion("FEEL_hint_right", "Right")
             suggestion("FEEL_hint_ctrl_f", "C-f")
             for marker, key in [("FEEL_hint_word", "M-f"),
@@ -219,11 +245,13 @@ def main():
             # A file with the same prefix must not compete with cd's directory.
             literal("cd FEEL_path_")
             keys("Tab", "Enter")
+            expect_metadata("#{pane_current_path}", str(directory).replace("\\", "/"))
             send("pwd")
             wait_for(lambda text: str(directory).replace("\\", "/") in
                      [line.replace("\\", "/") for line in text.splitlines()],
                      "directory-only cd completion did not enter the matching directory")
             send("cd ..")
+            expect_metadata("#{pane_current_path}", str(root).replace("\\", "/"))
 
             send("function FEEL_context; echo FEEL_declared $argv; end")
             send("complete -c FEEL_context -f -a 'alpha beta'")

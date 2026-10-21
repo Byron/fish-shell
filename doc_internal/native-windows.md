@@ -187,8 +187,12 @@ when that variable is not set. Without either location it uses
 runs in the native evaluator and must use its supported Fish syntax and builtins.
 Native Fish calls a defined `fish_prompt` function before each new command and
 uses its output as the prompt, preserving the previous command's `$status` and
-`$pipestatus`. Without that function it displays `fish>`. Function autoloading,
-vendor configuration and prompt/cwd terminal escape sequences are not provided.
+`$pipestatus`. Without that function it displays `fish>`. Function autoloading
+and vendor configuration are not provided. Native Fish reports cwd with OSC 7
+and accepted-command lifecycle/status with OSC 133. Rustty/tmuxx can track cwd,
+command text and exit status without an MSYS wrapper or injected startup script.
+Suggestions and canceled edits are not reported as executed commands. Metadata
+is omitted for redirected output and `TERM=dumb`.
 Rash displays `rash>` and uses its separate Bash startup files with
 `--bash-startup`; `-N` also skips those files.
 
@@ -201,8 +205,7 @@ the existing POSIX Fish histories. `--private`/`-P` prevents loading and saving
 history while retaining recall within the current session.
 
 This is a separate native editor, not the full POSIX Fish reader.
-Dynamic completion scripts, Fish keybinding configuration,
-and prompt/cwd terminal integration remain separate work. The
+Dynamic completion scripts and Fish keybinding configuration remain separate work. The
 standalone Rash executable on Unix retains its simple line-input fallback.
 Run the isolated Windows editor check with native Windows Python:
 
@@ -328,7 +331,7 @@ or running tmuxx settings. A terminal still configured to use
    behavior checks against the POSIX implementation.
 2. Extend descriptor handling, traps, pipeline state sharing and Windows
    foreground/background input behavior beyond the current owned-job support.
-3. Extend the native editor and completion toward full Fish behavior and add
-   terminal integration, including cwd and prompt reporting to Rustty/tmuxx.
+3. Extend the native editor and completion toward full Fish behavior, including
+   programmable scripts and reader customization.
 4. Add native installation and packaging, and qualify additional Windows targets
    and terminal environments.

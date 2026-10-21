@@ -13,6 +13,8 @@ mod interactive_highlight;
 #[cfg(windows)]
 mod interactive_keys;
 #[cfg(windows)]
+mod interactive_terminal;
+#[cfg(windows)]
 pub mod syntax;
 pub mod worker;
 
@@ -425,6 +427,9 @@ fn execute(options: Options) -> Result<i32> {
                     }
                 };
             let mut source = Vec::new();
+            #[cfg(windows)]
+            let mut terminal =
+                interactive_terminal::TerminalIntegration::new(options.language == Language::Fish);
             loop {
                 host.clear_console_requests();
                 for notice in host.poll_jobs()? {
@@ -445,6 +450,10 @@ fn execute(options: Options) -> Result<i32> {
                 if engine.exited() {
                     status = engine.status();
                     break;
+                }
+                #[cfg(windows)]
+                if source.is_empty() {
+                    terminal.prompt(&std::env::current_dir()?)?;
                 }
                 match editor.read_line(&prompt)? {
                     interactive::ReadEvent::Line(line) => {
@@ -482,9 +491,13 @@ fn execute(options: Options) -> Result<i32> {
                 {
                     report(options.language, error);
                 }
+                #[cfg(windows)]
+                terminal.command_start(std::str::from_utf8(&source).unwrap_or_default())?;
                 status = engine
                     .evaluate(&source, &mut host, false)
                     .unwrap_or_else(|error| report(options.language, error));
+                #[cfg(windows)]
+                terminal.command_end(status)?;
                 source.clear();
                 if engine.exited() {
                     break;
