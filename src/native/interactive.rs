@@ -23,6 +23,14 @@ pub struct Editor {
 
 impl Editor {
     #[cfg(windows)]
+    pub(super) fn set_input_config(
+        &mut self,
+        abbreviations: super::interactive_abbreviations::Abbreviations,
+        bindings: &super::interactive_bindings::Bindings,
+    ) {
+        self.inner.set_input_config(abbreviations, bindings);
+    }
+    #[cfg(windows)]
     pub(super) fn set_variables(
         &mut self,
         variables: &std::collections::BTreeMap<String, Vec<String>>,
@@ -143,10 +151,13 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(windows)]
 mod windows {
     use super::*;
+    use crate::native::interactive_abbreviations::Abbreviations;
+    use crate::native::interactive_bindings::{Action, Bindings};
     use crate::native::interactive_completion::CompletionEngine;
     use crate::native::interactive_keys::{HistoryKey, HistorySearch, SuggestionKey};
     use crate::native::interactive_pager::{EditorHint, PagerBindings};
     use rustyline::completion::{Completer, Pair};
+    use rustyline::config::Configurer as _;
     use rustyline::error::ReadlineError;
     use rustyline::highlight::Highlighter;
     use rustyline::hint::{Hinter, HistoryHinter};
@@ -164,6 +175,7 @@ mod windows {
         history: Option<PathBuf>,
         suspended: Arc<AtomicBool>,
         search: Arc<Mutex<HistorySearch>>,
+        custom_bindings: Vec<(KeyEvent, Option<EventHandler>)>,
     }
 
     fn readline_error(error: ReadlineError) -> Error {
@@ -174,6 +186,36 @@ mod windows {
     }
 
     impl Editor {
+        pub(super) fn set_input_config(
+            &mut self,
+            abbreviations: Abbreviations,
+            bindings: &Bindings,
+        ) {
+            *self.editor.helper().unwrap().abbreviations.lock().unwrap() = abbreviations;
+            for (key, previous) in self.custom_bindings.drain(..) {
+                if let Some(handler) = previous {
+                    self.editor.bind_sequence(key, handler);
+                } else {
+                    self.editor.unbind_sequence(key);
+                }
+            }
+            let helper = self.editor.helper().unwrap();
+            let pager = helper.pager.clone();
+            let abbreviations = Arc::clone(&helper.abbreviations);
+            for (key, action) in bindings.entries() {
+                let handler = UserAction {
+                    action,
+                    pager: pager.clone(),
+                    abbreviations: Arc::clone(&abbreviations),
+                    search: Arc::clone(&self.search),
+                };
+                let previous = self.editor.bind_sequence(
+                    key,
+                    pager.wrap_user(EventHandler::Conditional(Box::new(handler))),
+                );
+                self.custom_bindings.push((key, previous));
+            }
+        }
         pub(super) fn set_variables(
             &mut self,
             variables: &std::collections::BTreeMap<String, Vec<String>>,
@@ -184,6 +226,10 @@ mod windows {
                 .get("fish_autosuggestion_enabled")
                 .and_then(|value| value.first())
                 .is_none_or(|value| value != "0");
+            self.editor
+                .set_edit_mode(crate::native::interactive_abbreviations::edit_mode(
+                    variables,
+                ));
         }
         pub(super) fn set_registrations(
             &mut self,
@@ -210,6 +256,7 @@ mod windows {
             let mut editor = rustyline::Editor::with_config(config).map_err(readline_error)?;
             editor.set_helper(Some(Completion::new(language)));
             let pager = editor.helper().unwrap().pager.clone();
+            let abbreviations = Arc::clone(&editor.helper().unwrap().abbreviations);
             let suspended = Arc::new(AtomicBool::new(false));
             editor.bind_sequence(
                 KeyEvent::ctrl('Z'),
@@ -223,6 +270,14 @@ mod windows {
             );
             let search = Arc::new(Mutex::new(HistorySearch::default()));
             if language == "fish" {
+                editor.bind_sequence(
+                    KeyEvent(KeyCode::Char(' '), Modifiers::NONE),
+                    pager.wrap(Some(EventHandler::Conditional(Box::new(InputKey {
+                        abbreviations: Arc::clone(&abbreviations),
+                        pager: pager.clone(),
+                        space: true,
+                    })))),
+                );
                 editor.bind_sequence(Event::Any, pager.wrap(None));
                 editor.bind_sequence(KeyEvent(KeyCode::Tab, Modifiers::NONE), pager.wrap(None));
                 editor.bind_sequence(
@@ -246,6 +301,7 @@ mod windows {
                         key,
                         pager.wrap(Some(EventHandler::Conditional(Box::new(SuggestionKey {
                             word: false,
+                            pager: pager.clone(),
                         })))),
                     );
                 }
@@ -254,6 +310,7 @@ mod windows {
                         key,
                         pager.wrap(Some(EventHandler::Conditional(Box::new(SuggestionKey {
                             word: true,
+                            pager: pager.clone(),
                         })))),
                     );
                 }
@@ -262,6 +319,7 @@ mod windows {
                     pager.wrap(Some(EventHandler::Conditional(Box::new(
                         crate::native::interactive_layout::EnterKey {
                             force_newline: true,
+                            pager: pager.clone(),
                         },
                     )))),
                 );
@@ -271,11 +329,11 @@ mod windows {
                 ] {
                     editor.bind_sequence(
                         key,
-                        pager.wrap(Some(EventHandler::Conditional(Box::new(
-                            crate::native::interactive_layout::EnterKey {
-                                force_newline: false,
-                            },
-                        )))),
+                        pager.wrap(Some(EventHandler::Conditional(Box::new(InputKey {
+                            abbreviations: Arc::clone(&abbreviations),
+                            pager: pager.clone(),
+                            space: false,
+                        })))),
                     );
                 }
                 editor.bind_sequence(
@@ -297,6 +355,7 @@ mod windows {
                 history,
                 suspended,
                 search,
+                custom_bindings: Vec::new(),
             })
         }
 
@@ -361,6 +420,105 @@ mod windows {
         }
     }
 
+    struct InputKey {
+        abbreviations: Arc<Mutex<Abbreviations>>,
+        pager: PagerBindings,
+        space: bool,
+    }
+
+    impl ConditionalEventHandler for InputKey {
+        fn handle(
+            &self,
+            _: &Event,
+            _: RepeatCount,
+            _: bool,
+            ctx: &EventContext<'_>,
+        ) -> Option<Cmd> {
+            if self.space
+                && ctx.mode() == rustyline::EditMode::Vi
+                && ctx.input_mode() != rustyline::InputMode::Insert
+            {
+                return None;
+            }
+            if let Some(mut expansion) = self
+                .abbreviations
+                .lock()
+                .ok()?
+                .expansion(ctx.line(), ctx.pos())
+            {
+                if self.space {
+                    expansion.text.push(' ');
+                }
+                return Some(self.pager.queue_completion(
+                    ctx.line(),
+                    ctx.pos(),
+                    expansion.range.start,
+                    expansion.text,
+                ));
+            }
+            if self.space {
+                // Let the native keymap self-insert an ordinary Space. Its
+                // Cmd::Insert path uses vi paste positioning even in insert
+                // mode, placing subsequent typing before that space.
+                None
+            } else {
+                Some(crate::native::interactive_layout::enter_command(
+                    &self.pager,
+                    ctx.line(),
+                    ctx.pos(),
+                    false,
+                ))
+            }
+        }
+    }
+
+    struct UserAction {
+        action: Action,
+        pager: PagerBindings,
+        abbreviations: Arc<Mutex<Abbreviations>>,
+        search: Arc<Mutex<HistorySearch>>,
+    }
+
+    impl ConditionalEventHandler for UserAction {
+        fn handle(
+            &self,
+            event: &Event,
+            count: RepeatCount,
+            positive: bool,
+            ctx: &EventContext<'_>,
+        ) -> Option<Cmd> {
+            match self.action {
+                Action::AcceptAutosuggestion => Some(if ctx.has_hint() {
+                    Cmd::CompleteHint
+                } else {
+                    Cmd::Noop
+                }),
+                Action::ForwardChar | Action::ForwardWord => Some(
+                    SuggestionKey {
+                        word: self.action == Action::ForwardWord,
+                        pager: self.pager.clone(),
+                    }
+                    .command(count, ctx),
+                ),
+                Action::HistorySearchBackward | Action::HistorySearchForward => HistoryKey {
+                    search: Arc::clone(&self.search),
+                    reverse: self.action == Action::HistorySearchBackward,
+                }
+                .command(ctx.line()),
+                Action::Execute => InputKey {
+                    abbreviations: Arc::clone(&self.abbreviations),
+                    pager: self.pager.clone(),
+                    space: false,
+                }
+                .handle(event, count, positive, ctx),
+                Action::Complete => self
+                    .pager
+                    .handle(&KeyEvent(KeyCode::Tab, Modifiers::NONE).into(), ctx),
+                _ => self.action.command(),
+            }
+        }
+    }
+
     struct SuspendKey(Arc<AtomicBool>);
     impl ConditionalEventHandler for SuspendKey {
         fn handle(&self, _: &Event, _: RepeatCount, _: bool, _: &EventContext<'_>) -> Option<Cmd> {
@@ -373,6 +531,7 @@ mod windows {
         fish: bool,
         engine: Arc<Mutex<CompletionEngine>>,
         pager: PagerBindings,
+        abbreviations: Arc<Mutex<Abbreviations>>,
         palette: crate::native::interactive_colors::Palette,
         autosuggestion: bool,
     }
@@ -385,6 +544,7 @@ mod windows {
                 fish: language == "fish",
                 engine,
                 pager,
+                abbreviations: Arc::new(Mutex::new(Abbreviations::default())),
                 palette: Default::default(),
                 autosuggestion: true,
             }
@@ -417,10 +577,11 @@ mod windows {
                         line,
                         pos,
                         |name| {
-                            self.engine
-                                .lock()
-                                .unwrap()
-                                .command_exists(name, &std::env::current_dir().unwrap_or_default())
+                            self.abbreviations.lock().unwrap().contains(name)
+                                || self.engine.lock().unwrap().command_exists(
+                                    name,
+                                    &std::env::current_dir().unwrap_or_default(),
+                                )
                         },
                         &self.palette,
                     ),

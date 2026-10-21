@@ -4,6 +4,7 @@
 //! editable in the same buffer; indentation is never added inside a quoted
 //! string or after a line-continuation backslash, where it would change data.
 
+use super::interactive_pager::PagerBindings;
 use crate::ast::{self, Leaf as _, Node as _, NodeVisitor as _};
 use crate::parse_constants::{ParseTokenType, ParseTreeFlags};
 use crate::tokenizer::{is_token_delimiter, quote_end};
@@ -15,11 +16,32 @@ const SPACES_PER_INDENT: usize = 4;
 pub(super) struct EnterKey {
     /// Alt-Enter adds a line even when the command is ready to execute.
     pub force_newline: bool,
+    pub pager: PagerBindings,
 }
 
 impl ConditionalEventHandler for EnterKey {
     fn handle(&self, _: &Event, _: RepeatCount, _: bool, ctx: &EventContext<'_>) -> Option<Cmd> {
-        Some(enter(ctx.line(), ctx.pos(), self.force_newline))
+        Some(enter_command(
+            &self.pager,
+            ctx.line(),
+            ctx.pos(),
+            self.force_newline,
+        ))
+    }
+}
+
+/// Insert multiline text through completion's exact-position update. Rustyline
+/// treats `Cmd::Insert` as a vi paste and moves its cursor back one character,
+/// which would put subsequent typing before the last indentation space.
+pub(super) fn enter_command(
+    pager: &PagerBindings,
+    line: &str,
+    cursor: usize,
+    force_newline: bool,
+) -> Cmd {
+    match enter(line, cursor, force_newline) {
+        Cmd::Insert(_, text) => pager.queue_completion(line, cursor, cursor, text),
+        command => command,
     }
 }
 
@@ -338,5 +360,24 @@ mod tests {
             Cmd::Insert(1, "\n".into())
         );
         assert_eq!(enter("🐟", 1, true), Cmd::Noop);
+    }
+
+    #[test]
+    fn multiline_key_inserts_after_the_cursor_without_vi_paste_positioning() {
+        use super::super::interactive_completion::CompletionEngine;
+        use std::sync::{Arc, Mutex};
+
+        let pager = PagerBindings::new(Arc::new(Mutex::new(CompletionEngine::new("fish"))));
+        let line = "begin\n    echo 🐟\nend";
+        let cursor = "begin\n    echo 🐟".len();
+        assert_eq!(enter_command(&pager, line, cursor, true), Cmd::Complete);
+        let (start, candidates) = pager.take_completion(line, cursor).unwrap();
+        assert_eq!(start, cursor);
+        assert_eq!(candidates[0].replacement, "\n    ");
+        assert_eq!(
+            enter_command(&pager, "echo done", 9, false),
+            Cmd::AcceptLine
+        );
+        assert!(pager.take_completion("echo done", 9).is_none());
     }
 }

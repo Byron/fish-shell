@@ -5,6 +5,10 @@ pub mod fish;
 pub mod host;
 pub mod interactive;
 #[cfg(windows)]
+mod interactive_abbreviations;
+#[cfg(windows)]
+mod interactive_bindings;
+#[cfg(windows)]
 mod interactive_colors;
 #[cfg(windows)]
 mod interactive_completion;
@@ -445,6 +449,7 @@ fn execute(options: Options) -> Result<i32> {
                 if let Engine::Fish(session) = &engine {
                     editor.set_registrations(session.completions.clone());
                     editor.set_variables(&session.editor_variables());
+                    editor.set_input_config(session.abbreviations.clone(), &session.bindings);
                 }
                 let prompt = if source.is_empty() {
                     engine.prompt(options.language, &mut host)

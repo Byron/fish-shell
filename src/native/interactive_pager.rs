@@ -112,6 +112,17 @@ impl PagerBindings {
         EventHandler::Conditional(Box::new(PagerKey {
             pager: self.clone(),
             fallback,
+            open_on_tab: true,
+        }))
+    }
+
+    /// An explicit user binding supersedes the default Tab action. An already
+    /// open menu still receives its navigation and cancellation keys first.
+    pub(super) fn wrap_user(&self, fallback: EventHandler) -> EventHandler {
+        EventHandler::Conditional(Box::new(PagerKey {
+            pager: self.clone(),
+            fallback: Some(fallback),
+            open_on_tab: false,
         }))
     }
 
@@ -158,6 +169,16 @@ impl PagerBindings {
     }
 
     fn handle_key(&self, key: KeyEvent, line: &str, pos: usize) -> Option<Cmd> {
+        self.handle_key_with_open(key, line, pos, true)
+    }
+
+    fn handle_key_with_open(
+        &self,
+        key: KeyEvent,
+        line: &str,
+        pos: usize,
+        open_on_tab: bool,
+    ) -> Option<Cmd> {
         let mut state = self.state.lock().ok()?;
         if state
             .as_ref()
@@ -171,7 +192,7 @@ impl PagerBindings {
             || key == KeyEvent(KeyCode::Tab, Modifiers::NONE)
             || key == KeyEvent::ctrl('I');
         if state.is_none() {
-            if !tab {
+            if !tab || !open_on_tab {
                 return None;
             }
             let cwd = std::env::current_dir().ok()?;
@@ -255,6 +276,7 @@ impl PagerBindings {
 struct PagerKey {
     pager: PagerBindings,
     fallback: Option<EventHandler>,
+    open_on_tab: bool,
 }
 
 impl ConditionalEventHandler for PagerKey {
@@ -266,7 +288,7 @@ impl ConditionalEventHandler for PagerKey {
         ctx: &EventContext<'_>,
     ) -> Option<Cmd> {
         self.pager
-            .handle(event, ctx)
+            .handle_key_with_open(*event.get(0)?, ctx.line(), ctx.pos(), self.open_on_tab)
             .or_else(|| match &self.fallback {
                 Some(EventHandler::Simple(command)) => Some(command.clone()),
                 Some(EventHandler::Conditional(handler)) => {
@@ -422,7 +444,7 @@ fn page_size(rows: usize) -> usize {
 
 fn terminal_size() -> (usize, usize) {
     use windows_sys::Win32::System::Console::{
-        GetConsoleScreenBufferInfo, GetStdHandle, CONSOLE_SCREEN_BUFFER_INFO, STD_OUTPUT_HANDLE,
+        CONSOLE_SCREEN_BUFFER_INFO, GetConsoleScreenBufferInfo, GetStdHandle, STD_OUTPUT_HANDLE,
     };
     let mut info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { std::mem::zeroed() };
     if unsafe { GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &mut info) } != 0 {
@@ -491,6 +513,30 @@ mod tests {
             None
         );
         assert!(bindings.state.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn user_tab_overrides_run_until_a_menu_is_open() {
+        let bindings = open_pager("run ", 4, 4);
+        let tabs = [
+            KeyEvent(KeyCode::Tab, Modifiers::NONE),
+            KeyEvent(KeyCode::BackTab, Modifiers::NONE),
+            KeyEvent::ctrl('I'),
+        ];
+        for key in tabs {
+            assert_eq!(
+                bindings.handle_key_with_open(key, "run ", 4, false),
+                Some(Cmd::Repaint)
+            );
+        }
+        bindings.reset();
+        for key in tabs {
+            assert_eq!(bindings.handle_key_with_open(key, "run ", 4, false), None);
+            assert!(bindings.state.lock().unwrap().is_none());
+        }
+        // The default Tab action can still start completing after an override
+        // has been erased, and an explicit `complete` action uses this path.
+        assert!(bindings.handle_key(tabs[0], "ec", 2).is_some());
     }
 
     #[test]

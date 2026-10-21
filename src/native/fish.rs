@@ -45,6 +45,10 @@ pub struct Session {
     functions: BTreeMap<String, String>,
     #[serde(default)]
     pub(super) completions: Vec<super::interactive_completion::CompletionSpec>,
+    #[serde(default)]
+    pub(super) abbreviations: super::interactive_abbreviations::Abbreviations,
+    #[serde(default)]
+    pub(super) bindings: super::interactive_bindings::Bindings,
     status: i32,
     pipeline: Vec<i32>,
     last_pid: Option<u32>,
@@ -178,6 +182,8 @@ impl Session {
             scopes: vec![BTreeMap::new()],
             functions: BTreeMap::new(),
             completions: Vec::new(),
+            abbreviations: Default::default(),
+            bindings: Default::default(),
             status: 0,
             pipeline: vec![0],
             last_pid: None,

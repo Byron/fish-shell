@@ -139,6 +139,35 @@ are not automatically reformatted when `end` or `else` is typed. Ctrl-V and
 Shift-Insert insert clipboard text as one edit; terminal-handled paste and
 bracketed-paste sequences are not yet handled by the native reader.
 
+Use `fish_vi_key_bindings` to select vi editing, or
+`fish_default_key_bindings` to return to the default mode. Setting
+`fish_key_bindings` to either name in configuration has the same effect. Basic
+vi insert/normal-mode editing uses the native line editor; custom Fish keymap
+functions and mode-specific bindings are not implemented.
+
+Literal command abbreviations can be defined with `abbr --add`, listed with
+`abbr --show`/`--list`, queried with `--query`, and removed with `--erase`:
+
+```fish
+abbr --add gs 'git status'
+bind ctrl-t complete
+```
+
+Space expands a matching bare command word while editing. Enter displays an
+expansion before a second Enter executes it. Quoted words, ordinary arguments
+and noninteractive scripts are not expanded. Abbreviations inside command
+substitutions, regex/function generators and cursor markers are not supported.
+Definitions belong to the session; put them in `config.fish` to recreate them.
+
+Native `bind` maps one key to one supported input action. `bind --function-names`
+lists actions and `bind --key-names` lists named keys; `bind --query KEY` checks a
+binding. Modern names such as `ctrl-t`, `alt-f`, `left` and `f5`, Unicode single
+keys and legacy control-character spellings are accepted. `bind --erase KEY`
+restores the previous default, and `bind --erase --all` removes all user overrides.
+Binding lists can be sourced as Fish code. Shell-script actions, multiple-key
+sequences, multiple actions and binding modes are not supported. An open
+completion menu handles its navigation and cancellation before user bindings.
+
 The native Fish editor colors commands, keywords, quoted strings, variables,
 escapes, operators and comments as you type, and marks unknown literal commands
 and malformed escapes in red. Matching delimiters are emphasized at the cursor.
@@ -218,7 +247,7 @@ the existing POSIX Fish histories. `--private`/`-P` prevents loading and saving
 history while retaining recall within the current session.
 
 This is a separate native editor, not the full POSIX Fish reader.
-Dynamic completion scripts and Fish keybinding configuration remain separate work. The
+Dynamic completion scripts and full Fish keymap compatibility remain separate work. The
 standalone Rash executable on Unix retains its simple line-input fallback.
 Run the isolated Windows editor check with native Windows Python:
 

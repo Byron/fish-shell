@@ -47,6 +47,10 @@ pub(super) fn is_builtin(name: &str) -> bool {
             | "disown"
             | "complete"
             | "set_color"
+            | "abbr"
+            | "bind"
+            | "fish_vi_key_bindings"
+            | "fish_default_key_bindings"
     )
 }
 
@@ -99,6 +103,26 @@ impl Session {
             return Ok(());
         }
         match name {
+            "abbr" | "bind" => {
+                let (status, text) = if name == "abbr" {
+                    self.abbreviations.run_builtin(args)
+                } else {
+                    self.bindings.run_builtin(args)
+                }
+                .map_err(Error::new)?;
+                self.write(text.as_bytes(), host, output)?;
+                self.status = status;
+            }
+            "fish_vi_key_bindings" | "fish_default_key_bindings" => {
+                if !args.is_empty() {
+                    return Err(unsupported("keymap command options"));
+                }
+                self.set(
+                    &["-g".into(), "fish_key_bindings".into(), name.into()],
+                    host,
+                    output,
+                )?;
+            }
             "set_color" => {
                 let color = crate::native::interactive_colors::set_color(args)
                     .map_err(|error| Error::new(format!("set_color: {error}")))?;
@@ -246,8 +270,7 @@ impl Session {
             // Keep Fish builtins reserved while their native implementations are pending.
             "printf" | "string" | "math" | "read" | "status" | "functions" | "type" | "command"
             | "builtin" | "argparse" | "contains" | "random" | "jobs" | "fg" | "bg" | "wait"
-            | "disown" | "exec" | "ulimit" | "umask" | "bind" | "commandline" | "emit"
-            | "history" | "abbr" => {
+            | "disown" | "exec" | "ulimit" | "umask" | "commandline" | "emit" | "history" => {
                 return Err(unsupported(&format!("the {name} builtin")));
             }
             _ => {
