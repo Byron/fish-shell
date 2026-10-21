@@ -291,6 +291,24 @@ mod windows {
     }
 
     impl Completion {
+        fn command_exists(&self, name: &str) -> bool {
+            if self
+                .builtins
+                .iter()
+                .chain(&self.commands)
+                .any(|command| command == name)
+            {
+                return true;
+            }
+            let executable = |path: PathBuf| path.is_file() || path.with_extension("exe").is_file();
+            if executable(PathBuf::from(name)) {
+                return true;
+            }
+            self.path.as_ref().is_some_and(|path| {
+                std::env::split_paths(path).any(|directory| executable(directory.join(name)))
+            })
+        }
+
         fn new(language: &str) -> Self {
             let builtins = if language == "rash" {
                 rash::session::BUILTINS
@@ -447,8 +465,24 @@ mod windows {
         }
     }
     impl Highlighter for Completion {
+        fn highlight<'l>(&self, line: &'l str, pos: usize) -> std::borrow::Cow<'l, str> {
+            if self.fish {
+                std::borrow::Cow::Owned(crate::native::interactive_highlight::highlight(
+                    line,
+                    pos,
+                    |name| self.command_exists(name),
+                ))
+            } else {
+                std::borrow::Cow::Borrowed(line)
+            }
+        }
+
+        fn highlight_char(&self, _: &str, _: usize, _: bool) -> bool {
+            self.fish
+        }
+
         fn highlight_hint<'h>(&self, hint: &'h str) -> std::borrow::Cow<'h, str> {
-            std::borrow::Cow::Owned(format!("\x1b[90m{hint}\x1b[0m"))
+            std::borrow::Cow::Owned(crate::native::interactive_highlight::highlight_hint(hint))
         }
     }
     impl Hinter for Completion {

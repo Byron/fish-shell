@@ -199,6 +199,41 @@ def main():
             expect("FEEL_after_block_cancel")
             assert "FEEL_cancelled_block" not in capture().splitlines()
 
+            # Inspect colors attached to individual input characters. Capture
+            # may combine SGR attributes, so do not depend on escape spelling.
+            def styled_input(source):
+                literal(source)
+                expect_input(source)
+                colored = capture(escaped=True).rstrip().splitlines()[-1]
+                foreground = None
+                styles = []
+                offset = 0
+                for match in re.finditer(r"\x1b\[([0-9;]*)m", colored):
+                    styles.extend((char, foreground) for char in colored[offset:match.start()])
+                    parameters = [int(value or "0") for value in match[1].split(";")]
+                    for value in parameters:
+                        if value in (0, 39):
+                            foreground = None
+                        elif 30 <= value <= 37 or 90 <= value <= 97:
+                            foreground = value
+                    offset = match.end()
+                styles.extend((char, foreground) for char in colored[offset:])
+                plain = "".join(char for char, _ in styles)
+                start = plain.index(source)
+                keys("C-c")
+                expect_input("")
+                return [color for _, color in styles[start:start + len(source)]]
+
+            source = "echo 'FEEL_color' $FEEL_variable # comment"
+            styles = styled_input(source)
+            assert styles[0] in (34, 94), (source, styles)
+            assert styles[source.index("'")] in (33, 93), (source, styles)
+            assert styles[source.index("$")] in (36, 96), (source, styles)
+            assert styles[source.index("#")] in (90, 37), (source, styles)
+            invalid = "FEEL_definitely_missing_command"
+            styles = styled_input(invalid)
+            assert styles[0] in (31, 91), (invalid, styles)
+
             send("exit 0")
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
@@ -211,7 +246,7 @@ def main():
             else:
                 raise AssertionError(f"native Fish did not exit:\n{capture()}")
             coverage = ("visible/color hints, full/word acceptance, substring history/draft restore, "
-                        "editable multiline/cancellation")
+                        "editable multiline/cancellation, syntax/error colors")
             print("PASS native Fish feel: " + coverage)
         finally:
             if owner.poll() is None:

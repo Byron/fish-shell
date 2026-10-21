@@ -133,6 +133,12 @@ Enter, so you can return to earlier lines before submitting the whole command.
 Alt-Enter inserts a newline explicitly. Standard editing shortcuts include
 Ctrl-A/Ctrl-E, Alt-B/Alt-F, Ctrl-W, Ctrl-U/Ctrl-K, Ctrl-Y and Ctrl-_ for undo.
 
+The native Fish editor colors commands, keywords, quoted strings, variables,
+escapes, operators and comments as you type, and marks unknown literal commands
+and malformed escapes in red. Matching delimiters are emphasized at the cursor.
+Coloring uses the shared Fish grammar without executing input or substitutions;
+it does not yet apply the POSIX reader's configurable `fish_color_*` palette.
+
 Native Fish reads `fish/config.fish` under `XDG_CONFIG_HOME`, or under `%APPDATA%`
 when that variable is not set. Without either location it uses
 `~/.config/fish/config.fish`. `-N`/`--no-config` skips this file. The configuration
@@ -153,7 +159,7 @@ the existing POSIX Fish histories. `--private`/`-P` prevents loading and saving
 history while retaining recall within the current session.
 
 This is a native editor with basic completion, not the full POSIX Fish reader.
-Programmable completion scripts, Fish keybinding configuration, syntax coloring,
+Programmable completion scripts, Fish keybinding configuration,
 and prompt/cwd terminal integration remain separate work. The
 standalone Rash executable on Unix retains its simple line-input fallback.
 Run the isolated Windows editor check with native Windows Python:

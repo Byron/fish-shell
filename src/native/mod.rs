@@ -5,6 +5,8 @@ pub mod fish;
 pub mod host;
 pub mod interactive;
 #[cfg(windows)]
+mod interactive_highlight;
+#[cfg(windows)]
 mod interactive_keys;
 #[cfg(windows)]
 pub mod syntax;
