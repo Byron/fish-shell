@@ -452,7 +452,11 @@ impl Session {
                 valid_name(&name)?;
                 let mut values = Vec::new();
                 for arg in &header.args {
-                    values.extend(self.expand(&text(source, arg), host)?);
+                    match self.expand(&text(source, arg), host) {
+                        Ok(expanded) => values.extend(expanded),
+                        Err(error) if error.status == 124 => (),
+                        Err(error) => return Err(error),
+                    }
                 }
                 self.loops += 1;
                 let result = (|| {
@@ -532,7 +536,15 @@ impl Session {
         for arg in &node.args_or_redirs {
             match arg {
                 ast::ArgumentOrRedirection::Argument(arg) => {
-                    args.extend(self.expand(&text(source, arg), host)?);
+                    match self.expand(&text(source, arg), host) {
+                        Ok(expanded) => args.extend(expanded),
+                        Err(error)
+                            if error.status == 124 && matches!(name.as_str(), "set" | "count") =>
+                        {
+                            ()
+                        }
+                        Err(error) => return Err(error),
+                    }
                 }
                 ast::ArgumentOrRedirection::Redirection(redir) => {
                     let raw = WString::from(text(source, &redir.oper));
@@ -619,8 +631,22 @@ impl Session {
         }
         Ok(values.pop().unwrap())
     }
-    fn expand(&mut self, word: &str, _host: &mut impl Host) -> Result<Vec<String>> {
-        expand::word(word, |name| Ok(self.values(name)))
+    fn expand(&mut self, word: &str, host: &mut impl Host) -> Result<Vec<String>> {
+        expand::word_with(word, |request| match request {
+            expand::Request::Variable(name) => Ok(self.values(name)),
+            expand::Request::Command { source, quoted } => {
+                let saved_flow = self.flow;
+                self.flow = Flow::Normal;
+                let mut output = Output {
+                    capture: true,
+                    ..Default::default()
+                };
+                let result = self.eval_source(source, host, &mut output);
+                self.flow = saved_flow;
+                result?;
+                expand::split_substitution(&output.bytes, quoted)
+            }
+        })
     }
 }
 

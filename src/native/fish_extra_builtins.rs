@@ -87,10 +87,10 @@ impl Session {
             }
             "status" => {
                 self.status = 0;
-                match args.first().map(String::as_str).unwrap_or("") {
+                match args.first().map_or("", String::as_str) {
                     "is-interactive" | "-i" => {
                         self.status =
-                            i32::from(!std::io::IsTerminal::is_terminal(&std::io::stdin()))
+                            i32::from(!std::io::IsTerminal::is_terminal(&std::io::stdin()));
                     }
                     "is-login" | "-l" => self.status = 1,
                     "is-block" | "-b" => self.status = i32::from(self.scopes.len() <= 1),
@@ -106,7 +106,7 @@ impl Session {
                 }
             }
             "jobs" | "bg" | "fg" | "wait" | "kill" | "disown" => {
-                self.host_builtin(name, args, host, output)?
+                self.host_builtin(name, args, host, output)?;
             }
             _ => return Ok(false),
         }
@@ -244,7 +244,7 @@ impl Session {
                     break;
                 }
                 "-l" | "--local" | "-g" | "--global" | "-x" | "--export" | "-u" | "--unexport" => {
-                    scope.push(arg.clone())
+                    scope.push(arg.clone());
                 }
                 "-a" | "--array" => array = true,
                 "-d" | "--delimiter" => {

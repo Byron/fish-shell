@@ -91,28 +91,28 @@ pub(super) fn run(
                             value
                                 .parse()
                                 .map_err(|_| Error::new("string: invalid start index"))?,
-                        )
+                        );
                     }
                     "-l" | "--length" => {
                         options.length = Some(
                             value
                                 .parse()
                                 .map_err(|_| Error::new("string: invalid length"))?,
-                        )
+                        );
                     }
                     "-m" | "--max" if command == "repeat" => {
                         options.length = Some(
                             value
                                 .parse()
                                 .map_err(|_| Error::new("string: invalid maximum length"))?,
-                        )
+                        );
                     }
                     _ => {
                         options.count = Some(
                             value
                                 .parse()
                                 .map_err(|_| Error::new("string: invalid count"))?,
-                        )
+                        );
                     }
                 }
             }

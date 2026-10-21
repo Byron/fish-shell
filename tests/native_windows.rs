@@ -201,9 +201,9 @@ fn syntax_only_checks_do_not_execute_earlier_commands() {
 #[test]
 fn fish_rejects_unsupported_constructs_before_any_effects() {
     for unsupported in [
-        "echo left | echo right",
-        "echo background &",
-        "echo (echo substitution)",
+        "time echo unsupported",
+        "exec echo unsupported",
+        "echo unsupported 4>file",
     ] {
         let scratch = Scratch::new();
         let source = format!("echo side_effect > marker; {unsupported}");

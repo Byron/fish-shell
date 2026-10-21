@@ -137,7 +137,7 @@ pub(super) fn format(args: &[String]) -> Result<Vec<u8>> {
                 continue;
             }
             if chars.get(index) == Some(&'b') {
-                let argument = args.get(arg_index).map(String::as_str).unwrap_or("");
+                let argument = args.get(arg_index).map_or("", String::as_str);
                 arg_index += usize::from(arg_index < args.len());
                 let (bytes, stop) = escapes(argument, true)?;
                 output.extend(bytes);
@@ -162,7 +162,7 @@ pub(super) fn format(args: &[String]) -> Result<Vec<u8>> {
                     index += 1;
                 }
                 if chars.get(index) == Some(&'*') {
-                    let value = integer(args.get(arg_index).map(String::as_str).unwrap_or(""))?;
+                    let value = integer(args.get(arg_index).map_or("", String::as_str))?;
                     if value.unsigned_abs() > LIMIT as u64 {
                         return Err(Error::new("printf: field width is too large"));
                     }
@@ -196,7 +196,7 @@ pub(super) fn format(args: &[String]) -> Result<Vec<u8>> {
                 .ok_or_else(|| Error::new("printf: incomplete conversion"))?;
             index += 1;
             specification.push(conversion);
-            let argument = args.get(arg_index).map(String::as_str).unwrap_or("");
+            let argument = args.get(arg_index).map_or("", String::as_str);
             arg_index += usize::from(arg_index < args.len());
             let value = match conversion {
                 's' => fish_printf::Arg::Str(argument),

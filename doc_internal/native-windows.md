@@ -67,8 +67,14 @@ queries, function queries/removal, and common `status` queries. `math` uses the
 same arithmetic parser and functions as POSIX Fish. `string` supports literal
 split, join, replace, trim, case conversion, Unicode length/substrings, repeat,
 escaping, and wildcard matching, with arguments or redirected standard input.
-Command substitutions, globbing, brace expansion, `switch`, block redirections,
-function options and the full builtin set are not implemented. Regular-expression
+Command substitutions, brace lists, indirect variables, and list index ranges
+are supported. Native filesystem globbing expands unquoted `*` and recursive
+`**` directory components. Quoted stars and stars from variable values stay
+literal. Unmatched globs are empty lists for `set`, `count`, and `for`, and produce
+status 124 for ordinary command arguments. Command substitutions retain Fish's
+newline splitting and variable side effects; quoted substitutions preserve
+internal newlines. `switch`, block redirections, function options and the full
+builtin set are not implemented. Regular-expression
 string operations, advanced read options and locale-specific numeric formatting
 remain unavailable; unsupported options produce diagnostics.
 

@@ -9,7 +9,7 @@ enum Quote {
 }
 
 pub(super) fn validate(input: &str) -> Result<()> {
-    word(input, |_| Ok(Vec::new())).map(|_| ())
+    syntax(input, 0)
 }
 
 /// Syntax-only checking must accept valid features even when this execution
@@ -198,12 +198,89 @@ fn escape_char(chars: &[char], index: &mut usize, quote: Quote) -> Result<Option
         .ok_or_else(|| Error::new("invalid Unicode escape"))
 }
 
+#[path = "fish_glob.rs"]
+mod glob;
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Item {
+    Literal(char),
+    Star,
+}
+
+pub(super) enum Request<'a> {
+    Variable(&'a str),
+    Command { source: &'a str, quoted: bool },
+}
+
+pub(super) fn split_substitution(bytes: &[u8], quoted: bool) -> Result<Vec<String>> {
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Err(Error::new("command substitution output limit exceeded"));
+    }
+    let value = std::str::from_utf8(bytes)
+        .map_err(|_| Error::new("command substitution output is not UTF-8"))?;
+    if quoted {
+        Ok(vec![value.trim_end_matches('\n').to_owned()])
+    } else {
+        Ok(value.split_terminator('\n').map(str::to_owned).collect())
+    }
+}
+
 pub(super) fn word(
     input: &str,
     mut variable: impl FnMut(&str) -> Result<Vec<String>>,
 ) -> Result<Vec<String>> {
-    let chars: Vec<char> = input.chars().collect();
-    let mut results = vec![String::new()];
+    word_with(input, |request| match request {
+        Request::Variable(name) => variable(name),
+        Request::Command { .. } => Err(unsupported("command substitutions in literal expansion")),
+    })
+}
+
+pub(super) fn word_with(
+    input: &str,
+    mut expand: impl FnMut(Request<'_>) -> Result<Vec<String>>,
+) -> Result<Vec<String>> {
+    let words = expand_chars(&input.chars().collect::<Vec<_>>(), &mut expand, 0)?;
+    glob::expand(words)
+}
+
+fn literal(value: &str) -> Vec<Item> {
+    value.chars().map(Item::Literal).collect()
+}
+fn rendered(items: &[Item]) -> String {
+    items
+        .iter()
+        .map(|item| match item {
+            Item::Literal(c) => *c,
+            Item::Star => '*',
+        })
+        .collect()
+}
+fn append(results: &mut Vec<Vec<Item>>, values: Vec<Vec<Item>>) -> Result<()> {
+    if results.len().saturating_mul(values.len()) > 100_000 {
+        return Err(Error::new("too many Fish expansion results"));
+    }
+    let mut combined = Vec::new();
+    // Fish expands the rightmost list on the outside of the Cartesian product.
+    for suffix in &values {
+        for prefix in results.iter() {
+            let mut value = prefix.clone();
+            value.extend(suffix.clone());
+            combined.push(value);
+        }
+    }
+    *results = combined;
+    Ok(())
+}
+
+fn expand_chars(
+    chars: &[char],
+    expand: &mut impl FnMut(Request<'_>) -> Result<Vec<String>>,
+    depth: usize,
+) -> Result<Vec<Vec<Item>>> {
+    if depth >= 128 {
+        return Err(Error::new("maximum Fish expansion nesting exceeded"));
+    }
+    let mut results = vec![Vec::new()];
     let mut quote = Quote::None;
     let mut index = 0;
     while index < chars.len() {
@@ -215,25 +292,27 @@ pub(super) fn word(
                     Quote::None
                 } else {
                     Quote::Single
-                };
+                }
             }
             '"' if quote != Quote::Single => {
                 quote = if quote == Quote::Double {
                     Quote::None
                 } else {
                     Quote::Double
-                };
+                }
             }
             '\\' => {
-                if let Some(c) = escape_char(&chars, &mut index, quote)? {
-                    for result in &mut results {
-                        result.push(c);
+                if let Some(c) = escape_char(chars, &mut index, quote)? {
+                    for value in &mut results {
+                        value.push(Item::Literal(c));
                     }
                 }
             }
-            '$' if quote != Quote::Single => {
-                if chars.get(index) == Some(&'(') {
-                    return Err(unsupported("command substitutions"));
+            '$' if quote != Quote::Single && chars.get(index) != Some(&'(') => {
+                let mut levels = 1;
+                while chars.get(index) == Some(&'$') {
+                    index += 1;
+                    levels += 1;
                 }
                 let start = index;
                 while chars
@@ -246,66 +325,108 @@ pub(super) fn word(
                     return Err(Error::new("expected a Fish variable name after '$'"));
                 }
                 let name: String = chars[start..index].iter().collect();
-                let mut values = variable(&name)?;
-                if chars.get(index) == Some(&'[') {
-                    index += 1;
-                    let start = index;
-                    while index < chars.len() && chars[index] != ']' {
-                        index += 1;
-                    }
-                    if index == chars.len() {
-                        return Err(Error::new("unterminated variable index"));
-                    }
-                    let slices: String = chars[start..index].iter().collect();
-                    index += 1;
-                    let mut selected = Vec::new();
-                    for item in slices.split_whitespace() {
-                        let n = item
-                            .parse::<isize>()
-                            .map_err(|_| unsupported("variable index ranges and expansions"))?;
-                        let offset = if n > 0 {
-                            n - 1
-                        } else {
-                            values.len() as isize + n
-                        };
-                        if n != 0 && offset >= 0 {
-                            if let Some(value) = values.get(offset as usize) {
-                                selected.push(value.clone());
-                            }
+                let mut values = expand(Request::Variable(&name))?;
+                for level in 0..levels {
+                    if level > 0 {
+                        let mut indirect = Vec::new();
+                        for name in values {
+                            indirect.extend(expand(Request::Variable(&name))?);
                         }
+                        values = indirect;
                     }
-                    values = selected;
+                    if chars.get(index) == Some(&'[') {
+                        values = slice(chars, &mut index, values, expand, depth)?;
+                    }
                 }
                 if quote == Quote::Double {
                     values = vec![values.join(if name.ends_with("PATH") { ";" } else { " " })];
                 }
-                let mut expanded = Vec::new();
-                for prefix in &results {
-                    for value in &values {
-                        if expanded.len() >= 100_000 {
-                            return Err(Error::new("too many Fish expansion results"));
-                        }
-                        expanded.push(format!("{prefix}{value}"));
-                    }
-                }
-                results = expanded;
+                append(
+                    &mut results,
+                    values.iter().map(|value| literal(value)).collect(),
+                )?;
             }
-            '(' if quote == Quote::None => return Err(unsupported("command substitutions")),
+            '$' if quote != Quote::Single && chars.get(index) == Some(&'(') => {
+                index += 1;
+                let end = substitution(chars, index, depth)?;
+                let source: String = chars[index..end - 1].iter().collect();
+                let mut values = expand(Request::Command {
+                    source: &source,
+                    quoted: quote == Quote::Double,
+                })?;
+                index = end;
+                if chars.get(index) == Some(&'[') {
+                    values = slice(chars, &mut index, values, expand, depth)?;
+                }
+                append(
+                    &mut results,
+                    values.iter().map(|value| literal(value)).collect(),
+                )?;
+            }
+            '(' if quote == Quote::None => {
+                let end = substitution(chars, index, depth)?;
+                let source: String = chars[index..end - 1].iter().collect();
+                let mut values = expand(Request::Command {
+                    source: &source,
+                    quoted: false,
+                })?;
+                index = end;
+                if chars.get(index) == Some(&'[') {
+                    values = slice(chars, &mut index, values, expand, depth)?;
+                }
+                append(
+                    &mut results,
+                    values.iter().map(|value| literal(value)).collect(),
+                )?;
+            }
+            '{' if quote == Quote::None => {
+                let BraceExpansion {
+                    end,
+                    parts,
+                    expands,
+                } = braces(chars, index)?;
+                if expands {
+                    let mut alternatives = Vec::new();
+                    for (start, end) in parts {
+                        let mut part = &chars[start..end];
+                        while part.first().is_some_and(|c| c.is_whitespace()) {
+                            part = &part[1..];
+                        }
+                        while part.last().is_some_and(|c| c.is_whitespace()) {
+                            part = &part[..part.len() - 1];
+                        }
+                        alternatives.extend(expand_chars(part, expand, depth + 1)?);
+                    }
+                    append(&mut results, alternatives)?;
+                } else {
+                    let values = expand_chars(&chars[index..end - 1], expand, depth + 1)?;
+                    let values = values
+                        .into_iter()
+                        .map(|mut value| {
+                            value.insert(0, Item::Literal('{'));
+                            value.push(Item::Literal('}'));
+                            value
+                        })
+                        .collect();
+                    append(&mut results, values)?;
+                }
+                index = end;
+            }
             '~' if quote == Quote::None && index == 1 => {
                 if chars.get(index).is_some_and(|c| *c != '/' && *c != '\\') {
                     return Err(unsupported("named-user home expansion"));
                 }
-                let home = variable("HOME")?.join(" ");
-                for result in &mut results {
-                    result.push_str(&home);
+                let home = expand(Request::Variable("HOME"))?.join(" ");
+                append(&mut results, vec![literal(&home)])?;
+            }
+            '*' if quote == Quote::None => {
+                for value in &mut results {
+                    value.push(Item::Star);
                 }
             }
-            '*' | '{' | '}' if quote == Quote::None => {
-                return Err(unsupported("wildcards and brace expansion"));
-            }
             _ => {
-                for result in &mut results {
-                    result.push(c);
+                for value in &mut results {
+                    value.push(Item::Literal(c));
                 }
             }
         }
@@ -314,6 +435,129 @@ pub(super) fn word(
         return Err(Error::new("unterminated quote"));
     }
     Ok(results)
+}
+
+struct BraceExpansion {
+    end: usize,
+    parts: Vec<(usize, usize)>,
+    expands: bool,
+}
+
+fn braces(chars: &[char], start: usize) -> Result<BraceExpansion> {
+    let mut level = 1;
+    let mut quote = Quote::None;
+    let mut index = start;
+    let mut part = start;
+    let mut parts = Vec::new();
+    let mut expands = false;
+    while index < chars.len() {
+        let c = chars[index];
+        match c {
+            '\\' => index += usize::from(index + 1 < chars.len()),
+            '\'' if quote != Quote::Double => {
+                quote = if quote == Quote::Single {
+                    Quote::None
+                } else {
+                    Quote::Single
+                }
+            }
+            '"' if quote != Quote::Single => {
+                quote = if quote == Quote::Double {
+                    Quote::None
+                } else {
+                    Quote::Double
+                }
+            }
+            '{' if quote == Quote::None => level += 1,
+            '}' if quote == Quote::None => {
+                level -= 1;
+                if level == 0 {
+                    parts.push((part, index));
+                    return Ok(BraceExpansion {
+                        end: index + 1,
+                        parts,
+                        expands,
+                    });
+                }
+            }
+            ',' if quote == Quote::None && level == 1 => {
+                parts.push((part, index));
+                part = index + 1;
+                expands = true;
+            }
+            '$' if quote != Quote::Single => expands = true,
+            '(' if quote == Quote::None => {
+                index = substitution(chars, index + 1, 0)? - 1;
+            }
+            _ => (),
+        }
+        index += 1;
+    }
+    Err(Error::new("unterminated brace expansion"))
+}
+
+fn slice(
+    chars: &[char],
+    index: &mut usize,
+    values: Vec<String>,
+    expand: &mut impl FnMut(Request<'_>) -> Result<Vec<String>>,
+    depth: usize,
+) -> Result<Vec<String>> {
+    *index += 1;
+    let start = *index;
+    while *index < chars.len() && chars[*index] != ']' {
+        *index += 1;
+    }
+    if *index == chars.len() {
+        return Err(Error::new("unterminated variable index"));
+    }
+    let specs = expand_chars(&chars[start..*index], expand, depth + 1)?;
+    *index += 1;
+    let specs = specs
+        .iter()
+        .map(|items| rendered(items))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut selected = Vec::new();
+    let len = values.len() as isize;
+    let resolve = |text: &str, default: isize| -> Result<isize> {
+        let n = if text.is_empty() {
+            default
+        } else {
+            text.parse()
+                .map_err(|_| Error::new("invalid Fish list index"))?
+        };
+        if n == 0 {
+            return Err(Error::new("Fish list indexes start at one"));
+        }
+        Ok(if n < 0 { len + n } else { n - 1 })
+    };
+    for spec in specs.split_whitespace() {
+        if let Some((left, right)) = spec.split_once("..") {
+            let left = resolve(left, 1)?;
+            let right = resolve(right, -1)?;
+            if left <= right {
+                for i in left.max(0)..=right.min(len - 1) {
+                    selected.push(values[i as usize].clone());
+                }
+            } else {
+                for i in (right.max(0)..=left.min(len - 1)).rev() {
+                    selected.push(values[i as usize].clone());
+                }
+            }
+        } else {
+            let i = resolve(spec, 1)?;
+            if i >= 0 {
+                if let Some(value) = values.get(i as usize) {
+                    selected.push(value.clone());
+                }
+            }
+        }
+        if selected.len() > 100_000 {
+            return Err(Error::new("too many Fish list indices"));
+        }
+    }
+    Ok(selected)
 }
 
 #[cfg(test)]
@@ -354,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_expansions_are_detected_without_values() {
+    fn structural_validation_does_not_execute_expansions() {
         for input in [
             "(echo hello)",
             "$(echo hello)",
@@ -362,9 +606,52 @@ mod tests {
             "{one,two}",
             "$items[1..2]",
         ] {
-            assert!(validate(input).is_err(), "{input}");
+            assert!(validate(input).is_ok(), "{input}");
         }
-        assert!(validate("'*.txt'").is_ok());
-        assert!(validate("'$(literal)'").is_ok());
+        assert!(validate("$").is_err());
+    }
+
+    #[test]
+    fn cartesian_braces_and_ranges_follow_fish_order() {
+        let values = |name: &str| {
+            Ok(if name == "a" {
+                vec!["a1".into(), "a2".into()]
+            } else {
+                vec!["b1".into(), "b2".into()]
+            })
+        };
+        assert_eq!(
+            word("$a$b", values).unwrap(),
+            ["a1b1", "a2b1", "a1b2", "a2b2"]
+        );
+        assert_eq!(
+            word("{one,two}{A,B}", |_| Ok(vec![])).unwrap(),
+            ["oneA", "twoA", "oneB", "twoB"]
+        );
+        assert_eq!(word("$a[2..1]", values).unwrap(), ["a2", "a1"]);
+        assert_eq!(word("{single}", |_| Ok(vec![])).unwrap(), ["{single}"]);
+        assert_eq!(word("{a{b,c}}", |_| Ok(vec![])).unwrap(), ["{ab}", "{ac}"]);
+        assert_eq!(word("{a\\ b}", |_| Ok(vec![])).unwrap(), ["{a b}"]);
+    }
+
+    #[test]
+    fn command_substitution_keeps_fish_line_splitting() {
+        assert_eq!(
+            split_substitution(b"a\n\nb\n\n", false).unwrap(),
+            ["a", "", "b", ""]
+        );
+        assert_eq!(split_substitution(b"a\n\nb\n\n", true).unwrap(), ["a\n\nb"]);
+        assert_eq!(
+            word_with("pre(echo value)", |request| match request {
+                Request::Command { source, quoted } => {
+                    assert_eq!(source, "echo value");
+                    assert!(!quoted);
+                    Ok(vec!["one".into(), "two".into()])
+                }
+                _ => unreachable!(),
+            })
+            .unwrap(),
+            ["preone", "pretwo"]
+        );
     }
 }
