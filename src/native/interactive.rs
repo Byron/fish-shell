@@ -126,25 +126,27 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(windows)]
 mod windows {
     use super::*;
+    use crate::native::interactive_keys::{HistoryKey, HistorySearch, SuggestionKey};
     use rustyline::completion::{Completer, Pair};
     use rustyline::error::ReadlineError;
     use rustyline::highlight::Highlighter;
-    use rustyline::hint::Hinter;
-    use rustyline::history::DefaultHistory;
-    use rustyline::validate::Validator;
+    use rustyline::hint::{Hinter, HistoryHinter};
+    use rustyline::history::{DefaultHistory, History, SearchDirection};
+    use rustyline::validate::{ValidationContext, ValidationResult, Validator};
     use rustyline::{
         Cmd, CompletionType, ConditionalEventHandler, Config, Context, Event, EventContext,
-        EventHandler, Helper, KeyEvent, RepeatCount,
+        EventHandler, Helper, KeyCode, KeyEvent, Modifiers, RepeatCount,
     };
     use std::collections::BTreeSet;
     use std::path::Path;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
 
     pub(super) struct Editor {
         editor: rustyline::Editor<Completion, DefaultHistory>,
         history: Option<PathBuf>,
         suspended: Arc<AtomicBool>,
+        search: Arc<Mutex<HistorySearch>>,
     }
 
     fn readline_error(error: ReadlineError) -> Error {
@@ -172,6 +174,35 @@ mod windows {
                 KeyEvent::ctrl('Z'),
                 EventHandler::Conditional(Box::new(SuspendKey(Arc::clone(&suspended)))),
             );
+            let search = Arc::new(Mutex::new(HistorySearch::default()));
+            if language == "fish" {
+                for (key, reverse) in [(KeyCode::Up, true), (KeyCode::Down, false)] {
+                    editor.bind_sequence(
+                        KeyEvent(key, Modifiers::NONE),
+                        EventHandler::Conditional(Box::new(HistoryKey {
+                            search: Arc::clone(&search),
+                            reverse,
+                        })),
+                    );
+                }
+                for key in [
+                    KeyEvent(KeyCode::Right, Modifiers::NONE),
+                    KeyEvent::ctrl('F'),
+                ] {
+                    editor.bind_sequence(
+                        key,
+                        EventHandler::Conditional(Box::new(SuggestionKey { word: false })),
+                    );
+                }
+                for key in [KeyEvent(KeyCode::Right, Modifiers::ALT), KeyEvent::alt('f')] {
+                    editor.bind_sequence(
+                        key,
+                        EventHandler::Conditional(Box::new(SuggestionKey { word: true })),
+                    );
+                }
+                editor.bind_sequence(KeyEvent(KeyCode::Enter, Modifiers::ALT), Cmd::Newline);
+                editor.bind_sequence(KeyEvent::ctrl('_'), Cmd::Undo(1));
+            }
             if let Some(path) = &history {
                 match editor.load_history(path) {
                     Ok(()) => {}
@@ -184,6 +215,7 @@ mod windows {
                 editor,
                 history,
                 suspended,
+                search,
             })
         }
 
@@ -199,6 +231,17 @@ mod windows {
 
         pub(super) fn read_line(&mut self, prompt: &str) -> Result<ReadEvent> {
             self.suspended.store(false, Ordering::Relaxed);
+            let entries = (0..self.editor.history().len())
+                .filter_map(|index| {
+                    self.editor
+                        .history()
+                        .get(index, SearchDirection::Forward)
+                        .ok()
+                        .flatten()
+                        .map(|entry| entry.entry.into_owned())
+                })
+                .collect();
+            self.search.lock().unwrap().reset(entries);
             match self.editor.readline(prompt) {
                 Ok(line) => Ok(ReadEvent::Line(line)),
                 Err(ReadlineError::Eof) => Ok(ReadEvent::Eof),
@@ -403,11 +446,31 @@ mod windows {
             Ok(self.complete_in(line, pos, &std::env::current_dir()?))
         }
     }
-    impl Highlighter for Completion {}
+    impl Highlighter for Completion {
+        fn highlight_hint<'h>(&self, hint: &'h str) -> std::borrow::Cow<'h, str> {
+            std::borrow::Cow::Owned(format!("\x1b[90m{hint}\x1b[0m"))
+        }
+    }
     impl Hinter for Completion {
         type Hint = String;
+        fn hint(&self, line: &str, pos: usize, ctx: &Context<'_>) -> Option<String> {
+            if !self.fish || line.starts_with(char::is_whitespace) {
+                return None;
+            }
+            HistoryHinter::new().hint(line, pos, ctx)
+        }
     }
-    impl Validator for Completion {}
+    impl Validator for Completion {
+        fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
+            Ok(
+                if self.fish && crate::native::fish::is_incomplete(ctx.input()) {
+                    ValidationResult::Incomplete
+                } else {
+                    ValidationResult::Valid(None)
+                },
+            )
+        }
+    }
     impl Helper for Completion {}
 
     fn prefix_matches(name: &str, prefix: &str) -> bool {

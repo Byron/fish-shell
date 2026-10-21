@@ -120,6 +120,19 @@ completed multiline submissions are stored as one history entry. Ctrl-C cancels
 the current edit and returns to the prompt. Ctrl-Z at the prompt does not suspend
 the shell itself.
 
+Native Fish suggests the remainder of a matching history entry in gray as you
+type. Right or Ctrl-F accepts the suggestion at the end of the input; Alt-Right
+or Alt-F accepts one word. Enter executes only the text you have accepted. Up and
+Down search history for the text you typed (including matches inside a command),
+skip repeated matches, and restore your draft after the newest match. Ctrl-R
+opens incremental history search. In a multiline edit the arrows move between
+lines before searching history at the top or bottom.
+
+Unfinished Fish blocks, quotes and pipelines stay in one editable buffer after
+Enter, so you can return to earlier lines before submitting the whole command.
+Alt-Enter inserts a newline explicitly. Standard editing shortcuts include
+Ctrl-A/Ctrl-E, Alt-B/Alt-F, Ctrl-W, Ctrl-U/Ctrl-K, Ctrl-Y and Ctrl-_ for undo.
+
 Native Fish reads `fish/config.fish` under `XDG_CONFIG_HOME`, or under `%APPDATA%`
 when that variable is not set. Without either location it uses
 `~/.config/fish/config.fish`. `-N`/`--no-config` skips this file. The configuration
@@ -141,7 +154,7 @@ history while retaining recall within the current session.
 
 This is a native editor with basic completion, not the full POSIX Fish reader.
 Programmable completion scripts, Fish keybinding configuration, syntax coloring,
-autosuggestions and prompt/cwd terminal integration remain separate work. The
+and prompt/cwd terminal integration remain separate work. The
 standalone Rash executable on Unix retains its simple line-input fallback.
 Run the isolated Windows editor check with native Windows Python:
 
