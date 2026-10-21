@@ -86,6 +86,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -327,6 +336,7 @@ name = "fish"
 version = "4.9.3"
 dependencies = [
  "assert_matches",
+ "bincode",
  "cc",
  "cfg-if",
  "fish-build-helper",
@@ -364,11 +374,13 @@ dependencies = [
  "rsconf",
  "rust-embed",
  "rustc_version",
+ "serde",
  "serial_test",
  "strum_macros",
  "tree-sitter",
  "tree-sitter-bash",
  "unix_path",
+ "windows-sys 0.61.2",
  "xterm-color",
 ]
 
@@ -1086,7 +1098,9 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 name = "rash"
 version = "0.0.0"
 dependencies = [
+ "bincode",
  "fish-printf",
+ "serde",
 ]
 
 [[package]]

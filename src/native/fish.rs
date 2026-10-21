@@ -14,13 +14,13 @@ use std::collections::BTreeMap;
 mod expand;
 pub(crate) use expand::unescape_literal;
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Variable {
     values: Vec<String>,
     exported: bool,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 enum Flow {
     Normal,
     Break,
@@ -36,11 +36,15 @@ struct Output {
     bytes: Vec<u8>,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Session {
     variables: BTreeMap<String, Variable>,
     scopes: Vec<BTreeMap<String, Variable>>,
     functions: BTreeMap<String, String>,
     status: i32,
+    pipeline: Vec<i32>,
+    last_pid: Option<u32>,
+    fish_pid: u32,
     flow: Flow,
     depth: usize,
     loops: usize,
@@ -168,6 +172,9 @@ impl Session {
             scopes: vec![BTreeMap::new()],
             functions: BTreeMap::new(),
             status: 0,
+            pipeline: vec![0],
+            last_pid: None,
+            fish_pid: std::process::id(),
             flow: Flow::Normal,
             depth: 0,
             loops: 0,
@@ -175,6 +182,44 @@ impl Session {
             function_frames: vec![],
             source_depth: 0,
         })
+    }
+
+    pub(crate) fn run_worker(
+        (mut session, source, result_path): (Self, String, Option<std::path::PathBuf>),
+        host: &mut impl Host,
+    ) -> Result<i32> {
+        session.flow = Flow::Normal;
+        let result = session.eval(&source, host);
+        if let Some(path) = result_path {
+            // The parent removes the reservation if the pipeline is stopped or
+            // cancelled. Do not recreate a stale result after it resumes.
+            use std::io::Write as _;
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(path)
+            {
+                file.write_all(&super::worker::encode(&session)?)?;
+            }
+        }
+        result
+    }
+
+    fn exports(&self) -> BTreeMap<Vec<u8>, Vec<u8>> {
+        let mut merged = self.variables.clone();
+        for scope in &self.scopes[self.scope_start()..] {
+            merged.extend(scope.clone());
+        }
+        merged
+            .into_iter()
+            .filter(|(_, var)| var.exported)
+            .map(|(name, var)| {
+                let value = var
+                    .values
+                    .join(if name.ends_with("PATH") { ";" } else { " " });
+                (name.into_bytes(), value.into_bytes())
+            })
+            .collect()
     }
 
     pub fn set_args(&mut self, args: Vec<String>) {
@@ -197,6 +242,8 @@ impl Session {
         let result = self.eval_source(source, host, &mut Output::default());
         if let Err(error) = &result {
             self.status = error.status;
+        } else if host.cancelled() {
+            self.status = 130;
         }
         result.map(|_| self.status)
     }
@@ -214,12 +261,6 @@ impl Session {
         // Reject unsupported syntax throughout this input before any command executes.
         for node in tree.walk() {
             match node.kind() {
-                ast::Kind::JobPipeline(job) if job.bg.is_some() => {
-                    return Err(unsupported("background jobs"));
-                }
-                ast::Kind::JobPipeline(job) if !job.continuation.is_empty() => {
-                    return Err(unsupported("pipelines"));
-                }
                 ast::Kind::JobPipeline(job) if job.time.is_some() => {
                     return Err(unsupported("the time keyword"));
                 }
@@ -330,6 +371,9 @@ impl Session {
         host: &mut impl Host,
         output: &mut Output,
     ) -> Result<()> {
+        if node.bg.is_some() || !node.continuation.is_empty() {
+            return self.eval_pipeline(node, source, host, output);
+        }
         if node.variables.is_empty() {
             return self.eval_statement(&node.statement, source, host, output);
         }
@@ -338,6 +382,95 @@ impl Session {
         let result = self.eval_statement(&node.statement, source, host, output);
         self.scopes.pop();
         result
+    }
+
+    fn eval_pipeline(
+        &mut self,
+        node: &ast::JobPipeline,
+        source: &wstr,
+        host: &mut impl Host,
+        output: &mut Output,
+    ) -> Result<()> {
+        if !host.supports_workers() {
+            return Err(unsupported("isolated pipeline processes on this host"));
+        }
+        let background = node.bg.is_some();
+        let result_file = if background {
+            None
+        } else {
+            Some(super::worker::PayloadFile::create()?.0)
+        };
+        let mut stages = Vec::new();
+        let statements = std::iter::once((&node.variables, &node.statement)).chain(
+            node.continuation
+                .iter()
+                .map(|c| (&c.variables, &c.statement)),
+        );
+        let mut negate = false;
+        for (index, (variables, statement)) in statements.enumerate() {
+            let mut statement = statement;
+            let mut prefix = variables
+                .iter()
+                .map(|v| text(source, v))
+                .collect::<Vec<_>>();
+            if index == 0 {
+                while let ast::Statement::Not(not) = statement {
+                    negate = !negate;
+                    prefix.extend(not.variables.iter().map(|v| text(source, v)));
+                    statement = &not.contents;
+                }
+            }
+            prefix.push(text(source, statement));
+            let stage_source = prefix.join(" ");
+            let return_path = (index == node.continuation.len())
+                .then(|| result_file.as_ref().map(|file| file.path().to_owned()))
+                .flatten();
+            let state = super::worker::encode(&(self.clone(), &stage_source, return_path))?;
+            let mut stage =
+                host.prepare_worker("fish", state, self.exports(), stage_source.into_bytes())?;
+            stage.redirects.clone_from(&output.redirects);
+            if let Some(continuation) = node.continuation.get(index) {
+                let raw = WString::from(text(source, &continuation.pipe));
+                let pipe = PipeOrRedir::try_from(raw.as_utfstr())
+                    .map_err(|_| Error::new("invalid pipe"))?;
+                if pipe.fd != 1 {
+                    return Err(unsupported("piping descriptors other than stdout"));
+                }
+                if pipe.stderr_merge {
+                    stage.redirects.push(Redirection {
+                        fd: 2,
+                        action: RedirectAction::Dup(1),
+                    });
+                }
+            }
+            stages.push(stage);
+        }
+        let result = host.run_pipeline(&stages, background, output.capture)?;
+        if let Some(file) = result_file {
+            let bytes = std::fs::read(file.path())?;
+            if !bytes.is_empty() {
+                let mut updated: Self = super::worker::decode(&bytes)?;
+                if updated.values("PWD") != self.values("PWD") {
+                    if let Some(cwd) = updated.values("PWD").first() {
+                        host.change_dir(cwd.as_bytes())?;
+                    }
+                }
+                // Evaluation depth belongs to the parent invocation, not its worker.
+                updated.depth = self.depth;
+                *self = updated;
+            }
+        }
+        self.status = if negate {
+            i32::from(result.status == 0)
+        } else {
+            result.status
+        };
+        self.pipeline = result.pipeline;
+        if background {
+            self.last_pid = result.last_pid;
+        }
+        output.bytes.extend(result.stdout);
+        Ok(())
     }
 
     fn assignments(
@@ -354,7 +487,10 @@ impl Session {
                     .split_once('=')
                     .ok_or_else(|| Error::new("invalid variable assignment"))?;
                 valid_name(name)?;
-                if matches!(name, "status" | "fish_pid" | "PWD") {
+                if matches!(
+                    name,
+                    "status" | "pipestatus" | "last_pid" | "fish_pid" | "PWD"
+                ) {
                     return Err(Error::new(format!("{name} is read-only")));
                 }
                 let values = self.expand(value, host)?;
@@ -539,10 +675,7 @@ impl Session {
                     match self.expand(&text(source, arg), host) {
                         Ok(expanded) => args.extend(expanded),
                         Err(error)
-                            if error.status == 124 && matches!(name.as_str(), "set" | "count") =>
-                        {
-                            ()
-                        }
+                            if error.status == 124 && matches!(name.as_str(), "set" | "count") => {}
                         Err(error) => return Err(error),
                     }
                 }
@@ -594,6 +727,7 @@ impl Session {
         let saved = std::mem::replace(&mut output.redirects, redirects);
         let result = self.dispatch(&name, &args, node.decoration(), host, output);
         output.redirects = saved;
+        self.pipeline = vec![self.status];
         result
     }
 
@@ -617,7 +751,9 @@ impl Session {
     fn values(&self, name: &str) -> Vec<String> {
         match name {
             "status" => vec![self.status.to_string()],
-            "fish_pid" => vec![std::process::id().to_string()],
+            "pipestatus" => self.pipeline.iter().map(ToString::to_string).collect(),
+            "last_pid" => self.last_pid.iter().map(ToString::to_string).collect(),
+            "fish_pid" => vec![self.fish_pid.to_string()],
             _ => self
                 .variable(name)
                 .map(|v| v.values.clone())

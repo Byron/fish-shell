@@ -1,4 +1,5 @@
-//! Services supplied by the embedding shell. Shell source never crosses this boundary.
+//! Services supplied by the embedding shell. Execution requests contain expanded
+//! commands or opaque interpreter snapshots for isolated pipeline processes.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -67,6 +68,24 @@ pub enum ReadResult {
 }
 
 pub trait Host {
+    /// Hosts with native process isolation can run builtins and compound commands
+    /// in pipeline/background processes using this interpreter's own executable.
+    fn supports_workers(&self) -> bool {
+        false
+    }
+
+    fn prepare_worker(
+        &mut self,
+        _language: &str,
+        _state: Vec<u8>,
+        _env: BTreeMap<Vec<u8>, Vec<u8>>,
+        _display: Vec<u8>,
+    ) -> Result<Command> {
+        Err(crate::Error::new(
+            "isolated shell processes are unavailable on this host",
+        ))
+    }
+
     /// Install a disposition and return the platform's canonical name without `SIG`.
     fn set_signal(&mut self, _name: &[u8], _disposition: SignalDisposition) -> Result<Vec<u8>> {
         Err(crate::Error::new(

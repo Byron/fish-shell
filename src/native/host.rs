@@ -5,6 +5,7 @@
 
 use rash::host::{Command, Host, OpenMode, ReadResult, RedirectAction, Redirection, RunResult};
 use rash::{Error, Result};
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read as _, Seek as _, Write as _};
 use std::path::PathBuf;
@@ -12,13 +13,41 @@ use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub struct NativeHost;
+#[path = "jobs.rs"]
+mod jobs;
+#[path = "process/mod.rs"]
+mod process;
+
+pub struct NativeHost {
+    jobs: BTreeMap<u32, jobs::Job>,
+    next_job: u32,
+    notifications: VecDeque<String>,
+    controls: process::Controls,
+    interrupted: bool,
+    pending_workers: Vec<super::worker::PayloadFile>,
+}
 
 impl NativeHost {
     pub fn new() -> Result<Self> {
+        Self::with_console_input(true)
+    }
+
+    pub(crate) fn new_worker() -> Result<Self> {
+        Self::with_console_input(false)
+    }
+
+    fn with_console_input(receive_ctrl_c: bool) -> Result<Self> {
         // Fail early if the working directory cannot be represented by this host.
         rash::os::to_bytes(std::env::current_dir()?.as_os_str())?;
-        Ok(Self)
+        process::install_controls(receive_ctrl_c)?;
+        Ok(Self {
+            jobs: BTreeMap::new(),
+            next_job: 1,
+            notifications: VecDeque::new(),
+            controls: process::controls(),
+            interrupted: false,
+            pending_workers: Vec::new(),
+        })
     }
 }
 
@@ -28,6 +57,7 @@ enum Target {
     File(Arc<File>),
     Capture,
     Closed,
+    Null,
 }
 
 fn descriptor(fd: i32) -> Result<usize> {
@@ -119,15 +149,21 @@ fn temporary_file(bytes: &[u8], read_only: bool) -> Result<Arc<File>> {
 }
 
 fn targets(redirects: &[Redirection], capture: bool) -> Result<[Target; 3]> {
-    let mut targets = [
-        Target::Inherited(0),
-        if capture {
-            Target::Capture
-        } else {
-            Target::Inherited(1)
-        },
-        Target::Inherited(2),
-    ];
+    apply_redirects(
+        redirects,
+        [
+            Target::Inherited(0),
+            if capture {
+                Target::Capture
+            } else {
+                Target::Inherited(1)
+            },
+            Target::Inherited(2),
+        ],
+    )
+}
+
+fn apply_redirects(redirects: &[Redirection], mut targets: [Target; 3]) -> Result<[Target; 3]> {
     // Resolve duplication at its position in the list, before later replacements.
     for redirect in redirects {
         let fd = descriptor(redirect.fd)?;
@@ -182,6 +218,7 @@ fn child_stdio(target: &Target, fd: i32, capture: Option<&File>) -> Result<Stdio
             "the capture output stream is not available for reading",
         )),
         Target::Capture => Ok(capture.expect("capture file exists").try_clone()?.into()),
+        Target::Null => Ok(Stdio::null()),
         Target::Closed => Err(Error::new(
             "closing an external command's descriptor is not supported by the native host yet",
         )),
@@ -203,11 +240,13 @@ fn write_target(target: &Target, bytes: &[u8]) -> Result<Vec<u8>> {
             out.flush()?;
         }
         Target::Closed if bytes.is_empty() => {}
+        Target::Null => {}
         _ => return Err(Error::new("descriptor is not available for writing")),
     }
     Ok(Vec::new())
 }
 
+#[cfg(all(test, unix))]
 fn exit_status(status: std::process::ExitStatus) -> i32 {
     if let Some(code) = status.code() {
         return code;
@@ -224,6 +263,21 @@ fn exit_status(status: std::process::ExitStatus) -> i32 {
 }
 
 impl Host for NativeHost {
+    fn supports_workers(&self) -> bool {
+        true
+    }
+
+    fn prepare_worker(
+        &mut self,
+        language: &str,
+        state: Vec<u8>,
+        env: BTreeMap<Vec<u8>, Vec<u8>>,
+        display: Vec<u8>,
+    ) -> Result<Command> {
+        let (command, file) = super::worker::prepare(language, state, env, display)?;
+        self.keep_worker(file);
+        Ok(command)
+    }
     fn prepare_redirects(&mut self, redirects: &[Redirection]) -> Result<Vec<Redirection>> {
         redirects
             .iter()
@@ -256,97 +310,7 @@ impl Host for NativeHost {
         background: bool,
         capture: bool,
     ) -> Result<RunResult> {
-        if background {
-            return Err(Error::new(
-                "background jobs are not supported by the native host yet",
-            ));
-        }
-        if stages.is_empty() {
-            return Ok(RunResult::default());
-        }
-        let [stage] = stages else {
-            return Err(Error::new(
-                "pipelines are not supported by the native host yet",
-            ));
-        };
-        if stage.builtin {
-            return Err(Error::new(
-                "job control, signals and exec are not supported by the native host yet",
-            ));
-        }
-        let Some(name) = stage.argv.first() else {
-            return Err(Error::new("empty external command"));
-        };
-        let mut command = ProcessCommand::new(checked_os(name)?);
-        for arg in &stage.argv[1..] {
-            command.arg(checked_os(arg)?);
-        }
-        command.env_clear();
-        for (name, value) in &stage.env {
-            // Shell variables are case-sensitive, but Windows environment names
-            // are not. A user-assigned PATH must win over an inherited `Path`.
-            if cfg!(windows)
-                && name.as_slice() != b"PATH"
-                && name.eq_ignore_ascii_case(b"PATH")
-                && stage.env.contains_key(b"PATH".as_slice())
-            {
-                continue;
-            }
-            if name.is_empty() || name.contains(&b'=') {
-                return Err(Error::new("invalid native environment name"));
-            }
-            command.env(checked_os(name)?, checked_os(value)?);
-        }
-        let targets = targets(&stage.redirects, capture)?;
-        if targets
-            .iter()
-            .any(|target| matches!(target, Target::Closed))
-        {
-            return Err(Error::new(
-                "closing an external command's descriptor is not supported by the native host yet",
-            ));
-        }
-        let output = if targets
-            .iter()
-            .any(|target| matches!(target, Target::Capture))
-        {
-            Some(temporary_file(&[], false)?)
-        } else {
-            None
-        };
-        let captured = output.as_deref();
-        command.stdin(child_stdio(&targets[0], 0, captured)?);
-        command.stdout(child_stdio(&targets[1], 1, captured)?);
-        command.stderr(child_stdio(&targets[2], 2, captured)?);
-        let status = match command.status() {
-            Ok(status) => exit_status(status),
-            Err(error) => {
-                let status = if error.kind() == io::ErrorKind::NotFound {
-                    127
-                } else {
-                    126
-                };
-                let message = format!("{}: {error}\n", String::from_utf8_lossy(name));
-                return Ok(RunResult {
-                    status,
-                    pipeline: vec![status],
-                    stdout: write_target(&targets[2], message.as_bytes())?,
-                    last_pid: None,
-                });
-            }
-        };
-        let mut stdout = Vec::new();
-        if let Some(file) = output {
-            let mut file = &*file;
-            file.rewind()?;
-            file.read_to_end(&mut stdout)?;
-        }
-        Ok(RunResult {
-            status,
-            pipeline: vec![status],
-            stdout,
-            last_pid: None,
-        })
+        self.launch(stages, background, capture)
     }
 
     fn change_dir(&mut self, path: &[u8]) -> Result<Vec<u8>> {
@@ -391,22 +355,29 @@ impl Host for NativeHost {
     }
 
     fn cancelled(&self) -> bool {
-        false
+        self.interrupted || process::controls().interrupt != self.controls.interrupt
     }
 
     fn jobs(&self) -> Vec<Vec<u8>> {
-        Vec::new()
+        self.jobs
+            .values()
+            .map(|job| job.description(false).into_bytes())
+            .collect()
     }
 }
+
+#[cfg(test)]
+#[path = "host_jobs_tests.rs"]
+mod job_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    struct TestFile(PathBuf);
+    pub(super) struct TestFile(pub(super) PathBuf);
 
     impl TestFile {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let path = temporary_path();
             OpenOptions::new()
                 .write(true)
@@ -491,7 +462,7 @@ mod tests {
         );
     }
 
-    fn probe_command() -> Command {
+    pub(super) fn probe_command() -> Command {
         let mut command = Command {
             argv: vec![
                 rash::os::to_bytes(std::env::current_exe().unwrap().as_os_str()).unwrap(),
@@ -595,6 +566,7 @@ mod tests {
     #[test]
     fn process_probe() {
         if let Ok(value) = std::env::var("RASH_NATIVE_HOST_PROBE") {
+            super::job_tests::child_action();
             println!("probe:{value}");
             println!(
                 "probe:argument:{}",

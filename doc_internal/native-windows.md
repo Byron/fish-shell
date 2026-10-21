@@ -103,9 +103,59 @@ With a terminal and no command or script, the native frontend offers a basic lin
 prompt. It has no Fish editor, completion, persistent history, automatic Fish
 configuration, or Fish prompt integration yet. `-N` is accepted for invocation
 compatibility; native Fish does not load configuration even without it. The
-portable process host does not yet implement pipelines, background jobs,
-job control, signal traps, or `exec` replacement. Rash's other language limits
+portable process host supports pipelines and owned jobs as described below.
+Signal traps and `exec` replacement remain unavailable. Rash's other language limits
 remain documented in [rash-compatibility.md](rash-compatibility.md).
+
+## Pipelines and Windows job control
+
+Both native shells run concurrent pipelines, including builtins, functions and
+compound commands. `&` starts a background job; `jobs`, `wait`, `fg`, `bg`,
+`disown`, and `kill` operate on jobs created by this shell. Use `%1`, `%+`, `%-`
+or an owned process ID to select a job. Fish exposes `$last_pid` and `$pipestatus`;
+Rash exposes `$!` and `PIPESTATUS`, including `set -o pipefail`.
+
+```fish
+printf '%s\n' hello | string upper
+echo value | read saved
+echo $saved
+# Start an installed native program, then control the job:
+long-running-program &
+jobs -l
+kill -STOP %1
+bg %1
+fg %1
+```
+
+Windows Job Objects keep each pipeline and its descendants together. Ctrl-C
+cancels a foreground job, with a bounded forced-termination fallback for programs
+that ignore console events. `kill -STOP` suspends owned process threads;
+`bg` and `fg` resume them. Ctrl-Break is cancellation too, not a POSIX suspend key.
+`kill -TERM` and `kill -KILL` terminate the owned job. Arbitrary system processes
+cannot be targeted through these builtins. Closing the shell terminates owned
+jobs; `disown` lets a job outlive it.
+
+Windows has no POSIX terminal foreground process groups. Background jobs default
+to null input unless redirected; `fg` cannot replace input already inherited by
+a background process. Stopped foreground jobs retain their original input.
+Shell stages run in isolated interpreter processes. A normally completed Fish
+foreground pipeline imports the final stage's variables/functions/cwd, so
+`echo value | read saved` works. Earlier stages and background jobs remain
+isolated, and state from a stopped-then-resumed pipeline is not imported.
+Job builtins inside a pipeline worker see only that worker's own jobs.
+
+The isolated `tests/native_job_control_tmuxx.py` check exercises both languages
+through a private tmuxx owner: external and interpreter Ctrl-C/status recovery,
+background isolation, descendant suspension/resumption/termination, and cleanup.
+Run it with native Windows Python, the native Fish executable, and tmuxx paths:
+
+```powershell
+python tests/native_job_control_tmuxx.py .\target\x86_64-pc-windows-msvc\debug\fish.exe C:/Apps/Rustty/tmuxx.exe
+```
+
+Standard descriptors 0, 1 and 2 support ordered redirection and merged stderr
+pipes. Additional descriptors, signal traps, `exec` replacement and background
+jobs inside command substitutions remain unsupported in the native host.
 
 ## Rustty and tmuxx
 
@@ -166,8 +216,8 @@ or running tmuxx settings. A terminal still configured to use
 
 1. Complete native Fish expansion, builtins and execution semantics, with shared
    behavior checks against the POSIX implementation.
-2. Add native pipelines, descriptor handling, process lifetime management and
-   terminal cancellation; map job behavior to Windows facilities.
+2. Extend descriptor handling, traps, pipeline state sharing and Windows
+   foreground/background input behavior beyond the current owned-job support.
 3. Port the interactive editor, completion, configuration, history and terminal
    integration, including cwd and prompt reporting to Rustty/tmuxx.
 4. Add native installation and packaging, and qualify additional Windows targets

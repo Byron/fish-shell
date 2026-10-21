@@ -390,7 +390,10 @@ impl Session {
             return Ok(());
         };
         valid_name(name)?;
-        if matches!(name.as_str(), "status" | "fish_pid" | "PWD") {
+        if matches!(
+            name.as_str(),
+            "status" | "pipestatus" | "last_pid" | "fish_pid" | "PWD"
+        ) {
             return Err(Error::new(format!("set: {name} is read-only")));
         }
         let mut values = args[1..].to_vec();

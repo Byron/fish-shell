@@ -15,7 +15,7 @@ use std::ops::Range;
 mod print;
 pub use print::format_function;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Word {
     pub raw: Vec<u8>,
     pub span: Range<usize>,
@@ -23,38 +23,38 @@ pub struct Word {
 
 pub type List = Vec<ListItem>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ListItem {
     pub chain: AndOr,
     pub background: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct AndOr {
     pub first: Pipeline,
     pub rest: Vec<(LogicalOp, Pipeline)>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogicalOp {
     And,
     Or,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Pipeline {
     pub negate: bool,
     pub commands: Vec<Command>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Command {
     pub kind: CommandKind,
     pub redirects: Vec<Redirect>,
     pub span: Range<usize>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum CommandKind {
     Simple(Vec<Word>),
     Group(List),
@@ -85,13 +85,13 @@ pub enum CommandKind {
     Conditional(Vec<Word>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct CaseArm {
     pub patterns: Vec<Word>,
     pub body: List,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RedirectKind {
     Read,
     Write,
@@ -106,7 +106,7 @@ pub enum RedirectKind {
     Both,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Redirect {
     pub fd: Option<i32>,
     pub kind: RedirectKind,
@@ -114,7 +114,7 @@ pub struct Redirect {
     pub heredoc: Option<HereDoc>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct HereDoc {
     pub body: Vec<u8>,
     pub expand: bool,

@@ -61,7 +61,7 @@ pub const BUILTINS: &[&[u8]] = &[
     b"kill",
 ];
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Eq, PartialEq)]
 pub enum Value {
     Scalar(Vec<u8>),
     Indexed(BTreeMap<i64, Vec<u8>>),
@@ -78,7 +78,7 @@ impl Value {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Variable {
     pub value: Value,
     pub exported: bool,
@@ -97,7 +97,7 @@ impl Variable {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct Options {
     pub pipefail: bool,
     pub errexit: bool,
@@ -113,7 +113,7 @@ pub struct Options {
     pub expand_aliases: bool,
 }
 
-#[derive(Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Session {
     pub variables: BTreeMap<Vec<u8>, Variable>,
     pub aliases: BTreeMap<Vec<u8>, Vec<u8>>,
@@ -326,6 +326,25 @@ impl Session {
         let mut child = self.clone();
         child.subshell_depth += 1;
         Ok(child)
+    }
+
+    /// Decode the private snapshot used by native pipeline workers.
+    pub fn decode_worker(bytes: &[u8]) -> Result<(Self, Command)> {
+        use bincode::Options as _;
+        bincode::DefaultOptions::new()
+            .with_limit(64 * 1024 * 1024)
+            .deserialize(bytes)
+            .map_err(|e| Error::new(format!("interpreter snapshot: {e}")))
+    }
+
+    pub fn run_worker((mut session, command): (Self, Command), host: &mut dyn Host) -> Result<i32> {
+        let mut runner = Runner::new(&mut session, host, false);
+        let flow = runner.command(&command)?;
+        if let Flow::Return(status) | Flow::Exit(status) = flow {
+            runner.set_status(status);
+        }
+        runner.trap(b"EXIT")?;
+        Ok(runner.session.status)
     }
 
     pub fn check_syntax(&self, source: &[u8]) -> (i32, String) {
@@ -631,6 +650,25 @@ impl<'a> Runner<'a> {
             if let Some(status) = self.interrupt()? {
                 return Ok(Flow::Exit(status));
             }
+            if item.background && !item.chain.rest.is_empty() && self.host.supports_workers() {
+                // An asynchronous and/or list is one job; evaluate its conditions
+                // inside that job rather than using the launch status in the parent.
+                let mut body = item.clone();
+                body.background = false;
+                let command = Command {
+                    kind: CommandKind::Group(vec![body]),
+                    redirects: vec![],
+                    span: 0..0,
+                };
+                self.pipeline(
+                    &Pipeline {
+                        negate: false,
+                        commands: vec![command],
+                    },
+                    true,
+                )?;
+                continue;
+            }
             let old_suppression = self.suppress_errexit;
             self.suppress_errexit |= !item.chain.rest.is_empty() || item.chain.first.negate;
             let mut flow = self.pipeline(&item.chain.first, item.background)?;
@@ -668,26 +706,49 @@ impl<'a> Runner<'a> {
             }
             return Ok(flow);
         }
-        if pipeline
-            .commands
-            .iter()
-            .any(|command| !matches!(command.kind, CommandKind::Simple(_)))
-        {
-            return Err(Error::new(
-                "rash: compound commands in pipelines/background jobs are not implemented",
-            ));
-        }
         let mut stages = vec![];
-        for command in &pipeline.commands {
-            // Pipeline expansion belongs to each stage's scope, never the parent.
-            let mut child = self.session.subshell()?;
-            child.traps.retain(|_, source| source.is_empty());
-            self.host.push_signal_scope()?;
-            let mut runner = Runner::new(&mut child, self.host, self.capture);
-            runner.redirects.clone_from(&self.redirects);
-            let stage = runner.pipeline_stage(command);
-            self.host.pop_signal_scope()?;
-            stages.push(stage?);
+        if self.host.supports_workers() {
+            use bincode::Options as _;
+            for command in &pipeline.commands {
+                let mut child = self.session.subshell()?;
+                child.traps.retain(|_, source| source.is_empty());
+                child.interactive = false;
+                child.login = false;
+                child.exited = None;
+                let state = bincode::DefaultOptions::new()
+                    .with_limit(64 * 1024 * 1024)
+                    .serialize(&(child, command))
+                    .map_err(|e| Error::new(format!("interpreter snapshot: {e}")))?;
+                let display = match &command.kind {
+                    CommandKind::Simple(words) => join(words.iter().map(|w| w.raw.clone()), b" "),
+                    _ => b"compound command".to_vec(),
+                };
+                let mut stage =
+                    self.host
+                        .prepare_worker("rash", state, self.session.exports(), display)?;
+                stage.redirects.clone_from(&self.redirects);
+                stages.push(stage);
+            }
+        } else {
+            if pipeline
+                .commands
+                .iter()
+                .any(|command| !matches!(command.kind, CommandKind::Simple(_)))
+            {
+                return Err(Error::new(
+                    "rash: compound commands in pipelines/background jobs are not implemented",
+                ));
+            }
+            for command in &pipeline.commands {
+                let mut child = self.session.subshell()?;
+                child.traps.retain(|_, source| source.is_empty());
+                self.host.push_signal_scope()?;
+                let mut runner = Runner::new(&mut child, self.host, self.capture);
+                runner.redirects.clone_from(&self.redirects);
+                let stage = runner.pipeline_stage(command);
+                self.host.pop_signal_scope()?;
+                stages.push(stage?);
+            }
         }
         let result = self.host.run_pipeline(&stages, background, self.capture)?;
         self.stdout.extend(result.stdout);

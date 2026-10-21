@@ -10,6 +10,8 @@ description = "In-progress Rust port of GNU Bash 3.2"
 
 [dependencies]
 fish-printf.workspace = true
+bincode = "1.3.3"
+serde = { version = "1.0.228", features = ["derive"] }
 
 [lints]
 workspace = true

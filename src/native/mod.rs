@@ -6,6 +6,7 @@ pub mod fish;
 pub mod host;
 #[cfg(windows)]
 pub mod syntax;
+pub mod worker;
 
 use rash::{Error, Result};
 use std::ffi::OsString;
@@ -145,6 +146,22 @@ pub fn unsupported_tool(name: &str) -> i32 {
 }
 
 fn run(language: Language) -> i32 {
+    let mut args = std::env::args_os().skip(1);
+    if let Some(arg) = args.next() {
+        if let Some(worker_language) = arg
+            .to_str()
+            .and_then(|a| a.strip_prefix("--native-worker="))
+        {
+            return match (args.next(), args.next()) {
+                (Some(path), None) => worker::run(worker_language, std::path::Path::new(&path))
+                    .unwrap_or_else(|error| report(language, error)),
+                _ => report(
+                    language,
+                    Error::new("invalid interpreter worker invocation"),
+                ),
+            };
+        }
+    }
     let invocation = match parse_options(language, std::env::args_os().skip(1)) {
         Ok(invocation) => invocation,
         Err(error) => return report(language, error),
@@ -322,6 +339,10 @@ fn execute(options: Options) -> Result<i32> {
         if interactive {
             let mut source = Vec::new();
             loop {
+                host.clear_console_requests();
+                for notice in host.poll_jobs()? {
+                    writeln!(io::stderr(), "{notice}")?;
+                }
                 write!(
                     io::stdout(),
                     "{}> ",
@@ -340,6 +361,9 @@ fn execute(options: Options) -> Result<i32> {
                             .unwrap_or_else(|error| report(options.language, error));
                     }
                     break;
+                }
+                if cfg!(windows) && line.ends_with(b"\r\n") {
+                    line.remove(line.len() - 2);
                 }
                 source.extend(line);
                 if engine.incomplete(&source) {
