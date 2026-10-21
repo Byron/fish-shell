@@ -1,8 +1,8 @@
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt as _;
 use std::process::Command;
 
 use rash::syntax::{self, SyntaxStatus};
+
+mod support;
 
 #[test]
 #[ignore = "requires RASH_BASH_ORACLE pointing to Bash 3.2.57"]
@@ -51,12 +51,12 @@ fn syntax_acceptance_matches_bash() {
         b"[[ x unexpected y ]]",
     ];
     for &input in cases {
-        let bash = Command::new(&oracle)
-            .args(["--noprofile", "--norc", "-n", "-c"])
-            .arg(OsStr::from_bytes(input))
-            .env_remove("BASH_ENV")
-            .output()
-            .expect("run Bash syntax oracle");
+        let bash = support::run_source(
+            Command::new(&oracle)
+                .args(["--noprofile", "--norc", "-n", "-s"])
+                .env_remove("BASH_ENV"),
+            input,
+        );
         let parsed = syntax::check(input);
         assert_eq!(
             matches!(parsed, SyntaxStatus::Complete),
@@ -99,12 +99,12 @@ fn function_printing_matches_bash() {
             panic!("expected function");
         };
         let program = [source, b"; declare -f f"].concat();
-        let bash = Command::new(&oracle)
-            .args(["--noprofile", "--norc", "-c"])
-            .arg(OsStr::from_bytes(&program))
-            .env_remove("BASH_ENV")
-            .output()
-            .expect("run Bash function-printing oracle");
+        let bash = support::run_source(
+            Command::new(&oracle)
+                .args(["--noprofile", "--norc", "-s"])
+                .env_remove("BASH_ENV"),
+            &program,
+        );
         assert!(
             bash.status.success(),
             "{}",

@@ -6,15 +6,9 @@ use crate::wutil::fish_wcstoi;
 use nix::fcntl::OFlag;
 use std::os::fd::RawFd;
 
-#[derive(Clone, Copy, Debug, PartialEq, Hash)]
-pub enum RedirectionMode {
-    Overwrite, // normal redirection: > file.txt
-    Append,    // appending redirection: >> file.txt
-    Input,     // input redirection: < file.txt
-    TryInput,  // try-input redirection: <? file.txt
-    Fd,        // fd redirection: 2>&1
-    NoClob,    // noclobber redirection: >? file.txt
-}
+#[path = "redirection_mode.rs"]
+mod redirection_mode;
+pub use redirection_mode::RedirectionMode;
 
 /// A type that represents the action dup2(src, target).
 /// If target is negative, this represents close(src).

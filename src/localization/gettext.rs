@@ -7,9 +7,9 @@ use std::sync::{LazyLock, Mutex};
 fn gettext(message: MaybeStatic) -> &'static wstr {
     use std::collections::HashMap;
 
-    #[cfg(not(feature = "localize-messages"))]
+    #[cfg(not(all(feature = "localize-messages", not(windows))))]
     type NarrowMessage = ();
-    #[cfg(feature = "localize-messages")]
+    #[cfg(all(feature = "localize-messages", not(windows)))]
     type NarrowMessage = &'static str;
 
     let message_wstr = match message {
@@ -24,17 +24,17 @@ fn gettext(message: MaybeStatic) -> &'static wstr {
             MaybeStatic::Static(s) => s,
             MaybeStatic::Local(l) => wstr::from_char_slice(Box::leak(l.as_char_slice().into())),
         };
-        #[cfg(not(feature = "localize-messages"))]
+        #[cfg(not(all(feature = "localize-messages", not(windows))))]
         let message_str = ();
-        #[cfg(feature = "localize-messages")]
+        #[cfg(all(feature = "localize-messages", not(windows)))]
         let message_str = Box::leak(message_wstr.to_string().into_boxed_str());
         message_to_narrow.insert(message_wstr, message_str);
     }
     let (message_static_wstr, message_str) = message_to_narrow.get_key_value(message_wstr).unwrap();
 
-    #[cfg(not(feature = "localize-messages"))]
+    #[cfg(not(all(feature = "localize-messages", not(windows))))]
     let () = message_str;
-    #[cfg(feature = "localize-messages")]
+    #[cfg(all(feature = "localize-messages", not(windows)))]
     {
         if let Some(localized_str) = fish_gettext::gettext(message_str) {
             static LOCALIZATION_TO_WIDE: LazyLock<Mutex<HashMap<&'static str, &'static wstr>>> =
@@ -117,7 +117,7 @@ impl std::fmt::Display for LocalizableString {
 /// The essential part is the invocation of the proc macro,
 /// which ensures that the string gets extracted for localization.
 #[macro_export]
-#[cfg(feature = "gettext-extract")]
+#[cfg(all(feature = "gettext-extract", not(windows)))]
 macro_rules! localizable_string {
     ($string:literal) => {
         $crate::localization::LocalizableString::Static(fish_widestring::L!(
@@ -126,7 +126,7 @@ macro_rules! localizable_string {
     };
 }
 #[macro_export]
-#[cfg(not(feature = "gettext-extract"))]
+#[cfg(any(not(feature = "gettext-extract"), windows))]
 macro_rules! localizable_string {
     ($string:literal) => {
         $crate::localization::LocalizableString::Static(fish_widestring::L!($string))
@@ -196,7 +196,7 @@ macro_rules! wgettext_fmt {
 }
 pub use wgettext_fmt;
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;
     use crate::tests::prelude::*;

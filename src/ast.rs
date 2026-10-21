@@ -20,6 +20,7 @@ use crate::{
     prelude::*,
     tokenizer::{TokFlags, TokenType, Tokenizer, TokenizerError, variable_assignment_equals_pos},
 };
+#[cfg(not(windows))]
 use fish_common::{UnescapeStringStyle, unescape_string};
 use macro_rules_attribute::derive;
 use std::borrow::Cow;
@@ -2847,7 +2848,13 @@ pub(crate) fn unescape_keyword(tok: TokenType, token: &wstr) -> Cow<'_, wstr> {
         return Cow::Borrowed(token);
     }
 
-    Cow::Owned(unescape_string(token, UnescapeStringStyle::default()).unwrap_or_default())
+    #[cfg(not(windows))]
+    let unescaped = unescape_string(token, UnescapeStringStyle::default()).unwrap_or_default();
+    #[cfg(windows)]
+    let unescaped = crate::native::fish::unescape_literal(&token.to_string())
+        .map(WString::from)
+        .unwrap_or_default();
+    Cow::Owned(unescaped)
 }
 
 /// Given a token, returns the keyword it matches, or ParseKeyword::None.
@@ -2861,11 +2868,13 @@ mod tests {
     use crate::ast;
     use crate::parse_constants::ParseTreeFlags;
     use crate::prelude::*;
+    #[cfg(not(windows))]
     use crate::tests::prelude::*;
 
     #[test]
-    #[serial]
+    #[cfg_attr(not(windows), serial)]
     fn test_ast_parse() {
+        #[cfg(not(windows))]
         test_init();
         let src = L!("echo");
         let ast = ast::parse(src, ParseTreeFlags::default(), None);

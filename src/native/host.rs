@@ -1,0 +1,653 @@
+//! Native process and stream services for the portable shell evaluators.
+//!
+//! Expanded arguments go directly to `Command`; this adapter never invokes a
+//! command interpreter to execute shell source.
+
+use rash::host::{Command, Host, OpenMode, ReadResult, RedirectAction, Redirection, RunResult};
+use rash::{Error, Result};
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read as _, Seek as _, Write as _};
+use std::path::PathBuf;
+use std::process::{Command as ProcessCommand, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+pub struct NativeHost;
+
+impl NativeHost {
+    pub fn new() -> Result<Self> {
+        // Fail early if the working directory cannot be represented by this host.
+        rash::os::to_bytes(std::env::current_dir()?.as_os_str())?;
+        Ok(Self)
+    }
+}
+
+#[derive(Clone)]
+enum Target {
+    Inherited(i32),
+    File(Arc<File>),
+    Capture,
+    Closed,
+}
+
+fn descriptor(fd: i32) -> Result<usize> {
+    if (0..=2).contains(&fd) {
+        Ok(fd as usize)
+    } else {
+        Err(Error::new(
+            "native redirections currently support only descriptors 0, 1 and 2",
+        ))
+    }
+}
+
+fn checked_os(bytes: &[u8]) -> Result<std::ffi::OsString> {
+    if bytes.contains(&0) {
+        return Err(Error::new(
+            "NUL in a native argument, environment value or path",
+        ));
+    }
+    rash::os::from_bytes(bytes)
+}
+
+fn open_file(path: &[u8], mode: OpenMode) -> Result<Arc<File>> {
+    let mut options = OpenOptions::new();
+    match mode {
+        OpenMode::Read => {
+            options.read(true);
+        }
+        OpenMode::Write | OpenMode::Clobber => {
+            options.write(true).create(true).truncate(true);
+        }
+        OpenMode::Append => {
+            options.append(true).create(true);
+        }
+        OpenMode::ReadWrite => {
+            options.read(true).write(true).create(true);
+        }
+    }
+    Ok(Arc::new(options.open(checked_os(path)?)?))
+}
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn temporary_path() -> PathBuf {
+    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "rash-native-{}-{stamp}-{sequence}.tmp",
+        std::process::id()
+    ))
+}
+
+/// Shared seekable input/capture, removed when the last handle closes. Captures
+/// use a file so a child writing both stdout and stderr cannot fill an unread pipe.
+fn temporary_file(bytes: &[u8], read_only: bool) -> Result<Arc<File>> {
+    for _ in 0..64 {
+        let path = temporary_path();
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            // FILE_FLAG_DELETE_ON_CLOSE | FILE_ATTRIBUTE_TEMPORARY.
+            options.custom_flags(0x0400_0100);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = match options.open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        };
+        // Here input must remain read-only even when redirected onto an output
+        // descriptor. Open before unlinking; both handles refer to the same file.
+        let input = read_only.then(|| File::open(&path));
+        #[cfg(unix)]
+        std::fs::remove_file(&path)?;
+        let input = input.transpose()?;
+        file.write_all(bytes)?;
+        file.rewind()?;
+        return Ok(Arc::new(input.unwrap_or(file)));
+    }
+    Err(Error::new("could not create a native temporary stream"))
+}
+
+fn targets(redirects: &[Redirection], capture: bool) -> Result<[Target; 3]> {
+    let mut targets = [
+        Target::Inherited(0),
+        if capture {
+            Target::Capture
+        } else {
+            Target::Inherited(1)
+        },
+        Target::Inherited(2),
+    ];
+    // Resolve duplication at its position in the list, before later replacements.
+    for redirect in redirects {
+        let fd = descriptor(redirect.fd)?;
+        targets[fd] = match &redirect.action {
+            RedirectAction::File { path, mode } => Target::File(open_file(path, *mode)?),
+            RedirectAction::Opened(file) => Target::File(file.clone()),
+            RedirectAction::Here(bytes) => Target::File(temporary_file(bytes, true)?),
+            RedirectAction::Dup(source) => {
+                let target = &targets[descriptor(*source)?];
+                if matches!(target, Target::Closed) {
+                    return Err(Error::new("cannot duplicate a closed descriptor"));
+                }
+                target.clone()
+            }
+            RedirectAction::Close => Target::Closed,
+        };
+    }
+    Ok(targets)
+}
+
+fn inherited_stdio(fd: i32) -> Result<Stdio> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsHandle as _;
+        let handle = match fd {
+            0 => io::stdin().as_handle().try_clone_to_owned()?,
+            1 => io::stdout().as_handle().try_clone_to_owned()?,
+            2 => io::stderr().as_handle().try_clone_to_owned()?,
+            _ => unreachable!(),
+        };
+        Ok(handle.into())
+    }
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsFd as _;
+        let descriptor = match fd {
+            0 => io::stdin().as_fd().try_clone_to_owned()?,
+            1 => io::stdout().as_fd().try_clone_to_owned()?,
+            2 => io::stderr().as_fd().try_clone_to_owned()?,
+            _ => unreachable!(),
+        };
+        Ok(descriptor.into())
+    }
+}
+
+fn child_stdio(target: &Target, fd: i32, capture: Option<&File>) -> Result<Stdio> {
+    match target {
+        Target::Inherited(source) if *source == fd => Ok(Stdio::inherit()),
+        Target::Inherited(source) => inherited_stdio(*source),
+        Target::File(file) => Ok(file.try_clone()?.into()),
+        Target::Capture if fd == 0 => Err(Error::new(
+            "the capture output stream is not available for reading",
+        )),
+        Target::Capture => Ok(capture.expect("capture file exists").try_clone()?.into()),
+        Target::Closed => Err(Error::new(
+            "closing an external command's descriptor is not supported by the native host yet",
+        )),
+    }
+}
+
+fn write_target(target: &Target, bytes: &[u8]) -> Result<Vec<u8>> {
+    match target {
+        Target::Capture => return Ok(bytes.to_vec()),
+        Target::File(file) => (&**file).write_all(bytes)?,
+        Target::Inherited(1) => {
+            let mut out = io::stdout().lock();
+            out.write_all(bytes)?;
+            out.flush()?;
+        }
+        Target::Inherited(2) => {
+            let mut out = io::stderr().lock();
+            out.write_all(bytes)?;
+            out.flush()?;
+        }
+        Target::Closed if bytes.is_empty() => {}
+        _ => return Err(Error::new("descriptor is not available for writing")),
+    }
+    Ok(Vec::new())
+}
+
+fn exit_status(status: std::process::ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt as _;
+        status.signal().map_or(1, |signal| 128 + signal)
+    }
+    #[cfg(windows)]
+    {
+        1
+    }
+}
+
+impl Host for NativeHost {
+    fn prepare_redirects(&mut self, redirects: &[Redirection]) -> Result<Vec<Redirection>> {
+        redirects
+            .iter()
+            .map(|redirect| {
+                descriptor(redirect.fd)?;
+                let action = match &redirect.action {
+                    RedirectAction::File { path, mode } => {
+                        RedirectAction::Opened(open_file(path, *mode)?)
+                    }
+                    RedirectAction::Here(bytes) => {
+                        RedirectAction::Opened(temporary_file(bytes, true)?)
+                    }
+                    RedirectAction::Dup(fd) => {
+                        descriptor(*fd)?;
+                        redirect.action.clone()
+                    }
+                    action => action.clone(),
+                };
+                Ok(Redirection {
+                    fd: redirect.fd,
+                    action,
+                })
+            })
+            .collect()
+    }
+
+    fn run_pipeline(
+        &mut self,
+        stages: &[Command],
+        background: bool,
+        capture: bool,
+    ) -> Result<RunResult> {
+        if background {
+            return Err(Error::new(
+                "background jobs are not supported by the native host yet",
+            ));
+        }
+        if stages.is_empty() {
+            return Ok(RunResult::default());
+        }
+        let [stage] = stages else {
+            return Err(Error::new(
+                "pipelines are not supported by the native host yet",
+            ));
+        };
+        if stage.builtin {
+            return Err(Error::new(
+                "job control, signals and exec are not supported by the native host yet",
+            ));
+        }
+        let Some(name) = stage.argv.first() else {
+            return Err(Error::new("empty external command"));
+        };
+        let mut command = ProcessCommand::new(checked_os(name)?);
+        for arg in &stage.argv[1..] {
+            command.arg(checked_os(arg)?);
+        }
+        command.env_clear();
+        for (name, value) in &stage.env {
+            // Shell variables are case-sensitive, but Windows environment names
+            // are not. A user-assigned PATH must win over an inherited `Path`.
+            if cfg!(windows)
+                && name.as_slice() != b"PATH"
+                && name.eq_ignore_ascii_case(b"PATH")
+                && stage.env.contains_key(b"PATH".as_slice())
+            {
+                continue;
+            }
+            if name.is_empty() || name.contains(&b'=') {
+                return Err(Error::new("invalid native environment name"));
+            }
+            command.env(checked_os(name)?, checked_os(value)?);
+        }
+        let targets = targets(&stage.redirects, capture)?;
+        if targets
+            .iter()
+            .any(|target| matches!(target, Target::Closed))
+        {
+            return Err(Error::new(
+                "closing an external command's descriptor is not supported by the native host yet",
+            ));
+        }
+        let output = if targets
+            .iter()
+            .any(|target| matches!(target, Target::Capture))
+        {
+            Some(temporary_file(&[], false)?)
+        } else {
+            None
+        };
+        let captured = output.as_deref();
+        command.stdin(child_stdio(&targets[0], 0, captured)?);
+        command.stdout(child_stdio(&targets[1], 1, captured)?);
+        command.stderr(child_stdio(&targets[2], 2, captured)?);
+        let status = match command.status() {
+            Ok(status) => exit_status(status),
+            Err(error) => {
+                let status = if error.kind() == io::ErrorKind::NotFound {
+                    127
+                } else {
+                    126
+                };
+                let message = format!("{}: {error}\n", String::from_utf8_lossy(name));
+                return Ok(RunResult {
+                    status,
+                    pipeline: vec![status],
+                    stdout: write_target(&targets[2], message.as_bytes())?,
+                    last_pid: None,
+                });
+            }
+        };
+        let mut stdout = Vec::new();
+        if let Some(file) = output {
+            let mut file = &*file;
+            file.rewind()?;
+            file.read_to_end(&mut stdout)?;
+        }
+        Ok(RunResult {
+            status,
+            pipeline: vec![status],
+            stdout,
+            last_pid: None,
+        })
+    }
+
+    fn change_dir(&mut self, path: &[u8]) -> Result<Vec<u8>> {
+        std::env::set_current_dir(checked_os(path)?)?;
+        rash::os::to_bytes(std::env::current_dir()?.as_os_str())
+    }
+
+    fn write(
+        &mut self,
+        fd: i32,
+        bytes: &[u8],
+        redirects: &[Redirection],
+        capture: bool,
+    ) -> Result<Vec<u8>> {
+        let fd = descriptor(fd)?;
+        write_target(&targets(redirects, capture)?[fd], bytes)
+    }
+
+    fn read_line(&mut self, redirects: &[Redirection], _: bool) -> Result<ReadResult> {
+        let targets = targets(redirects, false)?;
+        let mut input: Box<dyn io::Read + '_> = match &targets[0] {
+            Target::Inherited(0) => Box::new(io::stdin().lock()),
+            Target::File(file) => Box::new(&**file),
+            _ => return Err(Error::new("descriptor is not available for reading")),
+        };
+        let mut line = Vec::new();
+        let mut byte = [0];
+        loop {
+            match input.read(&mut byte) {
+                Ok(0) => break,
+                Ok(_) => {
+                    line.push(byte[0]);
+                    if byte[0] == b'\n' {
+                        break;
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(ReadResult::Line(line))
+    }
+
+    fn cancelled(&self) -> bool {
+        false
+    }
+
+    fn jobs(&self) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestFile(PathBuf);
+
+    impl TestFile {
+        fn new() -> Self {
+            let path = temporary_path();
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            Self(path)
+        }
+
+        fn redirect(&self, fd: i32) -> Redirection {
+            Redirection {
+                fd,
+                action: RedirectAction::File {
+                    path: rash::os::to_bytes(self.0.as_os_str()).unwrap(),
+                    mode: OpenMode::Write,
+                },
+            }
+        }
+    }
+
+    impl Drop for TestFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn scoped_redirections_preserve_offsets_and_duplication_order() {
+        let file = TestFile::new();
+        let mut host = NativeHost::new().unwrap();
+        let redirects = host
+            .prepare_redirects(&[
+                Redirection {
+                    fd: 2,
+                    action: RedirectAction::Dup(1),
+                },
+                file.redirect(1),
+            ])
+            .unwrap();
+        assert_eq!(
+            host.write(2, b"captured", &redirects, true).unwrap(),
+            b"captured"
+        );
+        host.write(1, b"first", &redirects, true).unwrap();
+        host.write(1, b" second", &redirects, true).unwrap();
+        assert_eq!(std::fs::read(&file.0).unwrap(), b"first second");
+        drop(redirects);
+
+        let redirects = host
+            .prepare_redirects(&[
+                file.redirect(1),
+                Redirection {
+                    fd: 2,
+                    action: RedirectAction::Dup(1),
+                },
+            ])
+            .unwrap();
+        assert!(host.write(2, b"file", &redirects, true).unwrap().is_empty());
+        assert_eq!(std::fs::read(&file.0).unwrap(), b"file");
+    }
+
+    #[test]
+    fn here_input_is_shared_between_reads() {
+        let mut host = NativeHost::new().unwrap();
+        let redirects = host
+            .prepare_redirects(&[Redirection {
+                fd: 0,
+                action: RedirectAction::Here(b"first\nsecond\n".to_vec()),
+            }])
+            .unwrap();
+        for expected in [b"first\n".as_slice(), b"second\n", b""] {
+            let ReadResult::Line(line) = host.read_line(&redirects, false).unwrap() else {
+                panic!()
+            };
+            assert_eq!(line, expected);
+        }
+        let mut output = redirects.clone();
+        output[0].fd = 1;
+        assert!(
+            host.write(1, b"cannot write here input", &output, false)
+                .is_err()
+        );
+    }
+
+    fn probe_command() -> Command {
+        let mut command = Command {
+            argv: vec![
+                rash::os::to_bytes(std::env::current_exe().unwrap().as_os_str()).unwrap(),
+                b"--exact".to_vec(),
+                b"native::host::tests::process_probe".to_vec(),
+                b"--nocapture".to_vec(),
+                b"--skip".to_vec(),
+                "argument spaces & $() \"unicode Ω\"".as_bytes().to_vec(),
+            ],
+            display: None,
+            env: [(
+                b"RASH_NATIVE_HOST_PROBE".to_vec(),
+                b"spaces & $literal".to_vec(),
+            )]
+            .into(),
+            redirects: vec![Redirection {
+                fd: 2,
+                action: RedirectAction::Dup(1),
+            }],
+            builtin: false,
+        };
+        // MSYS2 Rust test executables load runtime DLLs through PATH. Preserve
+        // that loader path while still checking that other parent exports clear.
+        if std::env::consts::OS == "cygwin" {
+            if let Some(path) = std::env::var_os("PATH") {
+                command
+                    .env
+                    .insert(b"PATH".to_vec(), rash::os::to_bytes(&path).unwrap());
+            }
+        }
+        if let Some((name, _)) = std::env::vars_os().find(|(name, _)| {
+            let name = name.to_string_lossy();
+            !name.eq_ignore_ascii_case("PATH")
+                && !name.starts_with('=')
+                && !name.starts_with("RASH_NATIVE_HOST_")
+        }) {
+            command.env.insert(
+                b"RASH_NATIVE_HOST_EXCLUDED_NAME".to_vec(),
+                rash::os::to_bytes(&name).unwrap(),
+            );
+        }
+        command
+    }
+
+    #[test]
+    fn external_capture_environment_and_exit_status() {
+        let mut host = NativeHost::new().unwrap();
+        let result = host.run_pipeline(&[probe_command()], false, true).unwrap();
+        assert_eq!(result.status, 7);
+        assert_eq!(result.pipeline, [7]);
+        let output = String::from_utf8(result.stdout).unwrap();
+        assert!(output.contains("probe:spaces & $literal"), "{output}");
+        assert!(output.contains("probe:stderr"), "{output}");
+        assert!(output.contains("probe:argument:true"), "{output}");
+        let has_loader_path = std::env::consts::OS == "cygwin";
+        assert!(
+            output.contains(&format!("probe:path_present:{has_loader_path}")),
+            "{output}"
+        );
+        assert!(output.contains("probe:inherited_absent:true"), "{output}");
+    }
+
+    #[test]
+    fn external_redirections_preserve_capture_order() {
+        let mut host = NativeHost::new().unwrap();
+        let file = TestFile::new();
+        let mut command = probe_command();
+        command.redirects.push(file.redirect(1));
+        let result = host.run_pipeline(&[command], false, true).unwrap();
+        assert_eq!(result.status, 7);
+        let captured = String::from_utf8(result.stdout).unwrap();
+        assert!(captured.contains("probe:stderr"), "{captured}");
+        assert!(!captured.contains("probe:spaces"), "{captured}");
+        let written = std::fs::read_to_string(&file.0).unwrap();
+        assert!(written.contains("probe:spaces"), "{written}");
+        assert!(!written.contains("probe:stderr"), "{written}");
+
+        let mut command = probe_command();
+        command.redirects.insert(0, file.redirect(1));
+        let result = host.run_pipeline(&[command], false, true).unwrap();
+        assert_eq!(result.status, 7);
+        assert!(result.stdout.is_empty());
+        let written = std::fs::read_to_string(&file.0).unwrap();
+        assert!(written.contains("probe:spaces"), "{written}");
+        assert!(written.contains("probe:stderr"), "{written}");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn canonical_path_wins_over_windows_case_variants() {
+        let mut host = NativeHost::new().unwrap();
+        let mut command = probe_command();
+        command.env.insert(b"PATH".to_vec(), b"canonical".to_vec());
+        command.env.insert(b"Path".to_vec(), b"stale".to_vec());
+        let result = host.run_pipeline(&[command], false, true).unwrap();
+        assert_eq!(result.status, 7);
+        let output = String::from_utf8(result.stdout).unwrap();
+        assert!(output.contains("probe:path:canonical"), "{output}");
+    }
+
+    #[test]
+    fn process_probe() {
+        if let Ok(value) = std::env::var("RASH_NATIVE_HOST_PROBE") {
+            println!("probe:{value}");
+            println!(
+                "probe:argument:{}",
+                std::env::args().any(|arg| arg == "argument spaces & $() \"unicode Ω\"")
+            );
+            println!("probe:path_present:{}", std::env::var_os("PATH").is_some());
+            println!("probe:path:{}", std::env::var("PATH").unwrap_or_default());
+            println!(
+                "probe:inherited_absent:{}",
+                std::env::var_os("RASH_NATIVE_HOST_EXCLUDED_NAME")
+                    .is_none_or(|name| std::env::var_os(name).is_none())
+            );
+            eprintln!("probe:stderr");
+            std::process::exit(7);
+        }
+    }
+
+    #[test]
+    fn unavailable_commands_return_shell_status() {
+        let mut host = NativeHost::new().unwrap();
+        let command = Command {
+            argv: vec![b"rash-native-nonexistent-command-4a7192".to_vec()],
+            display: None,
+            env: Default::default(),
+            redirects: vec![Redirection {
+                fd: 2,
+                action: RedirectAction::Dup(1),
+            }],
+            builtin: false,
+        };
+        let result = host.run_pipeline(&[command], false, true).unwrap();
+        assert_eq!(result.status, 127);
+        assert_eq!(result.pipeline, [127]);
+        assert!(!result.stdout.is_empty());
+    }
+
+    #[test]
+    fn unsupported_descriptors_and_jobs_fail_explicitly() {
+        let mut host = NativeHost::new().unwrap();
+        assert!(host.write(3, b"", &[], false).is_err());
+        assert!(host.run_pipeline(&[], true, false).is_err());
+        assert!(
+            host.set_signal(b"INT", rash::host::SignalDisposition::Trap)
+                .is_err()
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn unix_signal_status_uses_shell_convention() {
+        use std::os::unix::process::ExitStatusExt as _;
+        assert_eq!(exit_status(std::process::ExitStatus::from_raw(15)), 143);
+        assert_eq!(exit_status(std::process::ExitStatus::from_raw(7 << 8)), 7);
+        assert_eq!(exit_status(std::process::ExitStatus::from_raw(0)), 0);
+    }
+}

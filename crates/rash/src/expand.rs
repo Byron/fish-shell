@@ -4,9 +4,8 @@
 
 //! Execution-time word expansion. Syntax checking and completion must not call this module.
 
-use crate::{Error, Result, arithmetic};
-use std::ffi::{CString, OsStr};
-use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+use crate::{Error, Result, arithmetic, os};
+use std::ffi::CString;
 use std::path::PathBuf;
 
 pub trait ExpansionContext: arithmetic::Variables {
@@ -1132,14 +1131,30 @@ fn glob(field: Field, context: &mut (impl Context + ?Sized)) -> Result<Vec<Vec<u
         pattern.push(c);
     }
     let unicode = unicode_locale(context)?;
-    let absolute = pattern.starts_with(b"/");
-    let base = if absolute {
-        PathBuf::from("/")
+    let root_len = if cfg!(windows)
+        && pattern.len() >= 3
+        && pattern[0].is_ascii_alphabetic()
+        && pattern[1..3] == *b":/"
+    {
+        3
+    } else if cfg!(windows) && pattern.starts_with(b"//") {
+        // A UNC path starts at its server/share pair, not at the current drive.
+        pattern[2..]
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| **c == b'/')
+            .nth(1)
+            .map_or(pattern.len(), |(at, _)| at + 3)
     } else {
-        PathBuf::from(OsStr::from_bytes(&context.cwd()))
+        usize::from(pattern.starts_with(b"/"))
     };
-    let mut paths = vec![(base, if absolute { b"/".to_vec() } else { Vec::new() })];
-    let components: Vec<_> = pattern.split(|&c| c == b'/').collect();
+    let base = if root_len > 0 {
+        PathBuf::from(os::from_bytes(&pattern[..root_len])?)
+    } else {
+        PathBuf::from(os::from_bytes(&context.cwd())?)
+    };
+    let mut paths = vec![(base, pattern[..root_len].to_vec())];
+    let components: Vec<_> = pattern[root_len..].split(|&c| c == b'/').collect();
     for (n, component) in components.iter().enumerate() {
         if component.is_empty() {
             continue;
@@ -1153,7 +1168,9 @@ fn glob(field: Field, context: &mut (impl Context + ?Sized)) -> Result<Vec<Vec<u
                     continue;
                 };
                 entries
-                    .filter_map(|entry| entry.ok().map(|entry| entry.file_name().into_vec()))
+                    .filter_map(|entry| entry.ok().map(|entry| os::to_bytes(&entry.file_name())))
+                    .collect::<Result<Vec<_>>>()?
+                    .into_iter()
                     .chain([b".".to_vec(), b"..".to_vec()])
                     .filter(|name| {
                         (!name.starts_with(b".")
@@ -1166,7 +1183,7 @@ fn glob(field: Field, context: &mut (impl Context + ?Sized)) -> Result<Vec<Vec<u
                 vec![unescape_pattern(component)]
             };
             for name in names {
-                let actual = path.join(OsStr::from_bytes(&name));
+                let actual = path.join(os::from_bytes(&name)?);
                 if n + 1 < components.len() && !actual.is_dir() {
                     continue;
                 }

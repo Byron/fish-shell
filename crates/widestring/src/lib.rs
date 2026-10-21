@@ -6,11 +6,13 @@
 
 pub mod word_char;
 
+#[cfg(not(windows))]
+use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+#[cfg(windows)]
+use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
 use std::{
     ffi::{CStr, CString, OsStr, OsString},
-    iter,
-    os::unix::ffi::{OsStrExt as _, OsStringExt as _},
-    slice,
+    iter, slice,
 };
 pub use widestring::{Utf32Str as wstr, Utf32String as WString, utf32str as L, utfstr::CharsUtf32};
 
@@ -153,7 +155,44 @@ pub fn wcs2osstring(input: &wstr) -> OsString {
 
     let mut result = vec![];
     wcs2bytes_appending(&mut result, input);
-    OsString::from_vec(result)
+    #[cfg(not(windows))]
+    return OsString::from_vec(result);
+    #[cfg(windows)]
+    {
+        // Windows paths are UTF-16 and may contain unpaired surrogates. Preserve those
+        // as WTF-8 bytes through the existing reversible byte/character conversion.
+        let mut wide = Vec::new();
+        let mut bytes = result.as_slice();
+        while !bytes.is_empty() {
+            match std::str::from_utf8(bytes) {
+                Ok(text) => {
+                    wide.extend(text.encode_utf16());
+                    break;
+                }
+                Err(error) => {
+                    let (valid, rest) = bytes.split_at(error.valid_up_to());
+                    wide.extend(std::str::from_utf8(valid).unwrap().encode_utf16());
+                    if rest.len() >= 3
+                        && rest[0] == 0xed
+                        && (0xa0..=0xbf).contains(&rest[1])
+                        && (0x80..=0xbf).contains(&rest[2])
+                    {
+                        wide.push(
+                            (u16::from(rest[0] & 0x0f) << 12)
+                                | (u16::from(rest[1] & 0x3f) << 6)
+                                | u16::from(rest[2] & 0x3f),
+                        );
+                        bytes = &rest[3..];
+                    } else {
+                        // Arbitrary non-WTF-8 bytes cannot be represented in a Windows path.
+                        wide.push(0xfffd);
+                        bytes = &rest[error.error_len().unwrap_or(rest.len())..];
+                    }
+                }
+            }
+        }
+        OsString::from_wide(&wide)
+    }
 }
 
 /// Same as [`wcs2bytes`]. Meant to be used when we need a zero-terminated string to feed legacy APIs.
@@ -572,7 +611,41 @@ pub fn cstr2wcstring<C: AsRef<CStr>>(input: C) -> WString {
 }
 
 pub fn osstr2wcstring<O: AsRef<OsStr>>(input: O) -> WString {
-    bytes2wcstring(input.as_ref().as_bytes())
+    #[cfg(not(windows))]
+    return bytes2wcstring(input.as_ref().as_bytes());
+    #[cfg(windows)]
+    {
+        let mut bytes = Vec::new();
+        for decoded in char::decode_utf16(input.as_ref().encode_wide()) {
+            match decoded {
+                Ok(c) => bytes.extend(c.encode_utf8(&mut [0; 4]).as_bytes()),
+                Err(error) => {
+                    let surrogate = error.unpaired_surrogate();
+                    bytes.extend([
+                        0xe0 | ((surrogate >> 12) as u8),
+                        0x80 | (((surrogate >> 6) & 0x3f) as u8),
+                        0x80 | ((surrogate & 0x3f) as u8),
+                    ]);
+                }
+            }
+        }
+        bytes2wcstring(&bytes)
+    }
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn windows_osstrings_roundtrip() {
+    let input = OsString::from_wide(&[
+        b'C' as u16,
+        b':' as u16,
+        0x5c,
+        0xd800,
+        0x6587,
+        0xd83d,
+        0xde00,
+    ]);
+    assert_eq!(wcs2osstring(&osstr2wcstring(&input)), input);
 }
 
 /// # SAFETY

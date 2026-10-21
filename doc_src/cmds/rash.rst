@@ -15,7 +15,9 @@ Description
 
 Bash wherever this Fish instance is. Rash's experimental Bash evaluator ships inside this Fish executable, ready to launch with ``rash``. There is no separate Bash interpreter to find or install.
 
-``rash`` is a Fish function that launches the current Fish executable with ``--rash-shell``. There is no separate installed Rash executable or native Bash runtime dependency. The child uses the Rust Rash evaluator for Bash input and Fish's editor, completions, prompt, history and terminal handling.
+On POSIX builds, ``rash`` is a Fish function that launches the current Fish executable with ``--rash-shell``. The child uses the Rust Rash evaluator for Bash input and Fish's editor, completions, prompt, history and terminal handling. Cargo also builds a standalone ``rash`` executable with a portable process host, including native Windows support. Neither form depends on an installed Bash runtime.
+
+The following startup and interactive UI behavior describes the POSIX Fish function. The standalone executable and native Windows frontend have a basic prompt and the separate limits described below.
 
 The child inherits exported variables, the current directory and standard descriptors. Its variables, functions, aliases and directory changes belong to the child. Parent Fish functions and private variables are not shared with Bash evaluation. Use ``exit`` to leave Rash and return to the parent Fish prompt. Fish-only commands such as ``fish_input_mode`` are not Bash builtins in the child.
 
@@ -30,7 +32,7 @@ Bash startup files are read by default. The child inherits whether the calling F
 
 Fish still renders the prompt; Rash runs ``PROMPT_COMMAND`` before it. The lower-level ``fish --rash-shell`` invocation continues to require ``--bash-startup`` explicitly and does not inherit a parent login flag. These wrapper defaults do not affect Bash-style Fish input, ordinary Fish startup, or explicit Bash scripts.
 
-``source script.sh`` inside Rash executes Bash code and changes the current child session. For isolated noninteractive script execution, use ``fish --script-language=bash script.sh``. The Rash shell itself requires a terminal and does not accept ``-c`` or a script filename. Other supported Fish invocation options, such as ``-C`` for Fish initialization commands, are passed through.
+``source script.sh`` inside Rash executes Bash code and changes the current child session. For isolated noninteractive script execution, use ``fish --script-language=bash script.sh``. On the POSIX Fish frontend, ``fish --rash-shell`` requires a terminal and does not accept ``-c`` or a script filename. Other supported Fish invocation options, such as ``-C`` for Fish initialization commands, are passed through by the function.
 
 For Bash-style input that runs in the existing Fish session and retains Fish functions and expansion rules, use ``fish_input_mode bash`` instead. That dialect's ``source`` command continues to evaluate Fish code.
 
@@ -45,7 +47,7 @@ Use the absolute path to this Fish build. Launch a Rash terminal directly in Rus
 
     rustty -e /path/to/fish --rash-shell --bash-startup
 
-Or create a native Tmuxx session and display it in Rustty:
+On POSIX, create a native Tmuxx session and display it in Rustty:
 
 .. code-block:: sh
 
@@ -58,10 +60,17 @@ Add ``--login`` to Fish's arguments to select login profiles. Direct launches ha
 Windows
 -------
 
-Rash makes a separately installed Bash interpreter unnecessary wherever this Fish build runs. On Windows, one route is to build or install this modified Fish inside WSL, then launch it from Rustty. For example, with Fish installed at ``/usr/local/bin/fish`` in the Ubuntu distribution:
+Cargo builds native ``fish.exe`` and ``rash.exe`` with Rust's Windows toolchain:
 
 .. code-block:: powershell
 
-    rustty.exe -e wsl.exe --distribution Ubuntu --exec /usr/local/bin/fish --rash-shell --bash-startup
+    cargo build --locked --bins --target x86_64-pc-windows-msvc
+    .\target\x86_64-pc-windows-msvc\debug\rash.exe -c 'printf "%s\n" "native Rash"'
+    .\target\x86_64-pc-windows-msvc\debug\fish.exe --script-language=bash .\script.sh
+    rustty.exe -e C:/src/fish-shell/target/x86_64-pc-windows-msvc/debug/fish.exe --rash-shell
 
-This WSL example does not require Git Bash, but has not been tested here. The current Rash core and Fish host still depend on Unix APIs; native Windows support needs further portability work. Rash supplies an interpreter, not Git or the external tools a script may invoke, and its Bash compatibility remains incomplete.
+The standalone ``rash`` executable and native ``fish --rash-shell`` accept ``-c``, script files, standard input, and a basic interactive prompt. Bash startup files are opt-in with ``--bash-startup``; add ``--login`` for login profiles. They do not load Fish UI configuration or provide Fish's editor, completion, persistent history, pipelines, background jobs, signal traps or job control. Native Windows paths and arguments use Unicode and external processes run through the Windows process API.
+
+The MSYS2/Cygwin target and WSL retain the full POSIX Fish host. Select the backend with Cargo's target and the corresponding toolchain; there is no MSYS2 feature toggle. Native Cargo builds do not yet provide CMake installation or packaging. See ``doc_internal/native-windows.md`` for build commands, supported native Fish syntax, isolated tmuxx launch examples and remaining work.
+
+Rash supplies an interpreter, not Git or the external tools a script may invoke, and its Bash compatibility remains incomplete.

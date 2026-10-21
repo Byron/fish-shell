@@ -412,7 +412,6 @@ name = "fish-fallback"
 version = "0.0.0"
 dependencies = [
  "fish-build-helper",
- "fish-common",
  "fish-widecharwidth",
  "fish-widestring",
  "libc",

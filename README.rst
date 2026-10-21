@@ -58,6 +58,9 @@ Instructions for other distributions may be found at
 Windows
 ~~~~~~~
 
+-  Native Windows Cargo builds provide initial Fish and Rash command/script
+   execution. See `Native Windows support <doc_internal/native-windows.md>`__
+   for the supported subset and terminal launch examples.
 -  On Windows 10/11, fish can be installed under the WSL Windows Subsystem
    for Linux with the instructions for the appropriate distribution
    listed above under “Packages for Linux”, or from source with the
@@ -199,17 +202,35 @@ Here are the remaining advantages of a full installation, as currently done by C
   which are used by some package managers to house third-party completions.
   Regardless of build system, fish uses ``$XDG_DATA_DIRS/{vendor_completion.d,vendor_conf.d,vendor_functions.d}``.
 
-Building on Windows with MSYS2
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Building natively on Windows
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Install Rust's MSVC toolchain, the Visual C++ Build Tools and the Windows SDK.
+From PowerShell in the source directory:
+
+.. code:: powershell
+
+    cargo build --locked --bins --target x86_64-pc-windows-msvc
+    .\target\x86_64-pc-windows-msvc\debug\fish.exe -N -c 'echo native Fish'
+    .\target\x86_64-pc-windows-msvc\debug\rash.exe -c 'echo native Rash'
+
+An MSVC host toolchain also selects this backend with ordinary ``cargo build``.
+Cargo's target selects native Windows or POSIX support; no feature toggle or
+MSYS environment variable is needed. The native build has an initial Fish
+evaluator, a portable Rash host and a basic prompt. The full editor and job
+control remain in the POSIX build. Native CMake installation and packaging are
+not yet provided. See `Native Windows support <doc_internal/native-windows.md>`__.
+
+Building the POSIX target with MSYS2
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Install `MSYS2 <https://www.msys2.org/>`__ and open its **MSYS2 MSYS** shell.
 Git Bash (from Git for Windows) includes an MSYS runtime, but does not
 include the ``pacman`` package manager or the build toolchain used here.
 
-Use the MSYS Rust toolchain installed by
-``pacman``. This toolchain targets ``x86_64-pc-cygwin`` and provides the Unix
-APIs fish needs. The native Windows Rust toolchains installed by ``rustup``
-and the MinGW Rust packages cannot build fish.
+Use the MSYS Rust toolchain installed by ``pacman`` for the existing full Fish
+implementation. This toolchain targets ``x86_64-pc-cygwin`` and supplies its POSIX
+runtime. Keep its output separate from native Windows builds.
 
 First update MSYS2 with ``pacman -Syu``. If prompted to close the shell,
 reopen it and run the update again. Then, from the fish source directory:
@@ -217,8 +238,8 @@ reopen it and run the update again. Then, from the fish source directory:
 .. code:: shell
 
     pacman -S --needed rust gcc git
-    /usr/bin/cargo build --locked --bins
-    ./target/debug/fish.exe --no-config -c 'echo (math 1 + 1)'
+    /usr/bin/cargo build --locked --bins --target-dir target/msys2
+    ./target/msys2/debug/fish.exe --no-config -c 'echo (math 1 + 1)'
 
 Run the resulting binaries from MSYS2 so its runtime DLLs and Unix utilities
 are available. As with other Cargo builds, Sphinx and gettext are optional;

@@ -14,6 +14,7 @@ pub mod arithmetic;
 pub mod builtins_printf;
 pub mod expand;
 pub mod host;
+pub mod os;
 pub mod session;
 pub mod syntax;
 

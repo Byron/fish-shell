@@ -7,8 +7,9 @@ type `rash` to launch its experimental Bash evaluator without finding or
 installing a separate Bash interpreter.
 
 Fish calls Rash as an **in-process Rust library** for explicit Bash scripts and
-`fish --rash-shell`. Ordinary Bash-style interactive input lowers to Fish instead. There is no native Bash
-runtime, evaluator worker, companion executable, or fallback. Bash is used only
+`fish --rash-shell`. On the POSIX host, ordinary Bash-style interactive input lowers to Fish instead. A
+standalone `rash` executable supplies a portable host, including native Windows.
+There is no native Bash runtime or fallback. Bash is used only
 by explicit test oracles. This is an experimental, incomplete source-guided
 port, not a claim of complete GNU Bash compatibility.
 
@@ -20,8 +21,9 @@ the invoked process's job table, signal handling and terminal ownership. Existin
 configuration, functions, prompts, hooks, completion scripts and `fish -c` stay
 Fish code. See the [integration guide](../../doc_internal/bash-input-feasibility.md)
 for invocations, the isolated child-shell boundary, history, completion,
-Rustty/Tmuxx setup and the Windows/WSL example. The current core and Fish host
-use Unix APIs; a native Windows port remains future work. Rash does not bundle
+Rustty/Tmuxx setup and the Windows/WSL example. The Rash core builds on Unix and
+native Windows; Fish's full interactive editor and job-control host still require
+the POSIX build. Rash does not bundle
 Git or the external tools a script may invoke.
 
 The source baseline is GNU Bash **3.2.57**, GPL-2.0-or-later, compatible with Fish's
@@ -32,9 +34,16 @@ records the signed archive, all 57 patches and donor hashes.
 
 The crate forbids unsafe Rust. It depends on the existing `fish-printf` Rust
 crate for numeric formatting and has no build script. Shell values and source
-are byte vectors; invalid UTF-8 is preserved. OS-dependent process, descriptor
+are byte vectors; invalid UTF-8 is preserved internally and at Unix OS boundaries.
+Native Windows paths and process arguments use UTF-8. The `os` helpers reject
+invalid UTF-8 and unpaired UTF-16 surrogates instead of silently changing values.
+Windows uses native drive paths and semicolon-separated `PATH` entries.
+OS-dependent process, descriptor
 and signal operations belong to the host. No arbitrary interpreter executes
 after `fork` in the multithreaded Fish process.
+
+Hosts embedding the recursive evaluator should reserve at least 8 MiB of stack
+for the evaluation thread, as the native runner does.
 
 ## Components
 

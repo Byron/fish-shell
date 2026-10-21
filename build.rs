@@ -3,12 +3,23 @@ use fish_build_helper::{
     workspace_root,
 };
 use rsconf::Target;
+#[cfg(not(windows))]
 use std::path::{Path, PathBuf};
 
 fn main() {
     let is_nightly =
         rustc_version::version_meta().unwrap().channel == rustc_version::Channel::Nightly;
     rsconf::declare_cfg("nightly", is_nightly);
+
+    // Select the backend from Cargo's target, never from the shell used to
+    // invoke Cargo (MSYSTEM, PATH, or the host OS). Cygwin remains POSIX.
+    rsconf::set_env_value("BUILD_TARGET_TRIPLE", &env_var("TARGET").unwrap());
+    rsconf::set_env_value("BUILD_HOST_TRIPLE", &env_var("HOST").unwrap());
+    rsconf::set_env_value("BUILD_PROFILE", &env_var("PROFILE").unwrap());
+    rsconf::set_env_value("FISH_BUILD_VERSION", &get_version());
+    if target_os() == "windows" {
+        return;
+    }
 
     setup_paths();
 
@@ -29,15 +40,6 @@ fn main() {
         workspace_root().canonicalize().unwrap().to_str().unwrap(),
     );
 
-    // Some build info
-    rsconf::set_env_value("BUILD_TARGET_TRIPLE", &env_var("TARGET").unwrap());
-    rsconf::set_env_value("BUILD_HOST_TRIPLE", &env_var("HOST").unwrap());
-    rsconf::set_env_value("BUILD_PROFILE", &env_var("PROFILE").unwrap());
-
-    // Per https://doc.rust-lang.org/cargo/reference/build-scripts.html#inputs-to-the-build-script,
-    // the source directory is the current working directory of the build script
-    rsconf::set_env_value("FISH_BUILD_VERSION", &get_version());
-
     fish_build_helper::rebuild_if_embedded_path_changed("share");
 
     let build = cc::Build::new();
@@ -46,10 +48,16 @@ fn main() {
     target.set_verbose(true);
     detect_cfgs(&mut target);
 
-    #[cfg(all(target_env = "gnu", target_feature = "crt-static"))]
-    compile_error!(
-        "Statically linking against glibc has unavoidable crashes and is unsupported. Use dynamic linking or link statically against musl."
-    );
+    // Test the compilation target, not the build-script host. In particular,
+    // Windows GNU targets use the native backend above, not glibc.
+    if env_var("CARGO_CFG_TARGET_ENV").as_deref() == Some("gnu")
+        && env_var("CARGO_CFG_TARGET_FEATURE")
+            .is_some_and(|features| features.split(',').any(|feature| feature == "crt-static"))
+    {
+        panic!(
+            "Statically linking against glibc has unavoidable crashes and is unsupported. Use dynamic linking or link statically against musl."
+        );
+    }
 }
 
 /// Check target system support for certain functionality dynamically when the build is invoked,
@@ -188,13 +196,27 @@ fn setup_paths() {
 
 fn get_version() -> String {
     use std::process::Command;
-    String::from_utf8(
-        Command::new("build_tools/git_version_gen.sh")
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap()
-    .trim_ascii_end()
-    .to_owned()
+    let version = env!("CARGO_PKG_VERSION");
+    // Running a .sh file requires a POSIX host. Keep the same version format
+    // as git_version_gen.sh without needing sh, awk, or even Git installed.
+    let description = Command::new("git")
+        .args(["describe", "--always", "--dirty"])
+        .current_dir(workspace_root())
+        .env(
+            "GIT_CEILING_DIRECTORIES",
+            workspace_root().parent().unwrap(),
+        )
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok());
+    match description
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(description) if description.starts_with(version) => description.to_owned(),
+        Some(description) => format!("{version}-g{description}"),
+        None => version.to_owned(),
+    }
 }

@@ -9,15 +9,14 @@
 //! receive expanded arguments only; parsing and expansion stay in this crate.
 
 use std::collections::BTreeMap;
-use std::ffi::{CString, OsStr};
-use std::os::unix::ffi::OsStrExt as _;
-use std::path::{Component, Path, PathBuf};
+use std::ffi::CString;
+use std::path::{Component, PathBuf};
 
 use crate::arithmetic::{self, Variables};
 use crate::expand::{self, ExpansionContext, Mode};
 use crate::host::{self, Host, OpenMode, RedirectAction, Redirection, RunResult};
 use crate::syntax::{self, Command, CommandKind, List, LogicalOp, Pipeline, RedirectKind, Word};
-use crate::{Error, Result};
+use crate::{Error, Result, os};
 
 pub const BUILTINS: &[&[u8]] = &[
     b":",
@@ -395,15 +394,15 @@ impl Session {
             if runner.session.login {
                 files.push(b"/etc/profile".to_vec());
                 for name in [b".bash_profile".as_slice(), b".bash_login", b".profile"] {
-                    let path = path_join(&home, name);
-                    let file = Path::new(OsStr::from_bytes(&path));
-                    if file.is_file() && std::fs::File::open(file).is_ok() {
+                    let path = path_join(&home, name)?;
+                    let file = PathBuf::from(os::from_bytes(&path)?);
+                    if file.is_file() && std::fs::File::open(&file).is_ok() {
                         files.push(path);
                         break;
                     }
                 }
             } else if runner.session.interactive {
-                files.push(path_join(&home, b".bashrc"));
+                files.push(path_join(&home, b".bashrc")?);
             }
             if !runner.session.interactive {
                 if let Some(path) = runner.session.value(b"BASH_ENV")? {
@@ -414,7 +413,7 @@ impl Session {
             }
         }
         for path in files {
-            match std::fs::read(OsStr::from_bytes(&path)) {
+            match std::fs::read(os::from_bytes(&path)?) {
                 Ok(source) => {
                     runner.session.source_depth += 1;
                     let result = runner.source(&source);
@@ -595,7 +594,7 @@ impl<'a> Runner<'a> {
         let exiting = self.session.exited.take();
         let result = (|| {
             let home = self.session.value(b"HOME")?.unwrap_or_default();
-            match std::fs::read(OsStr::from_bytes(&path_join(&home, b".bash_logout"))) {
+            match std::fs::read(os::from_bytes(&path_join(&home, b".bash_logout")?)?) {
                 Ok(source) => {
                     if let Flow::Exit(code) = self.source(&source)? {
                         self.session.exited = Some(code);
@@ -824,7 +823,7 @@ impl<'a> Runner<'a> {
                     if values.len() != 1 {
                         return Err(Error::new("ambiguous redirect"));
                     }
-                    let path = path_join(&self.session.cwd, &values[0]);
+                    let path = path_join(&self.session.cwd, &values[0])?;
                     let mode = match redirect.kind {
                         RedirectKind::Read => OpenMode::Read,
                         RedirectKind::Append => OpenMode::Append,
@@ -1322,7 +1321,7 @@ impl<'a> Runner<'a> {
                     path
                 };
                 let old = self.session.cwd.clone();
-                let path = normalize(&path_join(&old, &path));
+                let path = normalize(&path_join(&old, &path)?)?;
                 self.host.change_dir(&path)?;
                 self.session.set_value(b"OLDPWD", old)?;
                 self.session.set_cwd(path);
@@ -1475,8 +1474,8 @@ impl<'a> Runner<'a> {
                 let file = args
                     .first()
                     .ok_or_else(|| Error::new("source: filename required"))?;
-                let path = self.source_path(file);
-                let source = std::fs::read(OsStr::from_bytes(&path))?;
+                let path = self.source_path(file)?;
+                let source = std::fs::read(os::from_bytes(&path)?)?;
                 let old = if args.len() > 1 {
                     Some(std::mem::replace(
                         &mut self.session.positional,
@@ -1708,10 +1707,10 @@ impl<'a> Runner<'a> {
         Ok(Some(Flow::Normal))
     }
 
-    fn source_path(&self, file: &[u8]) -> Vec<u8> {
-        if !file.contains(&b'/') {
+    fn source_path(&self, file: &[u8]) -> Result<Vec<u8>> {
+        if !has_path_separator(file) {
             if let Some(path) = self.find_command(file) {
-                return path;
+                return Ok(path);
             }
         }
         path_join(&self.session.cwd, file)
@@ -1724,16 +1723,32 @@ impl<'a> Runner<'a> {
             .ok()
             .flatten()
             .unwrap_or_default();
-        let paths = if name.contains(&b'/') {
-            vec![path_join(&self.session.cwd, name)]
+        let paths = if has_path_separator(name) {
+            vec![path_join(&self.session.cwd, name).ok()?]
         } else {
-            path.split(|&c| c == b':')
-                .map(|p| path_join(&path_join(&self.session.cwd, p), name))
+            std::env::split_paths(&os::from_bytes(&path).ok()?)
+                .filter_map(|p| {
+                    let base =
+                        path_join(&self.session.cwd, &os::to_bytes(p.as_os_str()).ok()?).ok()?;
+                    path_join(&base, name).ok()
+                })
                 .collect()
         };
-        paths
-            .into_iter()
-            .find(|p| Path::new(OsStr::from_bytes(p)).is_file())
+        paths.into_iter().find_map(|p| {
+            let path = PathBuf::from(os::from_bytes(&p).ok()?);
+            if path.is_file() {
+                return Some(p);
+            }
+            // std::process::Command also searches for an .exe suffix on Windows.
+            #[cfg(windows)]
+            if path.extension().is_none() {
+                let executable = path.with_extension("exe");
+                if executable.is_file() {
+                    return os::to_bytes(executable.as_os_str()).ok();
+                }
+            }
+            None
+        })
     }
 
     fn conditional(&mut self, words: &[Word]) -> Result<bool> {
@@ -1810,11 +1825,15 @@ impl<'a> Runner<'a> {
         match args {
             [value] => Ok(!value.is_empty()),
             [op, value] => {
-                let path = path_join(&self.session.cwd, value);
-                let path = Path::new(OsStr::from_bytes(&path));
+                // String predicates do not need an OS representation of the value.
+                if op == b"-n" {
+                    return Ok(!value.is_empty());
+                }
+                if op == b"-z" {
+                    return Ok(value.is_empty());
+                }
+                let path = PathBuf::from(os::from_bytes(&path_join(&self.session.cwd, value)?)?);
                 Ok(match op.as_slice() {
-                    b"-n" => !value.is_empty(),
-                    b"-z" => value.is_empty(),
                     b"-e" => path.exists(),
                     b"-f" => path.is_file(),
                     b"-d" => path.is_dir(),
@@ -2319,16 +2338,19 @@ fn parse_number(bytes: &[u8]) -> Result<i64> {
         .parse()
         .map_err(|_| Error::new(format!("{}: integer expression expected", display(bytes))))
 }
-fn path_join(base: &[u8], path: &[u8]) -> Vec<u8> {
-    Path::new(OsStr::from_bytes(base))
-        .join(OsStr::from_bytes(path))
-        .as_os_str()
-        .as_bytes()
-        .to_vec()
+fn has_path_separator(path: &[u8]) -> bool {
+    path.contains(&b'/') || cfg!(windows) && path.contains(&b'\\')
 }
-fn normalize(path: &[u8]) -> Vec<u8> {
+fn path_join(base: &[u8], path: &[u8]) -> Result<Vec<u8>> {
+    os::to_bytes(
+        PathBuf::from(os::from_bytes(base)?)
+            .join(os::from_bytes(path)?)
+            .as_os_str(),
+    )
+}
+fn normalize(path: &[u8]) -> Result<Vec<u8>> {
     let mut result = PathBuf::new();
-    for component in Path::new(OsStr::from_bytes(path)).components() {
+    for component in PathBuf::from(os::from_bytes(path)?).components() {
         match component {
             Component::ParentDir => {
                 result.pop();
@@ -2337,7 +2359,7 @@ fn normalize(path: &[u8]) -> Vec<u8> {
             c => result.push(c),
         }
     }
-    result.as_os_str().as_bytes().to_vec()
+    os::to_bytes(result.as_os_str())
 }
 
 #[cfg(test)]
@@ -2511,7 +2533,7 @@ mod tests {
 
     #[test]
     fn parsing_does_not_execute() {
-        let mut session = session();
+        let session = session();
         assert_eq!(session.check_syntax(b"echo \"$(touch unexpected)\"").0, 0);
         assert_eq!(session.check_syntax(b"echo \"$(touch unexpected)").0, 2);
     }
@@ -2601,19 +2623,92 @@ mod tests {
 
     #[test]
     fn recursive_substitutions_are_bounded_and_nameref_prefixes_restore() {
+        // Match the native runner's stack reservation. Windows' default test
+        // thread stack is too small for the evaluator's supported depth limit.
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let mut session = session();
+                let mut host = MemoryHost::default();
+                session
+                    .eval(
+                        b"n=old; declare -n ref=n; f() { echo $n:$ref; }; ref=new f; echo $n:$ref",
+                        &mut host,
+                    )
+                    .unwrap();
+                assert_eq!(host.output, b"new:new\nold:old\n");
+                session
+                    .eval(br#"x='echo $(eval "$x")'; eval "$x""#, &mut host)
+                    .unwrap();
+                assert!(
+                    String::from_utf8_lossy(&host.output)
+                        .contains("maximum subshell depth exceeded")
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn native_paths_support_source_globs_and_command_lookup() {
+        let directory = std::env::temp_dir().join(format!(
+            "rash native-é-🐟-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
+        std::fs::write(directory.join("source.rash"), b"echo sourced").unwrap();
+        let executable = directory.join(if cfg!(windows) {
+            "portable-probe.exe"
+        } else {
+            "portable-probe"
+        });
+        std::fs::write(&executable, b"").unwrap();
+
         let mut session = session();
         let mut host = MemoryHost::default();
+        let paths = std::env::join_paths([directory.join("missing"), directory.clone()]).unwrap();
+        session
+            .set_value(b"PATH", os::to_bytes(&paths).unwrap())
+            .unwrap();
+        let mut directory_bytes = os::to_bytes(directory.as_os_str()).unwrap();
+        if cfg!(windows) {
+            directory_bytes.iter_mut().for_each(|byte| {
+                if *byte == b'\\' {
+                    *byte = b'/';
+                }
+            });
+        }
+        session
+            .set_value(b"DIRECTORY", directory_bytes.clone())
+            .unwrap();
         session
             .eval(
-                b"n=old; declare -n ref=n; f() { echo $n:$ref; }; ref=new f; echo $n:$ref",
+                br#"source "$DIRECTORY/source.rash"; printf '%s\n' "$DIRECTORY"/*.rash; type portable-probe"#,
                 &mut host,
             )
             .unwrap();
-        assert_eq!(host.output, b"new:new\nold:old\n");
-        session
-            .eval(br#"x='echo $(eval "$x")'; eval "$x""#, &mut host)
-            .unwrap();
-        assert!(String::from_utf8_lossy(&host.output).contains("maximum subshell depth exceeded"));
+        let expected = [
+            b"sourced\n".as_slice(),
+            &directory_bytes,
+            b"/source.rash\nportable-probe is ",
+            &os::to_bytes(executable.as_os_str()).unwrap(),
+            b"\n",
+        ]
+        .concat();
+        assert_eq!(host.output, expected);
+        assert_eq!(session.status, 0);
     }
     #[test]
     fn login_logout_runs_after_exit_without_losing_its_status() {
@@ -2630,7 +2725,7 @@ mod tests {
         std::fs::create_dir(&home).unwrap();
         std::fs::write(home.join(".bash_logout"), b"echo logout").unwrap();
         session
-            .set_value(b"HOME", home.as_os_str().as_bytes().to_vec())
+            .set_value(b"HOME", os::to_bytes(home.as_os_str()).unwrap())
             .unwrap();
         session.login = true;
         session.startup_ran = true;

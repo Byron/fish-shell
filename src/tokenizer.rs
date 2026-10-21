@@ -8,10 +8,12 @@ use crate::parser_keywords::parser_keywords_is_subcommand;
 use crate::prelude::*;
 use crate::redirection::RedirectionMode;
 use fish_feature_flags::{FeatureFlag, feature_test};
-use libc::{STDIN_FILENO, STDOUT_FILENO};
+// These are descriptor numbers in Fish syntax, including on Windows.
+const STDIN_FILENO: i32 = 0;
+const STDOUT_FILENO: i32 = 1;
+#[cfg(not(windows))]
 use nix::fcntl::OFlag;
 use std::ops::Range;
-use std::os::fd::RawFd;
 
 /// Token types. XXX Why this isn't ParseTokenType, I'm not really sure.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1085,6 +1087,7 @@ impl TryFrom<&wstr> for PipeOrRedir {
 
 impl PipeOrRedir {
     /// Return the oflags (as in open(2)) for this redirection.
+    #[cfg(not(windows))]
     pub fn oflags(&self) -> Option<OFlag> {
         self.mode.oflags()
     }
@@ -1107,7 +1110,7 @@ impl PipeOrRedir {
 
 // Parse an fd from the non-empty string [start, end), all of which are digits.
 // Return the fd, or -1 on overflow.
-fn parse_fd(s: &wstr) -> RawFd {
+fn parse_fd(s: &wstr) -> i32 {
     assert!(!s.is_empty());
     let chars: Vec<u8> = s
         .chars()
@@ -1153,7 +1156,8 @@ mod tests {
     use super::{PipeOrRedir, TokFlags, TokenType, Tokenizer, TokenizerError};
     use crate::prelude::*;
     use crate::redirection::RedirectionMode;
-    use libc::{STDERR_FILENO, STDOUT_FILENO};
+    const STDERR_FILENO: i32 = 2;
+    const STDOUT_FILENO: i32 = 1;
 
     #[test]
     fn test_tokenizer() {

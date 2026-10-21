@@ -2,8 +2,14 @@
 
 The interactive dialect now uses **Fish evaluation and state**. Rash evaluates
 only explicit Bash scripts and explicit Rash shell sessions. There is no native
-Bash runtime dependency or separately installed shell binary. Earlier reports
+Bash runtime dependency; a standalone `rash` executable is also built. Earlier reports
 retain the history of the former dual-language session and its measurements.
+
+Unless a section says otherwise, this guide describes the POSIX Fish frontend,
+including the MSYS2 build. The initial native Windows frontend uses the shared
+Fish parser, a smaller Fish evaluator and a portable Rash host. Its basic prompt
+does not yet implement the editor, mode switching or job-control integration
+described here. See [native-windows.md](native-windows.md).
 
 ## Build, invoke and switch
 
@@ -122,7 +128,7 @@ The public Fish commands added by this work are `fish_input_mode` and `rash`.
 The obsolete `bash_session` job proxy and generated `$bash_jobs` variable have
 been removed. Use ordinary `jobs`, `fg`, `bg`, `wait` and `disown` in each shell.
 Rash no longer advertises a rejection-only `fish_input_mode` builtin. The internal
-`src/bash_session.rs` module remains the required Rash host; it is not a command.
+`src/bash_session.rs` module remains the POSIX Fish Rash host; it is not a command.
 Existing Fish/Rash history directories retain their names and data.
 
 The script entry point remains explicit and keeps normal Fish script defaults.
@@ -239,19 +245,41 @@ in [bash-style-input-validation.md](bash-style-input-validation.md). The previou
 shared-session architecture. [rash-compatibility.md](rash-compatibility.md) remains
 the execution-compatibility ledger for explicit Rash sessions/scripts.
 
-## Windows and Git Bash
+## Native Windows, MSYS2 and WSL
 
-Rash removes the need to install a separate Bash interpreter wherever this Fish
-build runs. Windows users can try it under WSL without relying on Git Bash.
-Build or install this modified Fish inside the selected distribution first;
-for example, with Fish at `/usr/local/bin/fish` in Ubuntu:
+Both executables now build natively with Cargo. The target selects the backend;
+MSYS2 environment variables and feature toggles do not select it.
 
 ```powershell
-rustty.exe -e wsl.exe --distribution Ubuntu --exec /usr/local/bin/fish --rash-shell --bash-startup
+cargo build --locked --bins --target x86_64-pc-windows-msvc
+.\target\x86_64-pc-windows-msvc\debug\fish.exe -N -c 'echo native Fish'
+.\target\x86_64-pc-windows-msvc\debug\rash.exe -c 'printf "%s\n" "native Rash"'
+rustty.exe -e C:/src/fish-shell/target/x86_64-pc-windows-msvc/debug/fish.exe --rash-shell
 ```
 
-This recipe is documented but untested. It runs Linux Fish under WSL, not a
-native Windows Rash shell. Rash's core and Fish host still use Unix path,
-descriptor, process/signal and terminal APIs; native Windows support needs
-further portability work. Rash does not bundle Git or external Unix tools,
-and its incomplete Bash semantics do not yet replace all Git Bash workloads.
+The native frontend accepts Bash input through `rash`, `fish --rash-shell` and
+`fish --script-language=bash`. Unlike the POSIX Fish Rash-shell entry point,
+native `fish --rash-shell` also accepts `-c` and script files. Startup files remain
+opt-in with `--bash-startup`. The native basic prompt does not yet include Fish's
+editor, completion, history, configuration or terminal integration. Pipelines,
+background jobs, signal traps and job control still require the POSIX host.
+
+Native Windows tmuxx uses ConPTY. Start a separate owner explicitly with
+`tmuxx.exe -D -L native-fish-trial -f NUL`, then use the same instance name in
+`new-session` and Rustty's `--tmuxx=local:native-fish-trial` argument. Keep the
+native Fish path in the pane's explicit argv. Native Fish and Rash command
+execution, exit status and the no-argument Fish prompt have been checked through
+an isolated tmuxx owner without changing the user's active server or settings.
+Full commands and current limits are in [native-windows.md](native-windows.md).
+
+For the full POSIX Fish frontend on Windows, build with MSYS2's
+`x86_64-pc-cygwin` Rust toolchain or inside WSL. Existing terminals configured to
+launch `target/msys2/release/fish.exe` continue to use MSYS2. Building the native
+target does not update those paths. The Rustty and Windows Terminal user
+configuration is unchanged.
+
+If an MSYS2 or Git Bash shell launches a native executable with `-c` source, use
+`MSYS2_ARG_CONV_EXCL='*'` for that invocation to preserve the command text. This
+controls argument conversion, not the build target. Rash does not bundle Git or
+external Unix tools, and its incomplete Bash semantics do not yet replace all
+Git Bash workloads.

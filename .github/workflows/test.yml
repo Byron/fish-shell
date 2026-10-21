@@ -189,7 +189,22 @@ jobs:
       run: |
         make -C build VERBOSE=1 fish_run_tests
 
-  windows:
+  windows-native:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, build_tools/update-dependencies.sh
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: x86_64-pc-windows-msvc
+        components: clippy
+    - name: Build native Windows binaries
+      run: cargo build --locked --bins --target x86_64-pc-windows-msvc
+    - name: Test native Fish and Rash
+      run: cargo test --locked -p fish -p rash -p fish-widestring -p fish-fallback -p fish-feature-flags --target x86_64-pc-windows-msvc
+    - name: Lint native Fish and Rash
+      run: cargo clippy --locked -p fish -p rash --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+
+  windows-msys2:
     runs-on: windows-latest
     defaults:
       run:

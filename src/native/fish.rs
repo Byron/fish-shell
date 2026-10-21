@@ -1,0 +1,719 @@
+//! Initial native Fish evaluator using the same AST as the POSIX shell.
+//!
+//! Unsupported execution features produce errors, never translation into another shell.
+use crate::ast::{self, Keyword as _, Token as _};
+use crate::parse_constants::{ParseErrorCode, ParseKeyword, ParseTokenType, StatementDecoration};
+use crate::redirection::RedirectionMode;
+use crate::tokenizer::PipeOrRedir;
+use fish_widestring::{WString, wstr};
+use rash::host::{Command, Host, OpenMode, RedirectAction, Redirection};
+use rash::{Error, Result};
+use std::collections::BTreeMap;
+
+#[path = "fish_expand.rs"]
+mod expand;
+pub(crate) use expand::unescape_literal;
+
+#[derive(Clone)]
+struct Variable {
+    values: Vec<String>,
+    exported: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Flow {
+    Normal,
+    Break,
+    Continue,
+    Return,
+    Exit,
+}
+
+#[derive(Default)]
+struct Output {
+    redirects: Vec<Redirection>,
+    capture: bool,
+    bytes: Vec<u8>,
+}
+
+pub struct Session {
+    variables: BTreeMap<String, Variable>,
+    scopes: Vec<BTreeMap<String, Variable>>,
+    functions: BTreeMap<String, String>,
+    status: i32,
+    flow: Flow,
+    depth: usize,
+    loops: usize,
+    function_depth: usize,
+    function_frames: Vec<usize>,
+    source_depth: usize,
+}
+
+fn unsupported(what: &str) -> Error {
+    Error::new(format!("native Windows Fish does not yet support {what}"))
+}
+
+fn parse(source: &str) -> Result<(WString, ast::Ast)> {
+    let source = WString::from(source);
+    let mut errors = Vec::new();
+    let tree = ast::parse(&source, Default::default(), Some(&mut errors));
+    if tree.errored() {
+        return Err(Error::new(
+            errors
+                .iter()
+                .map(|error| {
+                    if source.is_empty() {
+                        error.text.to_string()
+                    } else {
+                        error.describe(&source, false).to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ));
+    }
+    Ok((source, tree))
+}
+
+pub fn check_syntax(source: &str) -> Result<()> {
+    check_syntax_depth(source, 0)
+}
+
+fn check_syntax_depth(source: &str, depth: usize) -> Result<()> {
+    if depth >= 128 {
+        return Err(Error::new("maximum Fish syntax nesting depth exceeded"));
+    }
+    let (source, tree) = parse(source)?;
+    for node in tree.walk() {
+        match node.kind() {
+            ast::Kind::Argument(arg) => expand::syntax(&text(&source, arg), depth)?,
+            ast::Kind::VariableAssignment(arg) => expand::syntax(&text(&source, arg), depth)?,
+            ast::Kind::Token(token) if token.token_type() == ParseTokenType::String => {
+                if let Some(range) = ast::Token::as_leaf(token).range() {
+                    expand::syntax(&source[range.as_usize()].to_string(), depth)?;
+                }
+            }
+            _ => (),
+        }
+    }
+    Ok(())
+}
+
+pub fn is_incomplete(source: &str) -> bool {
+    let source = WString::from(source);
+    let mut errors = Vec::new();
+    ast::parse(&source, Default::default(), Some(&mut errors));
+    !errors.is_empty()
+        && errors.iter().all(|error| {
+            matches!(
+                error.code,
+                ParseErrorCode::TokenizerUnterminatedQuote
+                    | ParseErrorCode::TokenizerUnterminatedSubshell
+                    | ParseErrorCode::TokenizerUnterminatedSlice
+                    | ParseErrorCode::TokenizerUnterminatedEscape
+            ) || error.text.to_string().starts_with("Missing end to balance")
+                || (error.source_start >= source.len()
+                    && error.text.to_string().contains("Expected"))
+        })
+}
+
+fn text(source: &wstr, node: &impl ast::Node) -> String {
+    source[node.source_range().as_usize()].to_string()
+}
+
+impl Session {
+    pub fn new() -> Result<Self> {
+        let mut variables = BTreeMap::new();
+        for (name, value) in std::env::vars_os() {
+            let mut name = name
+                .into_string()
+                .map_err(|_| Error::new("environment variable name is not Unicode"))?;
+            // Windows' hidden per-drive working directories are not shell variables.
+            if name.starts_with('=') {
+                continue;
+            }
+            if name.eq_ignore_ascii_case("PATH") {
+                name = "PATH".into();
+            }
+            let value = value
+                .into_string()
+                .map_err(|_| Error::new(format!("environment variable {name} is not Unicode")))?;
+            let values = if name.ends_with("PATH") {
+                value.split(';').map(str::to_owned).collect()
+            } else {
+                vec![value]
+            };
+            variables.insert(
+                name,
+                Variable {
+                    values,
+                    exported: true,
+                },
+            );
+        }
+        if !variables.contains_key("HOME") {
+            if let Some(profile) = variables.get("USERPROFILE").cloned() {
+                variables.insert("HOME".into(), profile);
+            }
+        }
+        variables.insert(
+            "PWD".into(),
+            Variable {
+                values: vec![std::env::current_dir()?.to_string_lossy().into_owned()],
+                exported: true,
+            },
+        );
+        Ok(Self {
+            variables,
+            scopes: vec![BTreeMap::new()],
+            functions: BTreeMap::new(),
+            status: 0,
+            flow: Flow::Normal,
+            depth: 0,
+            loops: 0,
+            function_depth: 0,
+            function_frames: vec![],
+            source_depth: 0,
+        })
+    }
+
+    pub fn set_args(&mut self, args: Vec<String>) {
+        self.variables.insert(
+            "argv".into(),
+            Variable {
+                values: args,
+                exported: false,
+            },
+        );
+    }
+    pub fn status(&self) -> i32 {
+        self.status
+    }
+    pub fn exit_requested(&self) -> bool {
+        self.flow == Flow::Exit
+    }
+
+    pub fn eval(&mut self, source: &str, host: &mut impl Host) -> Result<i32> {
+        let result = self.eval_source(source, host, &mut Output::default());
+        if let Err(error) = &result {
+            self.status = error.status;
+        }
+        result.map(|_| self.status)
+    }
+
+    fn eval_source(
+        &mut self,
+        source: &str,
+        host: &mut impl Host,
+        output: &mut Output,
+    ) -> Result<()> {
+        if self.depth >= 128 {
+            return Err(Error::new("maximum Fish evaluation depth exceeded"));
+        }
+        let (source, tree) = parse(source)?;
+        // Reject unsupported syntax throughout this input before any command executes.
+        for node in tree.walk() {
+            match node.kind() {
+                ast::Kind::JobPipeline(job) if job.bg.is_some() => {
+                    return Err(unsupported("background jobs"));
+                }
+                ast::Kind::JobPipeline(job) if !job.continuation.is_empty() => {
+                    return Err(unsupported("pipelines"));
+                }
+                ast::Kind::JobPipeline(job) if job.time.is_some() => {
+                    return Err(unsupported("the time keyword"));
+                }
+                ast::Kind::NotStatement(node) if node.time.is_some() => {
+                    return Err(unsupported("the time keyword"));
+                }
+                ast::Kind::SwitchStatement(_) => return Err(unsupported("switch statements")),
+                ast::Kind::DecoratedStatement(node)
+                    if node.decoration() == StatementDecoration::Exec =>
+                {
+                    return Err(unsupported("exec process replacement"));
+                }
+                ast::Kind::Argument(arg) => expand::validate(&text(&source, arg))?,
+                ast::Kind::VariableAssignment(arg) => expand::validate(&text(&source, arg))?,
+                ast::Kind::Redirection(redir) => {
+                    let raw = WString::from(text(&source, &redir.oper));
+                    let parsed = PipeOrRedir::try_from(raw.as_utfstr())
+                        .map_err(|_| Error::new("invalid redirection"))?;
+                    if !(0..=2).contains(&parsed.fd) {
+                        return Err(unsupported("redirection of descriptors above 2"));
+                    }
+                    if matches!(
+                        parsed.mode,
+                        RedirectionMode::TryInput | RedirectionMode::NoClob
+                    ) {
+                        return Err(unsupported("try-input and no-clobber redirections"));
+                    }
+                }
+                ast::Kind::Token(token) if token.token_type() == ParseTokenType::String => {
+                    if let Some(range) = ast::Token::as_leaf(token).range() {
+                        expand::validate(&source[range.as_usize()].to_string())?;
+                    }
+                }
+                ast::Kind::BlockStatement(node) if !node.args_or_redirs.is_empty() => {
+                    return Err(unsupported("redirections on blocks"));
+                }
+                ast::Kind::BraceStatement(node) if !node.args_or_redirs.is_empty() => {
+                    return Err(unsupported("redirections on brace blocks"));
+                }
+                ast::Kind::IfStatement(node) if !node.args_or_redirs.is_empty() => {
+                    return Err(unsupported("redirections on an if block"));
+                }
+                ast::Kind::FunctionHeader(node) if !node.args.is_empty() => {
+                    return Err(unsupported("function options"));
+                }
+                _ => (),
+            }
+        }
+        self.depth += 1;
+        let result = self.eval_jobs(tree.top(), &source, host, output);
+        self.depth -= 1;
+        result
+    }
+
+    fn eval_jobs(
+        &mut self,
+        jobs: &ast::JobList,
+        source: &wstr,
+        host: &mut impl Host,
+        output: &mut Output,
+    ) -> Result<()> {
+        for job in jobs {
+            if self.flow != Flow::Normal || host.cancelled() {
+                break;
+            }
+            self.eval_conjunction(job, source, host, output)?;
+        }
+        Ok(())
+    }
+
+    fn eval_conjunction(
+        &mut self,
+        node: &ast::JobConjunction,
+        source: &wstr,
+        host: &mut impl Host,
+        output: &mut Output,
+    ) -> Result<()> {
+        if self.flow != Flow::Normal {
+            return Ok(());
+        }
+        if let Some(decorator) = &node.decorator {
+            let keyword = decorator.keyword();
+            if (keyword == ParseKeyword::And && self.status != 0)
+                || (keyword == ParseKeyword::Or && self.status == 0)
+            {
+                return Ok(());
+            }
+        }
+        self.eval_job(&node.job, source, host, output)?;
+        for continuation in &node.continuations {
+            if self.flow != Flow::Normal {
+                break;
+            }
+            let op = continuation.conjunction.token_type();
+            if (op == ParseTokenType::AndAnd && self.status == 0)
+                || (op == ParseTokenType::OrOr && self.status != 0)
+            {
+                self.eval_job(&continuation.job, source, host, output)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn eval_job(
+        &mut self,
+        node: &ast::JobPipeline,
+        source: &wstr,
+        host: &mut impl Host,
+        output: &mut Output,
+    ) -> Result<()> {
+        if node.variables.is_empty() {
+            return self.eval_statement(&node.statement, source, host, output);
+        }
+        let scope = self.assignments(&node.variables, source, host)?;
+        self.scopes.push(scope);
+        let result = self.eval_statement(&node.statement, source, host, output);
+        self.scopes.pop();
+        result
+    }
+
+    fn assignments(
+        &mut self,
+        assignments: &ast::VariableAssignmentList,
+        source: &wstr,
+        host: &mut impl Host,
+    ) -> Result<BTreeMap<String, Variable>> {
+        self.scopes.push(BTreeMap::new());
+        let result = (|| {
+            for assignment in assignments {
+                let raw = text(source, assignment);
+                let (name, value) = raw
+                    .split_once('=')
+                    .ok_or_else(|| Error::new("invalid variable assignment"))?;
+                valid_name(name)?;
+                if matches!(name, "status" | "fish_pid" | "PWD") {
+                    return Err(Error::new(format!("{name} is read-only")));
+                }
+                let values = self.expand(value, host)?;
+                self.scopes.last_mut().unwrap().insert(
+                    name.to_owned(),
+                    Variable {
+                        values,
+                        exported: true,
+                    },
+                );
+            }
+            Ok(())
+        })();
+        let scope = self.scopes.pop().unwrap();
+        result.map(|()| scope)
+    }
+
+    fn eval_statement(
+        &mut self,
+        statement: &ast::Statement,
+        source: &wstr,
+        host: &mut impl Host,
+        output: &mut Output,
+    ) -> Result<()> {
+        match statement {
+            ast::Statement::Decorated(node) => self.eval_command(node, source, host, output),
+            ast::Statement::Not(node) => {
+                let scope = self.assignments(&node.variables, source, host)?;
+                self.scopes.push(scope);
+                let result = self.eval_statement(&node.contents, source, host, output);
+                self.scopes.pop();
+                result?;
+                self.status = i32::from(self.status == 0);
+                Ok(())
+            }
+            ast::Statement::If(node) => {
+                self.scopes.push(BTreeMap::new());
+                let result = (|| {
+                    for clause in std::iter::once(&node.if_clause)
+                        .chain(node.elseif_clauses.iter().map(|c| &c.if_clause))
+                    {
+                        self.eval_conjunction(&clause.condition, source, host, output)?;
+                        for tail in &clause.andor_tail {
+                            self.eval_conjunction(&tail.job, source, host, output)?;
+                        }
+                        if self.flow != Flow::Normal {
+                            return Ok(());
+                        }
+                        if self.status == 0 {
+                            return self.eval_jobs(&clause.body, source, host, output);
+                        }
+                    }
+                    if let Some(clause) = &node.else_clause {
+                        self.eval_jobs(&clause.body, source, host, output)?;
+                    } else {
+                        self.status = 0;
+                    }
+                    Ok(())
+                })();
+                self.scopes.pop();
+                result
+            }
+            ast::Statement::Block(node) => self.eval_block(node, source, host, output),
+            ast::Statement::Brace(node) => {
+                self.scopes.push(BTreeMap::new());
+                let result = self.eval_jobs(&node.jobs, source, host, output);
+                self.scopes.pop();
+                result
+            }
+            ast::Statement::Switch(_) => Err(unsupported("switch statements")),
+        }
+    }
+
+    fn eval_block(
+        &mut self,
+        node: &ast::BlockStatement,
+        source: &wstr,
+        host: &mut impl Host,
+        output: &mut Output,
+    ) -> Result<()> {
+        if let ast::BlockStatementHeader::Function(header) = &node.header {
+            let name = self.expand_one(&text(source, &header.first_arg), host)?;
+            if name.is_empty() || name.starts_with('-') {
+                return Err(Error::new("function: invalid name"));
+            }
+            self.functions.insert(name, text(source, &node.jobs));
+            self.status = 0;
+            return Ok(());
+        }
+        self.scopes.push(BTreeMap::new());
+        let result = (|| match &node.header {
+            ast::BlockStatementHeader::Begin(_) => self.eval_jobs(&node.jobs, source, host, output),
+            ast::BlockStatementHeader::For(header) => {
+                let name = self.expand_one(&text(source, &header.var_name), host)?;
+                valid_name(&name)?;
+                let mut values = Vec::new();
+                for arg in &header.args {
+                    values.extend(self.expand(&text(source, arg), host)?);
+                }
+                self.loops += 1;
+                let result = (|| {
+                    for value in values {
+                        self.scopes.last_mut().unwrap().insert(
+                            name.clone(),
+                            Variable {
+                                values: vec![value],
+                                exported: false,
+                            },
+                        );
+                        self.eval_jobs(&node.jobs, source, host, output)?;
+                        if self.flow == Flow::Continue {
+                            self.flow = Flow::Normal;
+                        } else if self.flow != Flow::Normal || host.cancelled() {
+                            break;
+                        }
+                    }
+                    Ok(())
+                })();
+                self.loops -= 1;
+                if self.flow == Flow::Break {
+                    self.flow = Flow::Normal;
+                }
+                result
+            }
+            ast::BlockStatementHeader::While(header) => {
+                self.loops += 1;
+                let result = (|| {
+                    let mut last_status = 0;
+                    loop {
+                        self.eval_conjunction(&header.condition, source, host, output)?;
+                        for tail in &header.andor_tail {
+                            self.eval_conjunction(&tail.job, source, host, output)?;
+                        }
+                        if self.status != 0 || self.flow != Flow::Normal || host.cancelled() {
+                            if self.flow == Flow::Normal {
+                                self.status = last_status;
+                            }
+                            break;
+                        }
+                        self.eval_jobs(&node.jobs, source, host, output)?;
+                        last_status = self.status;
+                        if self.flow == Flow::Continue {
+                            self.flow = Flow::Normal;
+                        } else if self.flow != Flow::Normal {
+                            break;
+                        }
+                    }
+                    Ok(())
+                })();
+                self.loops -= 1;
+                if self.flow == Flow::Break {
+                    self.flow = Flow::Normal;
+                }
+                result
+            }
+            ast::BlockStatementHeader::Function(_) => unreachable!(),
+        })();
+        self.scopes.pop();
+        result
+    }
+
+    fn eval_command(
+        &mut self,
+        node: &ast::DecoratedStatement,
+        source: &wstr,
+        host: &mut impl Host,
+        output: &mut Output,
+    ) -> Result<()> {
+        let mut expanded_command = self.expand(&text(source, &node.command), host)?.into_iter();
+        let name = expanded_command
+            .next()
+            .ok_or_else(|| Error::new("command expanded to an empty list"))?;
+        let mut args: Vec<String> = expanded_command.collect();
+        let mut redirects = output.redirects.clone();
+        for arg in &node.args_or_redirs {
+            match arg {
+                ast::ArgumentOrRedirection::Argument(arg) => {
+                    args.extend(self.expand(&text(source, arg), host)?);
+                }
+                ast::ArgumentOrRedirection::Redirection(redir) => {
+                    let raw = WString::from(text(source, &redir.oper));
+                    let parsed = PipeOrRedir::try_from(raw.as_utfstr())
+                        .map_err(|_| Error::new("invalid redirection"))?;
+                    if !(0..=2).contains(&parsed.fd) {
+                        return Err(unsupported("redirection of descriptors above 2"));
+                    }
+                    let target = self.expand_one(&text(source, &redir.target), host)?;
+                    let action = match parsed.mode {
+                        RedirectionMode::Overwrite => RedirectAction::File {
+                            path: target.into_bytes(),
+                            mode: OpenMode::Write,
+                        },
+                        RedirectionMode::Append => RedirectAction::File {
+                            path: target.into_bytes(),
+                            mode: OpenMode::Append,
+                        },
+                        RedirectionMode::Input => RedirectAction::File {
+                            path: target.into_bytes(),
+                            mode: OpenMode::Read,
+                        },
+                        RedirectionMode::Fd if target == "-" => RedirectAction::Close,
+                        RedirectionMode::Fd => RedirectAction::Dup(
+                            target
+                                .parse()
+                                .map_err(|_| Error::new("invalid redirection descriptor"))?,
+                        ),
+                        RedirectionMode::TryInput | RedirectionMode::NoClob => {
+                            return Err(unsupported("try-input and no-clobber redirections"));
+                        }
+                    };
+                    redirects.push(Redirection {
+                        fd: parsed.fd,
+                        action,
+                    });
+                    if parsed.stderr_merge {
+                        redirects.push(Redirection {
+                            fd: 2,
+                            action: RedirectAction::Dup(parsed.fd),
+                        });
+                    }
+                }
+            }
+        }
+        let redirects = host.prepare_redirects(&redirects)?;
+        let saved = std::mem::replace(&mut output.redirects, redirects);
+        let result = self.dispatch(&name, &args, node.decoration(), host, output);
+        output.redirects = saved;
+        result
+    }
+
+    fn write(&self, bytes: &[u8], host: &mut impl Host, output: &mut Output) -> Result<()> {
+        output
+            .bytes
+            .extend(host.write(1, bytes, &output.redirects, output.capture)?);
+        Ok(())
+    }
+
+    fn variable(&self, name: &str) -> Option<&Variable> {
+        self.scopes[self.scope_start()..]
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name))
+            .or_else(|| self.variables.get(name))
+    }
+    fn scope_start(&self) -> usize {
+        self.function_frames.last().copied().unwrap_or(0)
+    }
+    fn values(&self, name: &str) -> Vec<String> {
+        match name {
+            "status" => vec![self.status.to_string()],
+            "fish_pid" => vec![std::process::id().to_string()],
+            _ => self
+                .variable(name)
+                .map(|v| v.values.clone())
+                .unwrap_or_default(),
+        }
+    }
+    fn expand_one(&mut self, word: &str, host: &mut impl Host) -> Result<String> {
+        let mut values = self.expand(word, host)?;
+        if values.len() != 1 {
+            return Err(Error::new("expected exactly one expansion result"));
+        }
+        Ok(values.pop().unwrap())
+    }
+    fn expand(&mut self, word: &str, _host: &mut impl Host) -> Result<Vec<String>> {
+        expand::word(word, |name| Ok(self.values(name)))
+    }
+}
+
+fn valid_name(name: &str) -> Result<()> {
+    if name.is_empty() || !name.chars().all(crate::common::valid_var_name_char) {
+        Err(Error::new(format!("invalid variable name: {name}")))
+    } else {
+        Ok(())
+    }
+}
+
+#[path = "fish_builtins.rs"]
+mod builtins;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rash::host::{ReadResult, RunResult};
+
+    #[derive(Default)]
+    struct Capture(Vec<u8>);
+    impl Host for Capture {
+        fn run_pipeline(&mut self, _: &[Command], _: bool, _: bool) -> Result<RunResult> {
+            Err(Error::new(
+                "unexpected external command in Fish semantic test",
+            ))
+        }
+        fn change_dir(&mut self, _: &[u8]) -> Result<Vec<u8>> {
+            unreachable!()
+        }
+        fn read_line(&mut self, _: &[Redirection], _: bool) -> Result<ReadResult> {
+            unreachable!()
+        }
+        fn write(&mut self, _: i32, bytes: &[u8], _: &[Redirection], _: bool) -> Result<Vec<u8>> {
+            self.0.extend(bytes);
+            Ok(vec![])
+        }
+        fn cancelled(&self) -> bool {
+            false
+        }
+        fn jobs(&self) -> Vec<Vec<u8>> {
+            vec![]
+        }
+    }
+
+    fn run(source: &str) -> String {
+        let mut capture = Capture::default();
+        Session::new().unwrap().eval(source, &mut capture).unwrap();
+        String::from_utf8(capture.0).unwrap()
+    }
+
+    #[test]
+    fn fish_status_and_prefix_assignment_semantics() {
+        // Expected results checked against the POSIX Fish evaluator.
+        assert_eq!(
+            run(
+                "false; set native_probe value; echo $status; false; for x in; end; echo $status; false; while false; end; echo $status; set n yes; while test $n = yes; set n no; false; end; echo $status; X=hello Y=$X echo $X $Y; set old before; set -ap old new; echo $old"
+            ),
+            "1\n1\n0\n1\nhello hello\nnew before new\n"
+        );
+    }
+
+    #[test]
+    fn fish_function_boundaries_and_local_scope_semantics() {
+        assert_eq!(
+            run(
+                "set -g label global; function inner; echo $label; echo $exported_label; set new_binding private; end; function outer; set -l label outer; set -lx exported_label exported; inner; set -q new_binding; echo $status; end; outer; set -l local_only value; begin; set -lq local_only; echo $status; set -gq local_only; echo $status; set -el local_only; end; set -q local_only; echo $status"
+            ),
+            "global\nexported\n1\n0\n1\n1\n"
+        );
+    }
+
+    #[test]
+    fn syntax_checks_do_not_limit_the_accepted_fish_grammar() {
+        for source in [
+            "echo (echo hi) | other",
+            "echo \"$(echo \"a)\")\"",
+            "echo $items[1..-1]",
+            "switch value; case '*'; echo yes; end",
+        ] {
+            check_syntax(source).unwrap();
+        }
+        for source in [
+            "echo $",
+            "echo ${bash}",
+            "echo (echo $)",
+            "if true; echo yes",
+        ] {
+            assert!(check_syntax(source).is_err(), "{source}");
+        }
+        for source in ["if true", "echo 'unfinished", "echo |", "{ echo hi"] {
+            assert!(is_incomplete(source), "{source}");
+        }
+        assert!(!is_incomplete("end"));
+    }
+}

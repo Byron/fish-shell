@@ -5,9 +5,10 @@ use rash::{
     expand::{self, ExpansionContext, Mode},
 };
 use std::collections::BTreeMap;
-use std::os::unix::ffi::OsStrExt as _;
 use std::path::PathBuf;
 use std::process::Command;
+
+mod support;
 
 struct Context {
     variables: BTreeMap<Vec<u8>, Vec<u8>>,
@@ -39,7 +40,7 @@ impl ExpansionContext for Context {
         None
     }
     fn cwd(&self) -> Vec<u8> {
-        self.cwd.as_os_str().as_bytes().to_vec()
+        rash::os::to_bytes(self.cwd.as_os_str()).unwrap()
     }
     fn command_substitute(&mut self, _: &[u8]) -> Result<Vec<u8>> {
         Err(Error::new(
@@ -287,13 +288,27 @@ fn printf_matches_bash() {
             cwd: std::env::temp_dir(),
         };
         let actual = rash::builtins_printf::format(format, &args, &mut context).unwrap();
-        let output = Command::new(&oracle)
-            .args(["--noprofile", "--norc", "-c", "printf -- \"$@\"", "rash"])
-            .arg(std::ffi::OsStr::from_bytes(format))
-            .args(args.iter().map(|a| std::ffi::OsStr::from_bytes(a)))
-            .env("LC_ALL", "C")
-            .output()
-            .unwrap();
+        let mut source = b"printf --".to_vec();
+        for value in std::iter::once(*format).chain(args.iter().map(Vec::as_slice)) {
+            source.push(b' ');
+            source.push(b'\'');
+            for &byte in value {
+                if byte == b'\'' {
+                    source.extend_from_slice(b"'\\''");
+                } else {
+                    source.push(byte);
+                }
+            }
+            source.push(b'\'');
+        }
+        source.push(b'\n');
+        let output = support::run_source(
+            Command::new(&oracle)
+                .args(["--noprofile", "--norc", "-s"])
+                .env_remove("BASH_ENV")
+                .env("LC_ALL", "C"),
+            &source,
+        );
         assert_eq!(
             actual.bytes, output.stdout,
             "format: {format:?}, args: {args:?}"

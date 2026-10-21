@@ -115,6 +115,10 @@ readme = "README.rst"
 
 [dependencies]
 rash = { path = "crates/rash" }
+
+# The POSIX backend is also used by the MSYS2/Cygwin Rust target. Native
+# Windows builds must not pull in its Unix-only libraries or build scripts.
+[target.'cfg(not(windows))'.dependencies]
 tree-sitter = "0.25.10"
 tree-sitter-bash = "0.25.1"
 assert_matches.workspace = true
@@ -154,20 +158,21 @@ xterm-color.workspace = true
 portable-atomic.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-rust-embed = { workspace = true, features = [
-  "deterministic-timestamps",
-  "debug-embed",
-  "include-exclude",
-  "interpolate-folder-path",
-] }
-[target.'cfg(not(windows))'.dependencies]
-rust-embed = { workspace = true, features = [
-  "deterministic-timestamps",
-  "include-exclude",
-  "interpolate-folder-path",
-] }
+fish-widestring.workspace = true
+fish-fallback.workspace = true
+fish-feature-flags.workspace = true
+fish-printf.workspace = true
+macro_rules_attribute = "0.2.2"
 
-[dev-dependencies]
+[target.'cfg(not(windows))'.dependencies.rust-embed]
+workspace = true
+features = [
+  "deterministic-timestamps",
+  "include-exclude",
+  "interpolate-folder-path",
+]
+
+[target.'cfg(not(windows))'.dev-dependencies]
 serial_test.workspace = true
 
 [build-dependencies]
@@ -188,6 +193,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "fish"
 path = "src/bin/fish.rs"
+
+[[bin]]
+name = "rash"
+path = "src/bin/rash.rs"
 
 [[bin]]
 name = "fish_indent"

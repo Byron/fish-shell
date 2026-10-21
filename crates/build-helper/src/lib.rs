@@ -1,4 +1,4 @@
-use std::{borrow::Cow, env, os::unix::ffi::OsStrExt as _, path::Path};
+use std::{borrow::Cow, env, path::Path};
 
 pub fn env_var(name: &str) -> Option<String> {
     let err = match env::var(name) {
@@ -11,7 +11,7 @@ pub fn env_var(name: &str) -> Option<String> {
         NotUnicode(os_string) => {
             panic!(
                 "Environment variable {name} is not valid Unicode: {:?}",
-                os_string.as_bytes()
+                os_string
             )
         }
     }
