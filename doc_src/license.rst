@@ -12,6 +12,12 @@ License for fish
 
 Copyright © 1990-2007 Free Software Foundation, Inc. Printf (from GNU Coreutils 6.9) is released under the GNU General Public License, version 2.
 
+``crates/rash`` contains an in-progress Rust port of portions of GNU Bash 3.2,
+Copyright © 1987-2006 Free Software Foundation, Inc. These portions are released
+under the GNU General Public License, version 2 or any later version. The version
+2 option is used with fish. Source notices and a copy of the license are retained
+in ``crates/rash``.
+
 The GNU General Public License agreement follows.
 
 **GNU GENERAL PUBLIC LICENSE**

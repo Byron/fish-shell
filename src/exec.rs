@@ -462,6 +462,12 @@ fn can_use_posix_spawn_for_job(job: &Job, dup2s: &Dup2List) -> bool {
         return false;
     }
 
+    // Rash's ignored signals use Fish's handler in the parent so listeners and
+    // child reaping survive. The fork path installs SIG_IGN in the child.
+    if crate::signal::bash_has_ignored_signals() {
+        return false;
+    }
+
     // Hack - do not use posix_spawn if there are self-fd redirections.
     // For example if you were to write:
     //   cmd 6< /dev/null

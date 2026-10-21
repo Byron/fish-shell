@@ -269,10 +269,19 @@ impl Default for ScopedData {
 /// Miscellaneous data.
 #[derive(Default)]
 pub struct LibraryData {
+    pub bash_input_requested: bool,
+    /// Rash evaluation is confined to an explicitly launched shell process.
+    pub rash_shell: bool,
+    pub bash_startup_requested: bool,
+    pub bash_session: Option<Rc<std::cell::RefCell<crate::bash_session::Session>>>,
+    /// Display text for the next structured Rash pipeline passed to Fish's launcher.
+    pub bash_job_display: Option<(WString, WString)>,
     /// A fake value to be returned by builtin_commandline. This is used by the completion
     /// machinery when wrapping: e.g. if `tig` wraps `git` then git completions need to see git on
     /// the command line.
     pub transient_commandline: ScopedRefCell<Option<WString>>,
+
+    pub completion_view: ScopedRefCell<Option<crate::complete::CompletionView>>,
 
     /// A file descriptor holding the current working directory.
     /// Note that the long-term design of fish will implement subshells using threads;

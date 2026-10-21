@@ -23,6 +23,7 @@ pub mod exit;
 pub mod r#false;
 pub mod fg;
 pub mod fish_indent;
+pub mod fish_input_mode;
 pub mod fish_key_reader;
 pub mod function;
 pub mod functions;

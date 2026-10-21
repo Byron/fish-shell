@@ -52,6 +52,8 @@ pub enum SearchMode {
 /// Encapsulation of the reader's history search functionality.
 #[derive(Default)]
 pub struct ReaderHistorySearch {
+    bash_input: bool,
+    fish_evaluation: bool,
     /// The type of search performed.
     mode: SearchMode,
 
@@ -164,7 +166,11 @@ impl ReaderHistorySearch {
         hist: Arc<History>,
         mode: SearchMode,
         token_offset: usize,
+        bash_input: bool,
+        fish_evaluation: bool,
     ) {
+        self.bash_input = bash_input;
+        self.fish_evaluation = fish_evaluation;
         assert_ne!(
             mode,
             SearchMode::Inactive,
@@ -228,25 +234,35 @@ impl ReaderHistorySearch {
             let offset = find(text, needle).unwrap();
             self.add_if_new(SearchMatch::new(text.to_owned(), offset));
         } else if matches!(self.mode, SearchMode::Token | SearchMode::LastToken) {
-            let mut tok = Tokenizer::new(
-                text,
-                TokFlags {
-                    accept_unfinished: true,
-                    ..Default::default()
-                },
-            );
-
             let mut local_tokens = vec![];
-            while let Some(token) = tok.next() {
-                if token.type_ != TokenType::String {
-                    continue;
+            if self.bash_input {
+                for range in
+                    crate::bash_syntax::Syntax::for_input(text, self.fish_evaluation).tokens()
+                {
+                    let token = &text[range];
+                    if let Some(offset) = find(token, needle) {
+                        local_tokens.push(SearchMatch::new(token.to_owned(), offset));
+                    }
                 }
-                let text = tok.text_of(&token);
-                if let Some(offset) = find(text, needle) {
-                    local_tokens.push(SearchMatch::new(text.to_owned(), offset));
+            } else {
+                let mut tok = Tokenizer::new(
+                    text,
+                    TokFlags {
+                        accept_unfinished: true,
+                        ..Default::default()
+                    },
+                );
+
+                while let Some(token) = tok.next() {
+                    if token.type_ != TokenType::String {
+                        continue;
+                    }
+                    let text = tok.text_of(&token);
+                    if let Some(offset) = find(text, needle) {
+                        local_tokens.push(SearchMatch::new(text.to_owned(), offset));
+                    }
                 }
             }
-
             // Make sure tokens are added in reverse order. See #5150
             for tok in local_tokens.into_iter().rev() {
                 self.add_if_new(tok);

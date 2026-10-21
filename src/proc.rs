@@ -1097,7 +1097,9 @@ fn handle_child_status(job: &Job, proc: &Process, status: ProcStatus) {
             if is_interactive_session() {
                 // Mark the job group as cancelled.
                 job.group().cancel_with_signal(RawSignal::new(sig));
-            } else if !event::is_signal_observed(sig) {
+            } else if !event::is_signal_observed(sig)
+                && !crate::signal::bash_signal_is_observed(sig)
+            {
                 // Deliver the SIGINT or SIGQUIT signal to ourself since we're not interactive.
                 let act =
                     SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty()).into();

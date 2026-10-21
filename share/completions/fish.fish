@@ -22,3 +22,8 @@ complete -c fish -l print-rusage-self -d "Print stats from getrusage at exit" -f
 complete -c fish -l print-debug-categories -d "Print the debug categories fish knows" -f
 
 complete -c fish -k -x -a "(__fish_complete_suffix .fish)"
+
+complete -c fish -l interactive-language -x -a "fish bash" -d "Select Fish input syntax"
+complete -c fish -l script-language -x -a "fish bash" -d "Select script file language"
+complete -c fish -l rash-shell -d "Start an isolated interactive Rash shell"
+complete -c fish -l bash-startup -d "Read Bash startup files in the Rash session"

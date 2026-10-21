@@ -43,6 +43,7 @@ use fish_wcstringutil::{subsequence_in_string, trim_in_place};
 use fish_widestring::{ANY_STRING, bytes2wcstring, cstr2wcstring, subslice_position};
 use lru::LruCache;
 use rand::RngExt as _;
+use std::os::unix::ffi::OsStringExt;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet},
@@ -295,6 +296,7 @@ impl HistoryItem {
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub enum MemoryHistoryId {
     PrivateMode,
+    BashPrivateMode,
     BuiltinRead,
 }
 
@@ -302,6 +304,20 @@ pub enum MemoryHistoryId {
 pub enum HistoryId {
     Memory(MemoryHistoryId),
     Disk { session_id: WString },
+    BashDisk { session_id: WString },
+}
+
+impl HistoryId {
+    pub fn for_input(self, bash_style: bool, rash_shell: bool) -> Self {
+        if !bash_style || !rash_shell {
+            return self;
+        }
+        match self {
+            Self::Disk { session_id } => Self::BashDisk { session_id },
+            Self::Memory(_) => Self::Memory(MemoryHistoryId::BashPrivateMode),
+            id => id,
+        }
+    }
 }
 
 static HISTORIES: Mutex<BTreeMap<HistoryId, Arc<History>>> = Mutex::new(BTreeMap::new());
@@ -1212,11 +1228,22 @@ impl History {
     /// Creates a new History with a custom directory path.
     /// The history file will be stored at `{directory}/{name}_history`.
     /// If the directory is None, it will be stored at path_get_data().
-    fn new_with_directory(id: HistoryId, directory: Option<WString>) -> Arc<Self> {
+    fn new_with_directory(id: HistoryId, mut directory: Option<WString>) -> Arc<Self> {
+        if matches!(id, HistoryId::BashDisk { .. }) {
+            let dir =
+                directory.unwrap_or_else(|| path_get_data().path.to_owned()) + L!("/bash-history");
+            let _ = std::fs::create_dir_all(std::ffi::OsString::from_vec(
+                fish_widestring::wcs2bytes(&dir),
+            ));
+            directory = Some(dir);
+        }
         Arc::new(Self(Mutex::new(HistoryImpl::new(
             match id {
                 HistoryId::Memory(_) => WString::new(),
                 HistoryId::Disk {
+                    session_id: filename,
+                }
+                | HistoryId::BashDisk {
                     session_id: filename,
                 } => filename,
             },
@@ -1236,6 +1263,16 @@ impl History {
             let hist = Self::new_with_directory(id.clone(), None);
             histories.insert(id, Arc::clone(&hist));
             hist
+        }
+    }
+
+    /// Store original Bash spelling without parsing or expanding it as Fish source.
+    pub fn add_pending_bash(&self, text: WString, persistence: PersistenceMode) {
+        let mut imp = self.imp();
+        let item = HistoryItem::new(text, imp.timestamps_as_of_now(), persistence);
+        imp.add(item, true, persistence == PersistenceMode::Disk);
+        if persistence == PersistenceMode::Disk {
+            imp.save(false);
         }
     }
 
@@ -1790,7 +1827,7 @@ mod tests {
         common::ESCAPE_TEST_CHAR,
         env::{EnvMode, EnvSetMode, EnvStack},
         fs::{LockedFile, WriteMethod},
-        history::{HistoryId, Timestamps},
+        history::{HistoryId, MemoryHistoryId, Timestamps},
         prelude::*,
         tests::prelude::test_init,
         wutil::{wstat, wunlink},
@@ -1820,6 +1857,20 @@ mod tests {
         }
 
         false
+    }
+
+    #[test]
+    fn fish_input_modes_share_history() {
+        for id in [
+            HistoryId::Disk {
+                session_id: L!("example").to_owned(),
+            },
+            HistoryId::Memory(MemoryHistoryId::PrivateMode),
+        ] {
+            assert!(id.clone().for_input(true, false) == id);
+            assert!(id.clone().for_input(false, true) == id);
+            assert!(id.clone().for_input(true, true) != id);
+        }
     }
 
     // Helper to create a history with a custom directory, for testing.

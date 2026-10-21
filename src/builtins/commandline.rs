@@ -150,6 +150,7 @@ fn write_part(
     parser: &mut Parser,
     range: Range<usize>,
     range_is_single_token: bool,
+    bash_buffer: bool,
     cut_at_cursor: bool,
     token_mode: Option<TokenOutputMode>,
     buffer: &wstr,
@@ -167,6 +168,42 @@ fn write_part(
         streams.out.appendln(&buffer[range]);
         return;
     };
+
+    if bash_buffer {
+        let ranges = if range_is_single_token {
+            vec![range.clone()]
+        } else {
+            crate::bash_syntax::Syntax::for_input(
+                &buffer[range.clone()],
+                !parser.libdata().rash_shell,
+            )
+            .tokens()
+            .into_iter()
+            .map(|r| r.start + range.start..r.end + range.start)
+            .collect()
+        };
+        for range in ranges {
+            if cut_at_cursor && range.end >= cursor_pos {
+                continue;
+            }
+            let text = &buffer[range];
+            let value = match token_mode {
+                TokenOutputMode::Raw => Some(text.to_owned()),
+                TokenOutputMode::Unescaped => {
+                    crate::bash_syntax::unquote_for_input(text, !parser.libdata().rash_shell)
+                }
+                TokenOutputMode::Expanded => None,
+            };
+            let Some(value) = value else {
+                streams.err.append(L!(
+                    "commandline: cannot expand this Bash buffer; use --tokens-raw\n"
+                ));
+                return;
+            };
+            streams.out.appendln(&value);
+        }
+        return;
+    }
 
     let mut args = vec![];
     let mut add_token = |token_text: &wstr| {
@@ -258,7 +295,13 @@ pub fn commandline(
     streams: &mut IoStreams,
     args: &mut [&wstr],
 ) -> BuiltinResult {
-    let rstate = commandline_get_state(true);
+    let mut rstate = commandline_get_state(true);
+    let projected_view = parser.libdata().completion_view.borrow().clone();
+    if let Some(view) = &projected_view {
+        rstate.text = view.text.clone();
+        rstate.cursor_pos = view.cursor;
+        rstate.selection = None;
+    }
 
     let mut buffer_part = None;
     let mut cut_at_cursor = false;
@@ -411,6 +454,23 @@ pub fn commandline(
                 return Err(STATUS_INVALID_ARGS);
             }
             _ => panic!(),
+        }
+    }
+    if let Some(view) = &projected_view {
+        if w.argv.len() > w.wopt_index
+            || append_mode.is_some()
+            || function_mode
+            || search_field_mode
+            || selection_mode
+            || selection_start_mode
+            || selection_end_mode
+            || forward_jump
+            || forward_jump_till
+            || backward_jump
+            || backward_jump_till
+        {
+            view.rejected_edit.set(true);
+            return Err(STATUS_CMD_ERROR);
         }
     }
     if forward_jump || forward_jump_till || backward_jump || backward_jump_till {
@@ -699,6 +759,9 @@ pub fn commandline(
     } else if let Some(override_buffer) = &override_buffer {
         current_buffer = override_buffer;
         current_cursor_pos = current_buffer.len();
+    } else if projected_view.is_some() {
+        current_buffer = &rstate.text;
+        current_cursor_pos = rstate.cursor_pos;
     } else if parser.libdata().transient_commandline.borrow().is_some() {
         if cursor_mode && positional_args != 0 {
             err_str!("setting cursor while evaluating 'complete --arguments' is not yet supported")
@@ -728,11 +791,21 @@ pub fn commandline(
         return Err(STATUS_CMD_ERROR);
     }
 
+    let bash_buffer = !search_field_mode
+        && projected_view.is_none()
+        && override_buffer.is_none()
+        && parser.libdata().transient_commandline.borrow().is_none()
+        && crate::reader::reader_uses_bash();
+
     if is_valid {
         if current_buffer.is_empty() {
             return Err(STATUS_CMD_ERROR);
         }
-        let res = detect_parse_errors(current_buffer, None, /*accept_incomplete=*/ true);
+        let res = if bash_buffer {
+            crate::bash_syntax::check(current_buffer, parser)
+        } else {
+            detect_parse_errors(current_buffer, None, /*accept_incomplete=*/ true)
+        };
         return match res {
             Ok(()) => Ok(SUCCESS),
             Err(p) if p.incomplete => Err(STATUS_INVALID_ARGS),
@@ -748,7 +821,16 @@ pub fn commandline(
     }
 
     let range;
-    if search_field_mode {
+    if bash_buffer {
+        let syntax =
+            crate::bash_syntax::Syntax::for_input(current_buffer, !parser.libdata().rash_shell);
+        range = match buffer_part {
+            TextScope::String => 0..current_buffer.len(),
+            TextScope::Token => syntax.token_extent(current_cursor_pos).0,
+            TextScope::Process => syntax.process_extent(current_cursor_pos, false),
+            TextScope::Job => syntax.process_extent(current_cursor_pos, true),
+        };
+    } else if search_field_mode {
         range = 0..current_buffer.len();
     } else {
         match buffer_part {
@@ -801,6 +883,7 @@ pub fn commandline(
             parser,
             range,
             buffer_part == TextScope::Token,
+            bash_buffer,
             cut_at_cursor,
             token_mode,
             current_buffer,

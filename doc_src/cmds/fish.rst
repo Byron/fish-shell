@@ -38,6 +38,30 @@ The following options are available:
 **-i** or **--interactive**
     The shell is interactive.
 
+**--interactive-language=LANGUAGE**
+    Select ``fish`` (the default) or experimental Bash-style Fish input (``bash``) for the outer interactive reader.
+    Bash-style input translates supported Bash spellings to Fish and uses Fish expansion and evaluation rules. Fish functions, aliases, variables, jobs and configuration remain available in the same session. This is an input dialect, not Bash compatibility.
+    Configuration, functions, hooks, completions, ``source``, script files, ``-c`` and ``-C`` continue to use Fish syntax.
+    Use :doc:`fish_input_mode` to switch the input syntax for subsequent submissions. Unsupported constructs report errors before the submission executes; there is no fallback to a Bash evaluator.
+
+**--rash-shell**
+    Start a dedicated interactive shell using the experimental Rust ``rash`` Bash evaluator included in Fish. Requires a terminal on standard input and cannot be combined with ``-c``, a script file, ``--script-language``, ``--interactive-language`` or ``-n``.
+    Fish provides the editor, prompt, completion UI, history and terminal control. Fish configuration and ``-C`` still execute as Fish; ordinary submitted commands execute in Rash. Fish functions and private variables are not exposed to Rash command evaluation. Input-mode requests in Fish startup configuration are ignored.
+    From a Fish prompt, :doc:`rash` launches this same executable as a child process. Exported variables, the working directory and standard descriptors are inherited. Child state changes do not alter the parent; ``exit`` returns to the parent prompt. This mode cannot switch to Fish input in place.
+    Direct invocation requires **--bash-startup** to read Bash startup files. The :doc:`rash` function supplies it by default and inherits the calling Fish's login status. Rash is not a complete Bash implementation; see ``doc_internal/rash-compatibility.md`` in the source tree for limitations.
+
+**--script-language=LANGUAGE**
+    Select ``fish`` (the default) or ``bash`` for an explicit script file. Requires a file and cannot be combined with ``-c``; Bash scripts also reject ``-i``.
+    Bash dispatch runs Fish configuration and ``-C`` first, then evaluates the file in a fresh Rash session in the same process. Exported variables, working directory and standard descriptors are available; Fish functions and private variables remain Fish state. Fish exit hooks do not run after successful script dispatch.
+    With ``-n``, configuration and ``-C`` are skipped and Rash only checks syntax.
+
+**--bash-startup**
+    Read Bash startup files using Rash with **--rash-shell** or an explicit Bash script. This option is not available with Bash-style Fish input. Normal Fish configuration runs first; **-N** controls Fish configuration independently.
+    Interactive non-login Bash reads ``~/.bashrc``. With **--login**, Bash reads ``/etc/profile`` and the first readable ``~/.bash_profile``, ``~/.bash_login`` or ``~/.profile``; these files may explicitly source ``~/.bashrc``.
+    Noninteractive Bash scripts read the file named by ``BASH_ENV``. Without this flag, Bash startup files are suppressed.
+    Fish still supplies the interactive prompt, editing and completion; ``PROMPT_COMMAND`` runs before Fish's prompt. Use Bash ``source FILE [ARG ...]`` within the Rash shell to retain sourced state. Fish's ``source`` remains Fish, including when using Bash-style Fish input.
+    Rash implements a growing subset of Bash semantics. Startup frameworks requiring unimplemented syntax, builtin options or Readline need additional compatibility work; see ``doc_internal/bash-input-feasibility.md``.
+
 **-l** or **--login**
     Act as if invoked as a login shell.
 

@@ -24,7 +24,7 @@ fn is_relative_cd_path(path: &wstr) -> bool {
 // On failure, return an error.
 // The fd is stashed in the parser for eventual support for thread-backed subshells
 // with distinct CWDs.
-fn try_chdir(parser: &mut Parser, dir: &wstr, deref_symlink: bool) -> Result<(), Errno> {
+pub(crate) fn try_chdir(parser: &mut Parser, dir: &wstr, deref_symlink: bool) -> Result<(), Errno> {
     let norm_dir = normalize_path(dir, true);
     // Try opening the directory and invoking fchdir().
     let fd = wopen_dir(&norm_dir, BEST_O_SEARCH)?;

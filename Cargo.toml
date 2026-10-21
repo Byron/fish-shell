@@ -114,6 +114,9 @@ homepage = "https://fishshell.com"
 readme = "README.rst"
 
 [dependencies]
+rash = { path = "crates/rash" }
+tree-sitter = "0.25.10"
+tree-sitter-bash = "0.25.1"
 assert_matches.workspace = true
 cfg-if.workspace = true
 fish-build-helper.workspace = true

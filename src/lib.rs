@@ -15,6 +15,8 @@ pub mod wutil;
 pub mod abbrs;
 pub mod ast;
 pub mod autoload;
+pub mod bash_script;
+pub mod bash_session;
 pub mod builtins;
 pub mod complete;
 pub mod editable_line;
@@ -80,5 +82,10 @@ pub mod wildcard;
 #[cfg(feature = "gettext-extract")]
 pub extern crate fish_gettext_extraction;
 
+pub mod bash_input;
+pub mod bash_to_fish;
+#[cfg(test)]
+mod bash_input_session;
+pub mod bash_syntax;
 #[cfg(test)]
 mod tests;

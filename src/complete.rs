@@ -219,6 +219,15 @@ pub fn const_desc(s: &wstr) -> DescriptionFunc {
 
 pub type CompletionList = Vec<Completion>;
 
+/// A projected provider view. Edits require the caller's source mapping, so providers may
+/// inspect this view but cannot mutate the reader or enqueue editing commands through it.
+#[derive(Clone)]
+pub struct CompletionView {
+    pub text: WString,
+    pub cursor: usize,
+    pub rejected_edit: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
 /// This is an individual completion entry, i.e. the result of an expansion of a completion rule.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Completion {
@@ -1297,6 +1306,19 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
             self.complete_cmd_desc(&str_cmd);
         }
 
+        if let Some(state) = self.ctx.bash_state.filter(|state| !state.fish_evaluation) {
+            if !str_cmd.contains('/') {
+                self.complete_strings(
+                    &str_cmd,
+                    &{ Box::new(|_| WString::new()) },
+                    &state.commands(),
+                    CompleteFlags::default(),
+                    false,
+                );
+            }
+            return;
+        }
+
         // We don't really care if this succeeds or fails. If it succeeds this->completions will be
         // updated with choices for the user.
         _ = {
@@ -1350,6 +1372,13 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
 
     /// Attempt to complete an abbreviation for the given string.
     fn complete_abbr(&mut self, cmd: &wstr) {
+        if self
+            .ctx
+            .bash_state
+            .is_some_and(|state| !state.fish_evaluation)
+        {
+            return;
+        }
         // Copy the list of names and descriptions so as not to hold the lock across the call to
         // complete_strings.
         let mut possible_comp = Vec::new();
@@ -2533,6 +2562,20 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
         }
 
         let is_autosuggest = self.flags.autosuggestion();
+        let _projected_view = if self.ctx.has_parser() {
+            let view = self.ctx.parser().libdata().completion_view.borrow().clone();
+            view.map(|mut view| {
+                view.text = cmdline.to_owned() + &view.text[view.cursor..];
+                view.cursor = cmdline.len();
+                self.ctx
+                    .parser()
+                    .libdata()
+                    .completion_view
+                    .scoped_replace(Some(view))
+            })
+        } else {
+            None
+        };
         // Perhaps set a transient commandline so that custom completions
         // builtin_commandline will refer to the wrapped command. But not if
         // we're doing autosuggestions.
@@ -3238,6 +3281,46 @@ mod tests {
     use fish_widestring::str2wcstring;
     use std::collections::HashMap;
     use std::ffi::CString;
+
+    #[test]
+    #[serial]
+    fn projected_commandline_view() {
+        test_init();
+        let mut parser = TestParser::new();
+        parser.eval(L!(r#"complete -c projected_view_test -f -a prefix -n 'test (commandline -C) = 23; and string match -q "* tail" -- (commandline)'"#), &IoChain::new());
+        let source = L!("projected_view_test pre tail");
+        let cursor = L!("projected_view_test pre").len();
+        let rejected_edit = std::rc::Rc::new(std::cell::Cell::new(false));
+        let view = parser
+            .libdata()
+            .completion_view
+            .scoped_replace(Some(super::CompletionView {
+                text: source.to_owned(),
+                cursor,
+                rejected_edit: rejected_edit.clone(),
+            }));
+        assert_eq!(cursor, 23);
+        let candidates = complete(
+            &source[..cursor],
+            CompletionRequestOptions::Completion,
+            &mut parser.context(),
+        )
+        .0;
+        assert!(candidates.iter().any(|c| c.completion == "fix"));
+        assert!(!rejected_edit.get());
+        let before = crate::reader::commandline_get_state(false);
+        parser.eval(
+            L!("commandline -r corrupted; commandline -C 0; commandline -f execute"),
+            &IoChain::new(),
+        );
+        assert!(rejected_edit.get());
+        let after = crate::reader::commandline_get_state(false);
+        assert_eq!(before.text, after.text);
+        assert_eq!(before.cursor_pos, after.cursor_pos);
+        drop(view);
+        assert!(parser.libdata().completion_view.borrow().is_none());
+        super::complete_remove_all(L!("projected_view_test").to_owned(), false, false);
+    }
 
     /// Joins a std::vector<wcstring> via commas.
     fn comma_join(lst: Vec<WString>) -> WString {

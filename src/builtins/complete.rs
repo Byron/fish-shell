@@ -505,6 +505,15 @@ pub fn complete(parser: &mut Parser, streams: &mut IoStreams, argv: &mut [&wstr]
 
         let (token, _) = get_token_extent(&do_complete_param, do_complete_param.len());
 
+        // A provider can recursively complete a different Fish command. Its explicit context
+        // replaces the projected view, while edit rejection belongs to the outer transaction.
+        let projected_view = parser.libdata().completion_view.borrow().clone();
+        let _projected_view = projected_view.map(|mut view| {
+            view.text = do_complete_param.clone();
+            view.cursor = view.text.len();
+            parser.libdata().completion_view.scoped_replace(Some(view))
+        });
+
         // Create a scoped transient command line, so that builtin_commandline will see our
         // argument, not the reader buffer.
         let _remove_transient = parser

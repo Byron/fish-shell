@@ -79,8 +79,8 @@ use crate::{
     portable_atomic::AtomicU64,
     prelude::*,
     proc::{
-        HAVE_PROC_STAT, hup_jobs, is_interactive_session, job_reap, jobs_requiring_warning_on_exit,
-        print_exit_warning_for_jobs, proc_update_jiffies,
+        HAVE_PROC_STAT, ProcStatus, hup_jobs, is_interactive_session, job_reap,
+        jobs_requiring_warning_on_exit, print_exit_warning_for_jobs, proc_update_jiffies,
     },
     reader::word_motion::bigword_class,
     screen::{CharOffset, Screen, is_dumb, screen_force_clear_to_end},
@@ -374,6 +374,21 @@ pub fn current_data() -> Option<&'static mut ReaderData> {
         .map(|data| unsafe { Pin::get_unchecked_mut(Pin::as_mut(data)) })
 }
 pub use current_data as reader_current_data;
+pub fn reader_uses_bash() -> bool {
+    current_data().is_some_and(|r| r.conf.bash_input)
+}
+
+pub fn reader_can_change_input_mode(parser: &Parser) -> bool {
+    let scope = parser.scope();
+    is_interactive_session()
+        && isatty(STDIN_FILENO)
+        && !scope.is_subshell
+        && !scope.is_event
+        && !scope.readonly_commandline
+        && !parser.is_breakpoint()
+        && reader_data_stack().len() <= 1
+        && current_data().is_none_or(|reader| reader.rls.is_none())
+}
 use fish_widestring::word_char::{WordCharClass, is_blank};
 
 /// Add a new reader to the reader stack.
@@ -454,6 +469,8 @@ pub fn fake_scoped_reader<'a>(parser: &'a mut Parser) -> impl DerefMut<Target = 
 /// Configuration that we provide to a reader.
 #[derive(Default)]
 pub struct ReaderConfig {
+    /// Only the explicitly selected outer reader accepts Bash input.
+    pub bash_input: bool,
     /// Left prompt command, typically fish_prompt.
     pub left_prompt_cmd: WString,
 
@@ -679,6 +696,7 @@ pub struct ReaderData {
     saved_autosuggestion: Option<Autosuggestion>,
     /// Current pager.
     pager: Pager,
+    bash_state: crate::bash_session::State,
     /// The output of the pager.
     current_page_rendering: PageRendering,
     /// When backspacing, we temporarily suppress autosuggestions.
@@ -825,6 +843,9 @@ pub fn reader_read(parser: &mut Parser, fd: RawFd, io: &IoChain) -> Result<(), E
 fn read_i(parser: &mut Parser) {
     assert_is_main_thread();
     let mut conf = ReaderConfig {
+        bash_input: reader_data_stack().is_empty()
+            && !parser.is_breakpoint()
+            && parser.libdata().bash_input_requested,
         event: L!("fish_prompt"),
         complete_ok: true,
         highlight_ok: true,
@@ -843,8 +864,19 @@ fn read_i(parser: &mut Parser) {
         conf.right_prompt_cmd = RIGHT_PROMPT_FUNCTION_NAME.to_owned();
     }
 
-    let mut reader = reader_push(parser, history_id(parser.vars()), conf);
-    reader.import_history_if_necessary();
+    conf.expand_abbrev_ok &= !(conf.bash_input && parser.libdata().rash_shell);
+    let id = history_id(parser.vars()).for_input(conf.bash_input, parser.libdata().rash_shell);
+    let mut reader = reader_push(parser, id, conf);
+    if reader.conf.bash_input {
+        if let Err(err) = reader.activate_bash_input() {
+            eprintf!("fish: cannot start Bash input: %s\n", err.to_string());
+            reader.parser.set_last_statuses(Statuses::just(125));
+            reader_pop();
+            return;
+        }
+    } else {
+        reader.import_history_if_necessary();
+    }
 
     // Set up tty protocols. These should be enabled while we're reading interactively,
     // and disabled before we run fish script, wildcards, or completions. This is scoped.
@@ -854,6 +886,9 @@ fn read_i(parser: &mut Parser) {
     while !check_exit_loop_maybe_warning(Some(&mut reader)) {
         RUN_COUNT.fetch_add(1, Ordering::Relaxed);
 
+        if reader.conf.bash_input && !reader.parser.libdata().rash_shell {
+            reader.bash_state = crate::bash_session::State::from_fish(reader.vars());
+        }
         let Some(command) = reader.readline(set_shell_modes_temporarily(reader.conf.inputfd), None)
         else {
             continue;
@@ -873,7 +908,19 @@ fn read_i(parser: &mut Parser) {
             L!("fish_preexec").to_owned(),
             vec![command.clone()],
         );
-        let eval_res = reader_run_command(reader.parser, &command);
+        let eval_res = reader_run_command(reader.parser, &command, reader.conf.bash_input);
+        if reader.conf.bash_input && reader.parser.libdata().rash_shell {
+            let state = reader
+                .parser
+                .libdata()
+                .bash_session
+                .as_ref()
+                .unwrap()
+                .borrow()
+                .state
+                .clone();
+            reader.bash_state = state;
+        }
         signal_clear_cancel();
         if !eval_res.no_status {
             STATUS_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -882,6 +929,10 @@ fn read_i(parser: &mut Parser) {
         // If the command requested an exit, then process it now and clear it.
         reader.data.exit_loop_requested |= reader.parser.libdata().exit_current_script;
         reader.parser.libdata_mut().exit_current_script = false;
+
+        if !reader.exit_loop_requested {
+            reader.apply_input_mode();
+        }
 
         BufferedOutputter::new(Outputter::stdoutput()).write_command(Osc133CommandFinished {
             exit_status: reader.parser.last_status(),
@@ -913,11 +964,18 @@ fn read_i(parser: &mut Parser) {
 
     // If we are the last reader, then kill remaining jobs before exiting.
     if reader_data_stack().is_empty() {
+        if let Some(session) = reader.parser.libdata().bash_session.clone() {
+            if let Err(error) = session.borrow_mut().finish(reader.parser) {
+                eprintf!("rash: %s\n", error.to_string());
+            }
+        }
         // Send the exit event and then commit to not executing any more fish script.
         EXIT_STATE.store(ExitState::RunningHandlers as u8, Ordering::Relaxed);
         event::fire_generic(reader.parser, L!("fish_exit").to_owned(), vec![]);
         EXIT_STATE.store(ExitState::FinishedHandlers as u8, Ordering::Relaxed);
         hup_jobs(reader.parser.jobs());
+        // The top-level parser can outlive Rust teardown; release the language state.
+        drop(reader.parser.libdata_mut().bash_session.take());
     }
 }
 
@@ -1075,7 +1133,10 @@ pub fn reader_change_history(history_id: HistoryId) {
     };
 
     data.history.save();
-    data.history = History::new(history_id);
+    data.history = History::new(history_id.for_input(
+        data.conf.bash_input,
+        !data.bash_state.fish_evaluation && data.conf.bash_input,
+    ));
     commandline_state_snapshot().history = Some(data.history.clone());
 }
 
@@ -1396,6 +1457,7 @@ impl ReaderData {
             autosuggestion: Default::default(),
             saved_autosuggestion: Default::default(),
             pager: Default::default(),
+            bash_state: Default::default(),
             current_page_rendering: Default::default(),
             suppress_autosuggestion: Default::default(),
             reset_loop_state: Default::default(),
@@ -1914,7 +1976,12 @@ impl<'a> Reader<'a> {
         );
 
         // Compute the indentation.
-        let indents = compute_indents(&full_line);
+        let indents = if self.conf.bash_input {
+            crate::bash_syntax::Syntax::for_input(&full_line, self.bash_state.fish_evaluation)
+                .indents()
+        } else {
+            compute_indents(&full_line)
+        };
 
         let screen = &mut self.data.screen;
         let pager = &mut self.data.pager;
@@ -2167,7 +2234,12 @@ impl ReaderData {
     fn replace_current_token(&mut self, new_token: WString) {
         // Find current token.
         let (elt, el) = self.active_edit_line();
-        let (token_range, _) = get_token_extent(el.text(), el.position());
+        let (token_range, _) = reader_token_extent(
+            el.text(),
+            el.position(),
+            self.conf.bash_input,
+            self.bash_state.fish_evaluation,
+        );
 
         self.replace_substring(elt, token_range, new_token);
     }
@@ -3435,12 +3507,19 @@ impl<'a> Reader<'a> {
                     let el = &self.data.command_line;
                     if matches!(mode, SearchMode::Token | SearchMode::LastToken) {
                         // Searching by token.
-                        let (token_range, _) = get_token_extent(el.text(), el.position());
+                        let (token_range, _) = reader_token_extent(
+                            el.text(),
+                            el.position(),
+                            self.conf.bash_input,
+                            self.bash_state.fish_evaluation,
+                        );
                         self.data.history_search.reset_to_mode(
                             el.text()[token_range.clone()].to_owned(),
                             self.history.clone(),
                             mode,
                             token_range.start,
+                            self.conf.bash_input,
+                            self.bash_state.fish_evaluation,
                         );
                     } else {
                         // Searching by line.
@@ -3449,6 +3528,8 @@ impl<'a> Reader<'a> {
                             self.history.clone(),
                             mode,
                             0,
+                            self.conf.bash_input,
+                            self.bash_state.fish_evaluation,
                         );
 
                         // Skip the autosuggestion in the history unless it was truncated.
@@ -3517,8 +3598,11 @@ impl<'a> Reader<'a> {
                 let search_string = if !self.history_search.active()
                     || self.history_search.search_string().is_empty()
                 {
-                    let cmdsub =
-                        get_cmdsubst_extent(self.command_line.text(), self.command_line.position());
+                    let cmdsub = if self.conf.bash_input {
+                        0..self.command_line.len()
+                    } else {
+                        get_cmdsubst_extent(self.command_line.text(), self.command_line.position())
+                    };
                     let cmdsub = &self.command_line.text()[cmdsub];
                     let needle = if !cmdsub.contains('\n') {
                         cmdsub
@@ -3923,7 +4007,15 @@ impl<'a> Reader<'a> {
                     let line_count = lineno(el.text(), el.len()) - 1;
 
                     if (0..=i32::try_from(line_count).unwrap()).contains(&line_new) {
-                        let indents = compute_indents(el.text());
+                        let indents = if self.conf.bash_input {
+                            crate::bash_syntax::Syntax::for_input(
+                                el.text(),
+                                self.bash_state.fish_evaluation,
+                            )
+                            .indents()
+                        } else {
+                            compute_indents(el.text())
+                        };
                         let base_pos_new = get_offset_from_line(el.text(), line_new).unwrap();
                         let base_pos_old = get_offset_from_line(el.text(), line_old).unwrap();
 
@@ -3996,13 +4088,23 @@ impl<'a> Reader<'a> {
                 let (elt, el) = self.active_edit_line();
                 let text = el.text();
 
-                let (mut tok, mut prev_tok) = get_token_extent(text, el.position());
+                let (mut tok, mut prev_tok) = reader_token_extent(
+                    text,
+                    el.position(),
+                    self.conf.bash_input,
+                    self.bash_state.fish_evaluation,
+                );
 
                 // In case we didn't find a token at or after the cursor...
                 if tok.start == el.len() {
                     // ...retry beginning from the previous token.
                     let pos = prev_tok.end;
-                    (tok, prev_tok) = get_token_extent(text, pos);
+                    (tok, prev_tok) = reader_token_extent(
+                        text,
+                        pos,
+                        self.conf.bash_input,
+                        self.bash_state.fish_evaluation,
+                    );
                 }
 
                 // Make sure we have two tokens.
@@ -4404,13 +4506,31 @@ impl<'a> Reader<'a> {
     }
 
     fn backward_token(&mut self) -> Option<usize> {
+        let (elt, el) = self.active_edit_line();
+        if self.conf.bash_input && elt == EditableLineTag::Commandline {
+            let pos = el.position();
+            return crate::bash_syntax::Syntax::for_input(
+                el.text(),
+                self.bash_state.fish_evaluation,
+            )
+            .tokens()
+            .into_iter()
+            .rev()
+            .find(|r| r.start < pos)
+            .map(|r| r.start);
+        }
         let (_elt, el) = self.active_edit_line();
         let pos = el.position();
         if pos == 0 {
             return None;
         }
 
-        let (tok, prev_tok) = get_token_extent(el.text(), el.position());
+        let (tok, prev_tok) = reader_token_extent(
+            el.text(),
+            el.position(),
+            self.conf.bash_input,
+            self.bash_state.fish_evaluation,
+        );
 
         // if we are at the start of a token, go back one
         let new_position = if tok.start == pos {
@@ -4446,6 +4566,13 @@ impl<'a> Reader<'a> {
             return None;
         }
 
+        if self.conf.bash_input {
+            return crate::bash_syntax::Syntax::for_input(&buffer, self.bash_state.fish_evaluation)
+                .tokens()
+                .into_iter()
+                .find(|r| r.end > pos)
+                .map(|r| r.end);
+        }
         let cmdsubst_range = get_cmdsubst_extent(&buffer, pos);
         for token in Tokenizer::new(
             &buffer[cmdsubst_range.clone()],
@@ -4467,7 +4594,10 @@ impl<'a> Reader<'a> {
 }
 
 /// Returns true if the last token is a comment.
-fn text_ends_in_comment(text: &wstr) -> bool {
+fn text_ends_in_comment(text: &wstr, bash: bool, fish: bool) -> bool {
+    if bash {
+        return crate::bash_syntax::Syntax::for_input(text, fish).ends_in_comment();
+    }
     Tokenizer::new(
         text,
         TokFlags {
@@ -4520,14 +4650,16 @@ impl<'a> Reader<'a> {
 
         // We only execute the command line.
         let elt = EditableLineTag::Commandline;
+        let bash_input = self.conf.bash_input;
+        let fish_evaluation = self.bash_state.fish_evaluation;
         let el = &mut self.command_line;
 
         // Allow backslash-escaped newlines.
         let mut continue_on_next_line = false;
         if el.position() >= el.len() {
             // We're at the end of the text and not in a comment (issue #1225).
-            continue_on_next_line =
-                is_backslashed(el.text(), el.position()) && !text_ends_in_comment(el.text());
+            continue_on_next_line = is_backslashed(el.text(), el.position())
+                && !text_ends_in_comment(el.text(), bash_input, fish_evaluation);
         } else {
             // Allow mid line split if the following character is whitespace (issue #613).
             if is_backslashed(el.text(), el.position())
@@ -4535,7 +4667,9 @@ impl<'a> Reader<'a> {
             {
                 continue_on_next_line = true;
                 // Check if the end of the line is backslashed (issue #4467).
-            } else if is_backslashed(el.text(), el.len()) && !text_ends_in_comment(el.text()) {
+            } else if is_backslashed(el.text(), el.len())
+                && !text_ends_in_comment(el.text(), bash_input, fish_evaluation)
+            {
                 // Move the cursor to the end of the line.
                 el.set_position(el.len());
                 continue_on_next_line = true;
@@ -4574,6 +4708,10 @@ impl<'a> Reader<'a> {
     // Replace the command line with any abbreviations as needed.
     // Return the test result, which may be incomplete to insert a newline, or an error.
     fn expand_for_execute(&mut self) -> Result<(), ParseIssue> {
+        if self.conf.bash_input {
+            let source = self.command_line.text().to_owned();
+            return crate::bash_syntax::check(&source, self.parser);
+        }
         // Expand abbreviations at the cursor.
         // The first expansion is "user visible" and enters into history.
         let el = &self.command_line;
@@ -4693,15 +4831,33 @@ impl ReaderData {
         }
 
         if let Some(completion) = self.pager.selected_completion(&self.current_page_rendering) {
-            let new_cmd_line = completion_apply_to_command_line(
-                &mut OperationContext::background_interruptible(EnvStack::globals()), // To-do: include locals.
-                &completion.completion,
-                completion.flags,
-                &self.cycle_command_line,
-                &mut cursor_pos,
-                false,
-                /*is_unique=*/ false, // don't care
-            );
+            let new_cmd_line = if self.conf.bash_input && self.history_pager.is_none() {
+                match bash_completion_edit(
+                    &self.cycle_command_line,
+                    cursor_pos,
+                    &completion.completion,
+                    completion.flags,
+                    &self.bash_state,
+                    EnvStack::globals(),
+                    false,
+                ) {
+                    Some((text, pos)) => {
+                        cursor_pos = pos;
+                        text
+                    }
+                    None => return,
+                }
+            } else {
+                completion_apply_to_command_line(
+                    &mut OperationContext::background_interruptible(EnvStack::globals()), // To-do: include locals.
+                    &completion.completion,
+                    completion.flags,
+                    &self.cycle_command_line,
+                    &mut cursor_pos,
+                    false,
+                    /*is_unique=*/ false, // don't care
+                )
+            };
             // Only update if something changed, to avoid useless edits in the undo history.
             if new_cmd_line != self.command_line.text() && new_cmd_line != self.cycle_command_line {
                 self.set_buffer_maintaining_pager(&new_cmd_line, cursor_pos);
@@ -5281,6 +5437,8 @@ pub(super) struct AutosuggestionResult {
 
     // The list of completions which may need loading.
     needs_load: Vec<WString>,
+    generation: u32,
+    bash_input: bool,
 }
 
 impl std::ops::Deref for AutosuggestionResult {
@@ -5307,6 +5465,8 @@ impl AutosuggestionResult {
             },
             command_line,
             needs_load: vec![],
+            generation: 0,
+            bash_input: false,
         }
     }
 
@@ -5323,9 +5483,14 @@ fn get_autosuggestion_performer(
     command_line: WString,
     cursor_pos: usize,
     history: Arc<History>,
+    bash_state: Option<crate::bash_session::State>,
 ) -> impl FnOnce() -> AutosuggestionResult + use<> {
     let generation_count = read_generation_count();
-    let vars = parser.vars().snapshot();
+    let vars = if let Some(state) = &bash_state {
+        state.completion_environment(parser.vars()).snapshot()
+    } else {
+        parser.vars().snapshot()
+    };
     let working_directory = parser.vars().get_pwd_slash();
     move || {
         assert_is_background_thread();
@@ -5333,6 +5498,89 @@ fn get_autosuggestion_performer(
         let ctx = &mut get_bg_context(&vars, generation_count);
         if ctx.check_cancel() {
             return nothing;
+        }
+
+        if let Some(state) = &bash_state {
+            ctx.bash_state = Some(state);
+            let mut search = HistorySearch::new_with(
+                history,
+                command_line.clone(),
+                SearchType::Prefix,
+                SearchFlags::default(),
+                0,
+            );
+            while !ctx.check_cancel() && search.go_to_next_match(SearchDirection::Backward) {
+                let text = search.current_string();
+                if state.fish_evaluation {
+                    let Ok(translated) = crate::bash_to_fish::translate(text) else {
+                        continue;
+                    };
+                    if !autosuggest_validate_from_history(
+                        &translated,
+                        0..translated.len(),
+                        &[],
+                        &working_directory,
+                        ctx,
+                    ) {
+                        continue;
+                    }
+                } else if !crate::bash_syntax::Syntax::new(text).valid() {
+                    continue;
+                }
+                // A projected simple command also gets Fish's cwd/path validation. Compound
+                // Bash history is validated by the Bash editing grammar, never the Fish parser.
+                if let Ok(projection) =
+                    crate::bash_input::Projection::for_state(text, text.len(), &vars, state)
+                {
+                    if projection.validate_state(state).is_err() {
+                        continue;
+                    }
+                    if !autosuggest_validate_from_history(
+                        &projection.text,
+                        0..projection.text.len(),
+                        &[],
+                        &working_directory,
+                        ctx,
+                    ) {
+                        continue;
+                    }
+                }
+                return AutosuggestionResult::new(
+                    command_line.clone(),
+                    0..command_line.len(),
+                    text.to_owned(),
+                    None,
+                    true,
+                );
+            }
+            let Ok(projection) =
+                crate::bash_input::Projection::for_state(&command_line, cursor_pos, &vars, state)
+            else {
+                return nothing;
+            };
+            let options = CompletionRequestOptions::Autosuggestion;
+            let Ok((mut candidates, needs_load)) = projection.complete(options, ctx) else {
+                return nothing;
+            };
+            sort_and_prioritize(&mut candidates, options);
+            let suggestion = candidates
+                .iter()
+                .find_map(|c| projection.apply(c, true).ok());
+            let mut result = match suggestion {
+                Some((text, _)) if text.starts_with(&command_line) => AutosuggestionResult::new(
+                    command_line.clone(),
+                    0..command_line.len(),
+                    text,
+                    None,
+                    false,
+                ),
+                _ => AutosuggestionResult {
+                    command_line,
+                    ..Default::default()
+                },
+            };
+            result.needs_load = needs_load;
+            return result;
         }
 
         // Only to be used if no case-sensitive suggestions are found.
@@ -5559,7 +5807,10 @@ impl<'a> Reader<'a> {
         if result.command_line == self.data.in_flight_autosuggest_request {
             self.data.in_flight_autosuggest_request.clear();
         }
-        if result.command_line != self.command_line.text() {
+        if result.command_line != self.command_line.text()
+            || result.generation != read_generation_count()
+            || result.bash_input != self.conf.bash_input
+        {
             // This autosuggestion is stale.
             return;
         }
@@ -5628,8 +5879,16 @@ impl<'a> Reader<'a> {
             el.text().to_owned(),
             el.position(),
             self.history.clone(),
+            self.conf.bash_input.then(|| self.bash_state.clone()),
         );
-        self.debouncers.autosuggestions.perform(performer);
+        let generation = read_generation_count();
+        let bash_input = self.conf.bash_input;
+        self.debouncers.autosuggestions.perform(move || {
+            let mut result = performer();
+            result.generation = generation;
+            result.bash_input = bash_input;
+            result
+        });
     }
 
     fn is_at_end(&self) -> bool {
@@ -5749,6 +6008,8 @@ impl<'a> Reader<'a> {
 
 #[derive(Default)]
 pub(super) struct HighlightResult {
+    generation: u32,
+    bash_input: bool,
     colors: Vec<HighlightSpec>,
     text: WString,
 }
@@ -5759,8 +6020,10 @@ fn get_highlight_performer(
     parser: &Parser,
     el: &EditableLine,
     io_ok: bool,
+    bash_state: Option<crate::bash_session::State>,
 ) -> impl FnOnce() -> HighlightResult + use<> {
     let vars = parser.vars().snapshot();
+    let bash_input = bash_state.is_some();
     let generation_count = read_generation_count();
     let position = el.position();
     let text = el.text().to_owned();
@@ -5770,8 +6033,21 @@ fn get_highlight_performer(
         }
         let ctx = &mut get_bg_context(&vars, generation_count);
         let mut colors = vec![];
-        highlight_shell(&text, &mut colors, ctx, io_ok, Some(position));
-        HighlightResult { colors, text }
+        if let Some(state) = &bash_state {
+            let syntax = crate::bash_syntax::Syntax::for_input(&text, state.fish_evaluation);
+            colors = syntax.highlight();
+            if io_ok {
+                syntax.highlight_paths(&text, &mut colors, state, &vars);
+            }
+        } else {
+            highlight_shell(&text, &mut colors, ctx, io_ok, Some(position));
+        }
+        HighlightResult {
+            colors,
+            text,
+            generation: generation_count,
+            bash_input,
+        }
     }
 }
 
@@ -5779,7 +6055,10 @@ impl<'a> Reader<'a> {
     fn highlight_completed(&mut self, result: HighlightResult) {
         assert_is_main_thread();
         self.in_flight_highlight_request.clear();
-        if result.text == self.command_line.text() {
+        if result.text == self.command_line.text()
+            && result.generation == read_generation_count()
+            && result.bash_input == self.conf.bash_input
+        {
             assert_eq!(result.colors.len(), self.command_line.len());
             if self.is_repaint_needed(Some(&result.colors)) {
                 self.command_line.set_colors(result.colors);
@@ -5801,8 +6080,12 @@ impl<'a> Reader<'a> {
         self.in_flight_highlight_request = self.command_line.text().to_owned();
 
         flog!(reader_render, "Highlighting");
-        let highlight_performer =
-            get_highlight_performer(self.parser, &self.command_line, /*io_ok=*/ true);
+        let highlight_performer = get_highlight_performer(
+            self.parser,
+            &self.command_line,
+            /*io_ok=*/ true,
+            self.conf.bash_input.then(|| self.bash_state.clone()),
+        );
         self.debouncers.highlight.perform(highlight_performer);
     }
 
@@ -5845,8 +6128,12 @@ impl<'a> Reader<'a> {
 
         if !current_highlight_ok {
             // We need to do a quick highlight without I/O.
-            let highlight_no_io =
-                get_highlight_performer(self.parser, &self.command_line, /*io_ok=*/ false);
+            let highlight_no_io = get_highlight_performer(
+                self.parser,
+                &self.command_line,
+                /*io_ok=*/ false,
+                self.conf.bash_input.then(|| self.bash_state.clone()),
+            );
             self.highlight_completed(highlight_no_io());
         }
     }
@@ -6209,6 +6496,16 @@ impl<'a> Reader<'a> {
             if let Some(replacement) =
                 reader_expand_abbreviation_at_cursor(el.text(), cursor_pos, self.parser)
             {
+                // Fish-syntax replacements need their own source mapping. Plain command
+                // abbreviations are shared; leave syntax-bearing replacements untouched.
+                if self.conf.bash_input
+                    && replacement
+                        .text
+                        .chars()
+                        .any(|c| !c.is_alphanumeric() && !" _-./:=@%+".contains(c))
+                {
+                    return false;
+                }
                 self.push_edit(elt, Edit::new(replacement.range.into(), replacement.text));
                 self.update_buff_pos(elt, replacement.cursor);
                 return true;
@@ -6397,7 +6694,7 @@ fn check_for_orphaned_process(loop_count: usize, shell_pgid: NullablePid) -> boo
 
 /// Run the specified command with the correct terminal modes, and while taking care to perform job
 /// notification, set the title, etc.
-fn reader_run_command(parser: &mut Parser, cmd: &wstr) -> EvalRes {
+fn reader_run_command(parser: &mut Parser, cmd: &wstr, bash_input: bool) -> EvalRes {
     assert!(
         !get_tty_protocols_active(),
         "TTY protocols should not be active"
@@ -6419,7 +6716,20 @@ fn reader_run_command(parser: &mut Parser, cmd: &wstr) -> EvalRes {
     term_donate(false);
 
     let time_before = Instant::now();
-    let eval_res = parser.eval(cmd, &IoChain::new());
+    let eval_res = if bash_input && parser.libdata().rash_shell {
+        run_bash_command(parser, cmd)
+    } else if bash_input {
+        match crate::bash_to_fish::translate(cmd) {
+            Ok(source) => parser.eval(&source, &IoChain::new()),
+            Err(error) => {
+                eprintf!("fish: Bash-style input: %s\n", error.message);
+                parser.set_last_statuses(Statuses::just(2));
+                EvalRes::new(ProcStatus::from_exit_code(2))
+            }
+        }
+    } else {
+        parser.eval(cmd, &IoChain::new())
+    };
     job_reap(parser, true, None);
 
     // Update the execution duration iff a command is requested for execution
@@ -6452,6 +6762,26 @@ fn reader_run_command(parser: &mut Parser, cmd: &wstr) -> EvalRes {
     }
 
     eval_res
+}
+
+pub fn run_bash_command(parser: &mut Parser, command: &wstr) -> EvalRes {
+    let Some(session) = parser.libdata().bash_session.clone() else {
+        eprintf!("fish: no retained Bash session\n");
+        return EvalRes::new(ProcStatus::from_exit_code(125));
+    };
+    let Ok(mut session) = session.try_borrow_mut() else {
+        eprintf!("fish: Bash session is already active\n");
+        return EvalRes::new(ProcStatus::from_exit_code(125));
+    };
+    let result = session
+        .eval(command, parser)
+        .and_then(|_| session.publish(parser));
+    if let Err(err) = result {
+        eprintf!("fish: Bash input failed: %s\n", err.to_string());
+        session.state.status = 2;
+        parser.set_last_statuses(Statuses::just(2));
+    }
+    EvalRes::new(ProcStatus::from_exit_code(parser.last_status()))
 }
 
 fn reader_shell_test(parser: &Parser, bstr: &wstr) -> Result<(), ParseIssue> {
@@ -6539,8 +6869,12 @@ impl<'a> Reader<'a> {
         } else {
             PersistenceMode::Disk
         };
-        self.history
-            .add_pending_with_file_detection(&text, &self.parser.variables, mode);
+        if self.conf.bash_input {
+            self.history.add_pending_bash(text, mode);
+        } else {
+            self.history
+                .add_pending_with_file_detection(&text, &self.parser.variables, mode);
+        }
     }
 
     /// Check if we have background jobs that we have not warned about.
@@ -6560,7 +6894,6 @@ impl<'a> Reader<'a> {
         if bg_jobs.is_empty() {
             return false;
         }
-        // Print the warning!
         print_exit_warning_for_jobs(&bg_jobs);
         self.did_warn_for_bg_jobs = true;
         true
@@ -6582,8 +6915,25 @@ pub fn check_exit_loop_maybe_warning(data: Option<&mut Reader>) -> bool {
         return false;
     }
 
+    if reader_data_stack().len() == 1
+        && data
+            .parser
+            .libdata()
+            .bash_session
+            .as_ref()
+            .is_some_and(|s| {
+                let session = s.borrow();
+                session.failed || session.startup_exited
+            })
+    {
+        return true;
+    }
+
     if data.try_warn_on_background_jobs() {
         data.exit_loop_requested = false;
+        if let Some(session) = data.parser.libdata().bash_session.as_ref() {
+            session.borrow_mut().cancel_exit();
+        }
         return false;
     }
     true
@@ -6934,9 +7284,156 @@ fn reader_can_replace(s: &wstr, flags: CompleteFlags) -> bool {
         .any(|c| matches!(c, '$' | '*' | '?' | '(' | '{' | '}' | ')'))
 }
 
+fn reader_token_extent(
+    text: &wstr,
+    pos: usize,
+    bash: bool,
+    fish: bool,
+) -> (Range<usize>, Range<usize>) {
+    if bash {
+        crate::bash_syntax::Syntax::for_input(text, fish).token_extent(pos)
+    } else {
+        get_token_extent(text, pos)
+    }
+}
+
+fn bash_completion_edit(
+    text: &wstr,
+    cursor: usize,
+    value: &wstr,
+    flags: CompleteFlags,
+    state: &crate::bash_session::State,
+    vars: &EnvStack,
+    append_only: bool,
+) -> Option<(WString, usize)> {
+    let env = state.completion_environment(vars);
+    crate::bash_input::Projection::for_state(text, cursor, &env, state)
+        .ok()?
+        .apply_text(value, flags, append_only)
+        .ok()
+}
+
 impl<'a> Reader<'a> {
+    fn activate_bash_input(&mut self) -> std::io::Result<()> {
+        if !self.parser.libdata().rash_shell {
+            self.bash_state = crate::bash_session::State::from_fish(self.vars());
+            self.set_input_mode(true);
+            return Ok(());
+        }
+        term_donate(false);
+        let result = (|| {
+            let startup = self.parser.libdata().bash_startup_requested;
+            let session = std::rc::Rc::new(std::cell::RefCell::new(
+                crate::bash_session::Session::start(
+                    self.parser,
+                    startup,
+                    crate::proc::get_login(),
+                    true,
+                )?,
+            ));
+            {
+                let mut session = session.borrow_mut();
+                session.publish(self.parser)?;
+                self.bash_state = session.state.clone();
+                self.exit_loop_requested |= self.parser.libdata().exit_current_script;
+                self.parser.libdata_mut().exit_current_script = false;
+                self.set_input_mode(true);
+            }
+            self.parser.libdata_mut().bash_session = Some(session);
+            Ok(())
+        })();
+        _ = tcsetpgrp(STDIN_FD, getpgrp());
+        term_steal(false);
+        result
+    }
+
+    fn apply_input_mode(&mut self) {
+        if reader_data_stack().len() != 1
+            || self.parser.is_breakpoint()
+            || self.parser.libdata().rash_shell
+        {
+            return;
+        }
+        let bash = self.parser.libdata().bash_input_requested;
+        if bash == self.conf.bash_input {
+            return;
+        }
+        if bash {
+            self.bash_state = crate::bash_session::State::from_fish(self.vars());
+        }
+        self.set_input_mode(bash);
+    }
+
+    fn set_input_mode(&mut self, bash: bool) {
+        self.parser.libdata_mut().bash_input_requested = bash;
+        if self.conf.bash_input == bash {
+            return;
+        }
+        self.history.resolve_pending();
+        self.history.save();
+        self.conf.bash_input = bash;
+        self.conf.expand_abbrev_ok = !self.parser.libdata().rash_shell;
+        self.command_line = EditableLine::default();
+        self.history = History::new(
+            history_id(self.parser.vars()).for_input(bash, self.parser.libdata().rash_shell),
+        );
+        self.history.resolve_pending();
+        commandline_state_snapshot().history = Some(self.history.clone());
+        self.history_search.reset();
+        self.clear_pager();
+        self.command_line_changed(EditableLineTag::Commandline, AutosuggestionUpdate::Remove);
+    }
+
+    fn compute_bash_completions(&mut self, command: ReadlineCmd) {
+        let text = self.command_line.text().to_owned();
+        let cursor = self.command_line.position();
+        let state = self.bash_state.clone();
+        let result = {
+            let vars = self.parser.vars().create_child(false);
+            let _scalars = state.scoped_scalars(&vars);
+            let parser = &mut *self.parser;
+            crate::bash_input::Projection::for_state(&text, cursor, parser.vars(), &state).and_then(
+                |projection| {
+                    let mut ctx = parser.context();
+                    ctx.bash_state = Some(&state);
+                    let (mut candidates, _) =
+                        projection.complete(CompletionRequestOptions::default(), &mut ctx)?;
+                    let had_candidates = !candidates.is_empty();
+                    candidates.retain(|c| projection.apply(c, false).is_ok());
+                    if had_candidates && candidates.is_empty() {
+                        return Err(crate::bash_input::Unsupported::Replacement);
+                    }
+                    Ok((projection, candidates))
+                },
+            )
+        };
+        let Ok((projection, mut candidates)) = result else {
+            eprintf!("\nCompletion unavailable for this Bash expression; input preserved.\n");
+            self.force_exec_prompt_and_repaint = true;
+            return;
+        };
+        sort_and_prioritize(&mut candidates, CompletionRequestOptions::default());
+        let start = projection.current_word().map_or(cursor, |w| w.source.start);
+        self.cycle_command_line = text;
+        self.cycle_cursor_pos = cursor;
+        let unique = self.handle_completions(start..cursor, candidates);
+        self.rls_mut().completion_action = if unique {
+            Some(CompletionAction::InsertedUnique)
+        } else {
+            (!self.pager.is_empty()).then_some(CompletionAction::ShownAmbiguous)
+        };
+        if command == ReadlineCmd::CompleteAndSearch && !unique && !self.pager.is_empty() {
+            self.pager.set_search_field_shown(true);
+            self.select_completion_in_direction(SelectionMotion::Next, false);
+        }
+    }
+
     /// Compute completions and update the pager and/or commandline as needed.
     fn compute_and_apply_completions(&mut self, c: ReadlineCmd) {
+        if self.conf.bash_input {
+            self.compute_bash_completions(c);
+            return;
+        }
         assert_matches!(c, ReadlineCmd::Complete | ReadlineCmd::CompleteAndSearch);
         assert!(
             !get_tty_protocols_active(),
@@ -7042,7 +7539,7 @@ impl<'a> Reader<'a> {
     fn try_insert(&mut self, c: Completion, tok: &wstr, token_range: Range<usize>) {
         // If this is a replacement completion, check that we know how to replace it, e.g. that
         // the token doesn't contain evil operators like {}.
-        if !c.replaces_token() || reader_can_replace(tok, c.flags) {
+        if self.conf.bash_input || !c.replaces_token() || reader_can_replace(tok, c.flags) {
             self.completion_insert(
                 &c.completion,
                 token_range.end,
@@ -7083,7 +7580,9 @@ impl<'a> Reader<'a> {
         // rank do not require replacement, then ignore all those that want to use replacement.
         let will_replace_token = comp.iter().all(|c| c.replaces_token());
 
-        comp.retain(|c| !c.replaces_token() || reader_can_replace(&tok, c.flags));
+        if !self.conf.bash_input {
+            comp.retain(|c| !c.replaces_token() || reader_can_replace(&tok, c.flags));
+        }
 
         if !will_replace_token {
             for c in &mut comp {
@@ -7245,15 +7744,33 @@ impl<'a> Reader<'a> {
 
         let (_elt, el) = self.active_edit_line();
         let mut cursor = el.position();
-        let new_command_line = completion_apply_to_command_line(
-            &mut OperationContext::background_interruptible(self.parser.vars()),
-            val,
-            flags,
-            el.text(),
-            &mut cursor,
-            /*append_only=*/ false,
-            is_unique,
-        );
+        let new_command_line = if self.conf.bash_input {
+            match bash_completion_edit(
+                el.text(),
+                cursor,
+                val,
+                flags,
+                &self.bash_state,
+                self.parser.vars(),
+                false,
+            ) {
+                Some((text, pos)) => {
+                    cursor = pos;
+                    text
+                }
+                None => return,
+            }
+        } else {
+            completion_apply_to_command_line(
+                &mut OperationContext::background_interruptible(self.parser.vars()),
+                val,
+                flags,
+                el.text(),
+                &mut cursor,
+                /*append_only=*/ false,
+                is_unique,
+            )
+        };
         self.set_buffer_maintaining_pager(&new_command_line, cursor);
     }
 }

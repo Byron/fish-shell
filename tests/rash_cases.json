@@ -1,0 +1,172 @@
+[
+  {
+    "name": "arrays",
+    "category": "bash4/arrays",
+    "origin": "tests/bash_input_semantics.py",
+    "source": "a=(zero 'one two'); declare -A m=([key]=value); printf 'RESULT:%s:%s\\n' \"${a[1]}\" \"${m[key]}\"",
+    "oracle_min_version": [
+      4,
+      0
+    ]
+  },
+  {
+    "name": "nameref-arithmetic",
+    "category": "bash4.3/nameref",
+    "origin": "tests/bash_input_semantics.py",
+    "source": "n=3; declare -n ref=n; ((ref+=4)); printf 'RESULT:%s:%s\\n' \"$n\" \"${unset_value:-fallback}\"",
+    "oracle_min_version": [
+      4,
+      3
+    ]
+  },
+  {
+    "name": "pipeline-status",
+    "category": "expansion-control",
+    "origin": "tests/bash_input_semantics.py",
+    "source": "set -o pipefail; true | false; printf 'RESULT:%s:%s\\n' \"$?\" \"${PIPESTATUS[*]}\""
+  },
+  {
+    "name": "command-substitution",
+    "category": "expansion-control",
+    "origin": "tests/bash_input_semantics.py",
+    "source": "text=$(printf 'a b'); [[ $text == a* ]]; printf 'RESULT:%s:%s\\n' \"$?\" \"$text\""
+  },
+  {
+    "name": "here-string-read",
+    "category": "expansion-control",
+    "origin": "tests/bash_input_semantics.py",
+    "source": "read -r first rest <<< 'one two three'; printf 'RESULT:%s:%s\\n' \"$first\" \"$rest\""
+  },
+  {
+    "name": "loop-case",
+    "category": "expansion-control",
+    "origin": "tests/bash_input_semantics.py",
+    "source": "for x in one two; do case $x in one) printf 'RESULT:first\\n';; *) printf 'RESULT:second\\n';; esac; done"
+  },
+  {
+    "name": "quoted-heredoc",
+    "category": "expansion-control",
+    "origin": "tests/bash_input_semantics.py",
+    "source": "cat <<'END'\nRESULT:literal $text\nEND"
+  },
+  {
+    "name": "script-argv",
+    "category": "script-entry",
+    "origin": "tests/bash_script_semantics.py",
+    "source": "#!/usr/bin/env fish\na=(one \"two three\"); printf \"%s:%s:%s\\n\" \"${a[1]}\" \"$0\" \"$#\"; printf \"<%s>\\n\" \"$@\"",
+    "stdin": "from stdin\n",
+    "args": [
+      "",
+      "a \"quote\"; $(touch INJECTED)",
+      "ü * ?",
+      {
+        "base64": "cmF3Lf8="
+      }
+    ]
+  },
+  {
+    "name": "script-stdio-status",
+    "category": "script-entry",
+    "origin": "tests/bash_script_semantics.py",
+    "source": "IFS= read -r line; printf \"stdin:%s\\n\" \"$line\"; printf \"stderr\\n\" >&2; exit 37",
+    "stdin": "from stdin\n",
+    "args": [
+      "",
+      "a \"quote\"; $(touch INJECTED)",
+      "ü * ?",
+      {
+        "base64": "cmF3Lf8="
+      }
+    ]
+  },
+  {
+    "name": "script-exec",
+    "category": "script-entry",
+    "origin": "tests/bash_script_semantics.py",
+    "source": "exec /bin/sh -c 'printf \"exec:%s\\n\" \"$1\"; exit 23' child \"$1\"",
+    "stdin": "from stdin\n",
+    "args": [
+      "",
+      "a \"quote\"; $(touch INJECTED)",
+      "ü * ?",
+      {
+        "base64": "cmF3Lf8="
+      }
+    ]
+  },
+  {
+    "name": "script-exit-trap",
+    "category": "script-entry",
+    "origin": "tests/bash_script_semantics.py",
+    "source": "trap 'printf \"exiting:%s\\n\" \"$?\"' EXIT; false",
+    "stdin": "from stdin\n",
+    "args": [
+      "",
+      "a \"quote\"; $(touch INJECTED)",
+      "ü * ?",
+      {
+        "base64": "cmF3Lf8="
+      }
+    ]
+  },
+  {
+    "name": "source-state",
+    "category": "state-source",
+    "origin": "Original integration fixture; state observed through shell commands",
+    "files": {
+      "state.bash": "declare -a items=(zero \"one two\")\nexport SHARED_STATE=\"from source\"\nfunction retained() { printf \"FUNCTION:%s\\n\" \"$SHARED_STATE\"; }\nalias retained_alias=retained\ncd directory\nreturn 7\n"
+    },
+    "directories": [
+      "directory"
+    ],
+    "source": "shopt -s expand_aliases\nsource ./state.bash\nprintf \"SOURCE-STATUS:%s\\n\" \"$?\"\nprintf \"PWD:%s\\n\" \"$PWD\"\nprintf \"ARRAY:%s\\n\" \"${items[1]}\"\ndeclare -f retained\nretained_alias\n/bin/sh -c 'printf \"EXPORTED:%s\\n\" \"$SHARED_STATE\"'\n"
+  },
+  {
+    "name": "file-redirection-order",
+    "category": "filesystem-redirection",
+    "origin": "Original integration fixture; external files are compared exactly",
+    "source": "mkdir directory\nprintf \"first\\n\" > \"directory/file ü ;$\"\nprintf \"second\\n\" >> \"directory/file ü ;$\"\nln -s \"file ü ;$\" directory/link\n{ printf \"stdout\\n\"; printf \"stderr\\n\" >&2; } > combined 2>&1\n{ printf \"stdout\\n\"; printf \"stderr\\n\" >&2; } 2>&1 > separate\nchmod 640 combined\n"
+  },
+  {
+    "name": "dynamic-function-scope",
+    "category": "state-source",
+    "origin": "Original integration fixture; function/local state observed via execution",
+    "source": "value=outer\nf() { local value=inner; g; printf \"F:%s\\n\" \"$value\"; }\ng() { value=changed; }\nf\nprintf \"OUTER:%s\\n\" \"$value\"\n"
+  },
+  {
+    "name": "assignment-and-condition-order",
+    "category": "expansion-control",
+    "origin": "Rash integration regression",
+    "source": "a=outer\nf() { printf '%s:%s:%s\\n' \"$a\" \"$b\" \"$1\"; }\na=inner b=$a f \"$a\"\necho \"$a:${b-unset}\"\nfalse; printf '%s:%s\\n' \"$(true)\" \"$?\"\nx=$(false); printf 'status:%s\\n' \"$?\"\n[[ yes || $(touch wrong) ]] && [[ '' && $(touch wrong) || yes ]]\necho \"$?\"\n"
+  },
+  {
+    "name": "redirect-scope-and-input-offset",
+    "category": "filesystem-redirection",
+    "origin": "Rash integration regression",
+    "source": "{ printf 'one\\n'; printf 'two\\n'; /bin/echo three; } > output\ncat output\nwhile IFS= read -r line; do printf '<%s>\\n' \"$line\"; done < output\nf() { printf 'f-one\\n'; printf 'f-two\\n'; }\nf > function-output\ncat function-output\n"
+  },
+  {
+    "name": "pipeline-expansion-isolation",
+    "category": "expansion-control",
+    "origin": "Rash integration regression",
+    "source": "x=0\nprintf '%s\\n' \"$((x+=1))\" | cat\nprintf 'parent:%s\\n' \"$x\"\n"
+  },
+  {
+    "name": "arithmetic-array-indices",
+    "category": "state-source",
+    "origin": "Rash integration regression",
+    "source": "a=(zero one two); i=1\nprintf '%s\\n' \"${a[i+1]}\"\na[i+2]=three\nprintf '<%s>\\n' \"${a[@]}\"\n"
+  },
+  {
+    "name": "errexit-andor",
+    "category": "expansion-control",
+    "origin": "Rash integration regression",
+    "source": "set -e\nfalse && echo wrong\necho retained\ntrue && false\necho wrong\n"
+  },
+  {
+    "name": "unquoted-heredoc",
+    "category": "expansion-control",
+    "origin": "Rash integration regression",
+    "source": "v=expanded\ncat <<END\n$v \"$v\" \\$v $(printf sub) $((1+2))\nEND\n"
+  }
+]

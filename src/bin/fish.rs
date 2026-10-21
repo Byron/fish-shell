@@ -72,6 +72,10 @@ use std::{
 /// container to hold the options specified within the command line
 #[derive(Default, Debug)]
 struct FishCmdOpts {
+    bash_input: bool,
+    rash_shell: bool,
+    bash_script: Option<bool>,
+    bash_startup: bool,
     /// Future feature flags values string
     features: WString,
     /// File path for debug output.
@@ -217,6 +221,10 @@ fn fish_parse_opt(args: &mut [WString], opts: &mut FishCmdOpts) -> ControlFlow<i
     const RUSAGE_ARG: char = 1 as char;
     const PRINT_DEBUG_CATEGORIES_ARG: char = 2 as char;
     const PROFILE_STARTUP_ARG: char = 3 as char;
+    const INTERACTIVE_LANGUAGE_ARG: char = 4 as char;
+    const SCRIPT_LANGUAGE_ARG: char = 5 as char;
+    const BASH_STARTUP_ARG: char = 6 as char;
+    const RASH_SHELL_ARG: char = 7 as char;
 
     const SHORT_OPTS: &wstr = L!("+hPilNnvc:C:p:d:f:D:o:");
     const LONG_OPTS: &[WOption<'static>] = &[
@@ -227,6 +235,14 @@ fn fish_parse_opt(args: &mut [WString], opts: &mut FishCmdOpts) -> ControlFlow<i
         wopt(L!("debug-output"), RequiredArgument, 'o'),
         wopt(L!("debug-stack-frames"), RequiredArgument, 'D'),
         wopt(L!("interactive"), NoArgument, 'i'),
+        wopt(
+            L!("interactive-language"),
+            RequiredArgument,
+            INTERACTIVE_LANGUAGE_ARG,
+        ),
+        wopt(L!("script-language"), RequiredArgument, SCRIPT_LANGUAGE_ARG),
+        wopt(L!("bash-startup"), NoArgument, BASH_STARTUP_ARG),
+        wopt(L!("rash-shell"), NoArgument, RASH_SHELL_ARG),
         wopt(L!("login"), NoArgument, 'l'),
         wopt(L!("no-config"), NoArgument, 'N'),
         wopt(L!("no-execute"), NoArgument, 'n'),
@@ -245,11 +261,16 @@ fn fish_parse_opt(args: &mut [WString], opts: &mut FishCmdOpts) -> ControlFlow<i
 
     let mut shim_args: Vec<&wstr> = args.iter().map(|s| s.as_ref()).collect();
     let mut w = WGetopter::new(SHORT_OPTS, LONG_OPTS, &mut shim_args);
+    let mut interactive_language_given = false;
+    let mut help_requested = false;
+    let mut command_requested = false;
     while let Some(c) = w.next_opt() {
         match c {
-            'c' => opts
-                .batch_cmds
-                .push(OsString::from_vec(wcs2bytes(w.woptarg.unwrap()))),
+            'c' => {
+                command_requested = true;
+                opts.batch_cmds
+                    .push(OsString::from_vec(wcs2bytes(w.woptarg.unwrap())));
+            }
             'C' => opts
                 .postconfig_cmds
                 .push(OsString::from_vec(wcs2bytes(w.woptarg.unwrap()))),
@@ -263,8 +284,32 @@ fn fish_parse_opt(args: &mut [WString], opts: &mut FishCmdOpts) -> ControlFlow<i
             }
             'o' => opts.debug_output = Some(OsString::from_vec(wcs2bytes(w.woptarg.unwrap()))),
             'f' => opts.features = w.woptarg.unwrap().to_owned(),
-            'h' => opts.batch_cmds.push("__fish_print_help fish".into()),
+            'h' => {
+                help_requested = true;
+                opts.batch_cmds.push("__fish_print_help fish".into());
+            }
             'i' => opts.is_interactive_session = true,
+            INTERACTIVE_LANGUAGE_ARG => {
+                interactive_language_given = true;
+                match w.woptarg.unwrap().to_string().as_str() {
+                    "bash" => opts.bash_input = true,
+                    "fish" => opts.bash_input = false,
+                    _ => {
+                        eprintf!("fish: --interactive-language expects fish or bash\n");
+                        return ControlFlow::Break(2);
+                    }
+                }
+            }
+            SCRIPT_LANGUAGE_ARG => match w.woptarg.unwrap().to_string().as_str() {
+                "bash" => opts.bash_script = Some(true),
+                "fish" => opts.bash_script = Some(false),
+                _ => {
+                    eprintf!("fish: --script-language expects fish or bash\n");
+                    return ControlFlow::Break(2);
+                }
+            },
+            BASH_STARTUP_ARG => opts.bash_startup = true,
+            RASH_SHELL_ARG => opts.rash_shell = true,
             'l' => opts.is_login = true,
             'N' => {
                 opts.no_config = true;
@@ -332,6 +377,41 @@ fn fish_parse_opt(args: &mut [WString], opts: &mut FishCmdOpts) -> ControlFlow<i
         }
     }
     let optind = w.wopt_index;
+    if opts.rash_shell {
+        if command_requested
+            || optind != args.len()
+            || opts.bash_script.is_some()
+            || interactive_language_given
+            || opts.no_exec
+        {
+            eprintf!(
+                "fish: --rash-shell cannot be combined with -c, a script file, --script-language, --interactive-language or -n\n"
+            );
+            return ControlFlow::Break(2);
+        }
+        if !help_requested {
+            if !isatty(STDIN_FILENO) {
+                eprintf!("fish: --rash-shell requires a terminal on standard input\n");
+                return ControlFlow::Break(2);
+            }
+            opts.is_interactive_session = true;
+            opts.bash_input = true;
+        }
+    }
+    if opts.bash_script.is_some() && (optind == args.len() || !opts.batch_cmds.is_empty()) {
+        eprintf!("fish: --script-language requires a script file and cannot be combined with -c\n");
+        return ControlFlow::Break(2);
+    }
+    if opts.bash_script == Some(true) && opts.is_interactive_session {
+        eprintf!(
+            "fish: --script-language=bash runs a noninteractive script and cannot be combined with -i\n"
+        );
+        return ControlFlow::Break(2);
+    }
+    if opts.bash_startup && !(opts.bash_script == Some(true) || opts.rash_shell) {
+        eprintf!("fish: --bash-startup requires --rash-shell or a Bash script\n");
+        return ControlFlow::Break(2);
+    }
 
     // If our command name begins with a dash that implies we're a login shell.
     opts.is_login |= args[0].char_at(0) == '-';
@@ -438,7 +518,7 @@ fn throwing_main() -> i32 {
     if opts.is_login {
         mark_login();
     }
-    if opts.no_exec {
+    if opts.no_exec && opts.bash_script != Some(true) {
         mark_no_exec();
     }
     if opts.is_interactive_session {
@@ -478,6 +558,9 @@ fn throwing_main() -> i32 {
     // Construct the root parser!
     let env = EnvStack::globals().create_child(true /* dispatches_var_changes */);
     let parser = &mut Parser::new(env, CancelBehavior::Clear);
+    parser.libdata_mut().bash_input_requested = opts.bash_input;
+    parser.libdata_mut().rash_shell = opts.rash_shell;
+    parser.libdata_mut().bash_startup_requested = opts.bash_startup;
     parser.set_syncs_uvars(!opts.no_config);
 
     if !opts.no_exec && !opts.no_config {
@@ -512,7 +595,7 @@ fn throwing_main() -> i32 {
     PROFILING_ACTIVE.store(opts.profile_output.is_some());
 
     // Run post-config commands specified as arguments, if any.
-    if !opts.postconfig_cmds.is_empty() {
+    if !opts.postconfig_cmds.is_empty() && !(opts.no_exec && opts.bash_script == Some(true)) {
         res = run_command_list(parser, &opts.postconfig_cmds);
     }
 
@@ -547,6 +630,18 @@ fn throwing_main() -> i32 {
             return libc::EXIT_FAILURE;
         }
         res = reader_read(parser, libc::STDIN_FILENO, &IoChain::new());
+    } else if opts.bash_script == Some(true) {
+        res = fish::bash_script::run(
+            parser,
+            &args[my_optind..],
+            opts.bash_startup,
+            opts.is_login,
+            opts.no_exec,
+        )
+        .map_err(|error| {
+            eprintf!("fish: cannot run Bash script: %s\n", error.to_string());
+            STATUS_CMD_ERROR
+        });
     } else {
         let filename = &args[my_optind];
         let n = wcs2bytes(filename);
@@ -591,17 +686,20 @@ fn throwing_main() -> i32 {
         parser.last_status()
     };
 
-    event::fire(
-        parser,
-        Event::process_exit(Pid::from_nullable_pid_unchecked(getpid()), exit_status),
-    );
+    // Explicit Bash scripts have Bash exit semantics after normal Fish configuration.
+    if opts.bash_script != Some(true) {
+        event::fire(
+            parser,
+            Event::process_exit(Pid::from_nullable_pid_unchecked(getpid()), exit_status),
+        );
 
-    // Trigger any exit handlers.
-    event::fire_generic(
-        parser,
-        L!("fish_exit").to_owned(),
-        vec![exit_status.to_wstring()],
-    );
+        // Trigger any exit handlers.
+        event::fire_generic(
+            parser,
+            L!("fish_exit").to_owned(),
+            vec![exit_status.to_wstring()],
+        );
+    }
 
     if let Some(profile_output) = opts.profile_output {
         parser.flush_profiling(&profile_output);

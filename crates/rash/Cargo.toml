@@ -1,0 +1,15 @@
+[package]
+name = "rash"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license = "GPL-2.0-or-later"
+publish = false
+description = "In-progress Rust port of GNU Bash 3.2"
+
+[dependencies]
+fish-printf.workspace = true
+
+[lints]
+workspace = true

@@ -1662,7 +1662,23 @@ impl ExecutionContext {
             props.from_event_handler = sc.is_event;
         }
 
-        let mut job = Job::new(props, self.node_source_owned(job_node));
+        let display = if ctx
+            .parser()
+            .libdata()
+            .bash_job_display
+            .as_ref()
+            .is_some_and(|(source, _)| *source == self.pstree().src)
+        {
+            ctx.parser()
+                .libdata_mut()
+                .bash_job_display
+                .take()
+                .unwrap()
+                .1
+        } else {
+            self.node_source_owned(job_node)
+        };
+        let mut job = Job::new(props, display);
 
         // We are about to populate a job. One possible argument to the job is a command substitution
         // which may be interested in the job that's populating it, via '--on-job-exit caller'. Record

@@ -34,6 +34,9 @@ enum Vars<'a> {
 pub struct OperationContext<'a> {
     vars: Vars<'a>,
 
+    /// A projected Bash request supplies its own command namespace.
+    pub bash_state: Option<&'a crate::bash_session::State>,
+
     // The limit in the number of expansions which should be produced.
     pub expansion_limit: usize,
 
@@ -78,6 +81,7 @@ impl<'a> OperationContext<'a> {
             vars: Vars::Parser(parser),
             expansion_limit,
             job_group: None,
+            bash_state: None,
             cancel_checker,
         }
     }
@@ -91,6 +95,7 @@ impl<'a> OperationContext<'a> {
             vars: Vars::TestOnly(parser, vars),
             expansion_limit: EXPANSION_LIMIT_DEFAULT,
             job_group: None,
+            bash_state: None,
             cancel_checker,
         }
     }
@@ -101,6 +106,7 @@ impl<'a> OperationContext<'a> {
             vars: Vars::Vars(vars),
             expansion_limit,
             job_group: None,
+            bash_state: None,
             cancel_checker: Box::new(no_cancel),
         }
     }
@@ -114,6 +120,7 @@ impl<'a> OperationContext<'a> {
             vars: Vars::Vars(vars),
             expansion_limit,
             job_group: None,
+            bash_state: None,
             cancel_checker,
         }
     }

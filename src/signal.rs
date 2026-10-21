@@ -14,11 +14,12 @@ use nix::{
     unistd::getpid,
 };
 use std::{
+    collections::BTreeMap,
     mem::MaybeUninit,
     num::NonZeroI32,
     sync::{
         LazyLock,
-        atomic::{AtomicI32, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering},
     },
 };
 
@@ -37,8 +38,12 @@ fn reraise_if_forked_child(sig: i32) -> bool {
 
     // Safety: signal() and raise() are async-signal-safe.
     unsafe {
-        libc::signal(sig, libc::SIG_DFL);
-        libc::raise(sig);
+        if bash_signal_is_ignored(sig) {
+            libc::signal(sig, libc::SIG_IGN);
+        } else {
+            libc::signal(sig, libc::SIG_DFL);
+            libc::raise(sig);
+        }
     }
     true
 }
@@ -46,6 +51,238 @@ fn reraise_if_forked_child(sig: i32) -> bool {
 /// The cancellation signal we have received.
 /// Of course this is modified from a signal handler.
 static CANCELLATION_SIGNAL: AtomicI32 = AtomicI32::new(0);
+
+// Rash shares Fish's handler and child reaper. Only atomics are touched from a handler.
+const BASH_SIGNAL_COUNT: usize = 64;
+static BASH_SIGNAL_DISPOSITIONS: [AtomicU8; BASH_SIGNAL_COUNT] =
+    [const { AtomicU8::new(0) }; BASH_SIGNAL_COUNT];
+static BASH_PENDING_SIGNALS: [AtomicBool; BASH_SIGNAL_COUNT] =
+    [const { AtomicBool::new(false) }; BASH_SIGNAL_COUNT];
+static BASH_CHILD_IGNORED: [AtomicBool; BASH_SIGNAL_COUNT] =
+    [const { AtomicBool::new(false) }; BASH_SIGNAL_COUNT];
+static BASH_SCRIPT_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+pub fn bash_signal_is_observed(sig: i32) -> bool {
+    BASH_SIGNAL_DISPOSITIONS
+        .get(sig as usize)
+        .is_some_and(|value| value.load(Ordering::Relaxed) != 0)
+}
+
+fn bash_signal_is_ignored(sig: i32) -> bool {
+    BASH_CHILD_IGNORED
+        .get(sig as usize)
+        .is_some_and(|value| value.load(Ordering::Relaxed))
+}
+
+pub fn bash_has_ignored_signals() -> bool {
+    BASH_CHILD_IGNORED
+        .iter()
+        .any(|value| value.load(Ordering::Relaxed))
+}
+
+/// Saved dispositions belong to the one retained Rash session, not to its temporary hosts.
+pub struct BashSignals {
+    saved: BTreeMap<i32, libc::sigaction>,
+    dispositions: BTreeMap<i32, rash::host::SignalDisposition>,
+    scopes: Vec<BTreeMap<i32, rash::host::SignalDisposition>>,
+    interactive: bool,
+    active: bool,
+}
+
+impl BashSignals {
+    pub fn new(interactive: bool) -> std::io::Result<Self> {
+        let mut signals = Self {
+            saved: BTreeMap::new(),
+            dispositions: BTreeMap::new(),
+            scopes: vec![],
+            interactive,
+            active: false,
+        };
+        if !interactive {
+            for sig in [libc::SIGINT, libc::SIGHUP, libc::SIGTERM] {
+                signals
+                    .dispositions
+                    .insert(sig, rash::host::SignalDisposition::Default);
+            }
+        }
+        signals.set_active(true)?;
+        Ok(signals)
+    }
+
+    pub fn set_active(&mut self, active: bool) -> std::io::Result<()> {
+        if active == self.active {
+            return Ok(());
+        }
+        if active {
+            self.active = true;
+            BASH_SCRIPT_ACTIVE.store(!self.interactive, Ordering::Relaxed);
+            for (sig, disposition) in self.dispositions.clone() {
+                if let Err(error) = self.install(sig, disposition) {
+                    self.set_active(false)?;
+                    return Err(error);
+                }
+            }
+            self.refresh_child_ignored();
+        } else {
+            BASH_SCRIPT_ACTIVE.store(false, Ordering::Relaxed);
+            for ignored in &BASH_CHILD_IGNORED {
+                ignored.store(false, Ordering::Relaxed);
+            }
+            for (sig, action) in std::mem::take(&mut self.saved) {
+                BASH_SIGNAL_DISPOSITIONS[sig as usize].store(0, Ordering::Relaxed);
+                // Fish event listeners may have been added while Bash was active.
+                if is_signal_observed(sig) {
+                    self.install_handler(sig)?;
+                } else if sigaction(sig, &action, std::ptr::null_mut()) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            self.active = false;
+        }
+        Ok(())
+    }
+
+    fn install_handler(&self, sig: i32) -> std::io::Result<()> {
+        let flags = if sig == libc::SIGCHLD {
+            SaFlags::SA_SIGINFO | SaFlags::SA_RESTART
+        } else {
+            SaFlags::SA_SIGINFO
+        };
+        let action = SigAction::new(
+            SigHandler::SigAction(fish_signal_handler),
+            flags,
+            SigSet::empty(),
+        )
+        .into();
+        if sigaction(sig, &action, std::ptr::null_mut()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn install(
+        &mut self,
+        sig: i32,
+        disposition: rash::host::SignalDisposition,
+    ) -> std::io::Result<()> {
+        use rash::host::SignalDisposition;
+        if let std::collections::btree_map::Entry::Vacant(entry) = self.saved.entry(sig) {
+            let mut action = MaybeUninit::<libc::sigaction>::uninit();
+            // The successful query initializes the complete sigaction value.
+            if unsafe { libc::sigaction(sig, std::ptr::null(), action.as_mut_ptr()) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            entry.insert(unsafe { action.assume_init() });
+        }
+        if disposition == SignalDisposition::Default
+            && (self.interactive || ![libc::SIGINT, libc::SIGHUP, libc::SIGTERM].contains(&sig))
+            && !is_signal_observed(sig)
+        {
+            if sigaction(sig, &self.saved[&sig], std::ptr::null_mut()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        } else {
+            self.install_handler(sig)?;
+        }
+        BASH_SIGNAL_DISPOSITIONS[sig as usize].store(
+            match disposition {
+                SignalDisposition::Default => 0,
+                SignalDisposition::Ignore => 1,
+                SignalDisposition::Trap => 2,
+            },
+            Ordering::Relaxed,
+        );
+        Ok(())
+    }
+
+    pub fn set(
+        &mut self,
+        name: &[u8],
+        disposition: rash::host::SignalDisposition,
+    ) -> rash::Result<Vec<u8>> {
+        let sig = RawSignal::parse(&fish_widestring::bytes2wcstring(name))
+            .filter(|sig| sig.get_lookup_entry().is_some())
+            .filter(|sig| ![libc::SIGKILL, libc::SIGSTOP].contains(&sig.code()))
+            .ok_or_else(|| rash::Error::new("trap: invalid or untrappable signal"))?;
+        if !self.scopes.is_empty() && disposition == rash::host::SignalDisposition::Trap {
+            return Err(rash::Error::new(
+                "signal handlers inside subshells require process isolation and are not supported",
+            ));
+        }
+        if self.active && self.scopes.is_empty() {
+            self.install(sig.code(), disposition)?;
+            BASH_PENDING_SIGNALS[sig.code() as usize].store(false, Ordering::Relaxed);
+        }
+        self.dispositions.insert(sig.code(), disposition);
+        self.refresh_child_ignored();
+        Ok(fish_widestring::wcs2bytes(&sig.name()[3..]))
+    }
+
+    pub fn pending(&mut self) -> Vec<Vec<u8>> {
+        if !self.scopes.is_empty() {
+            return vec![];
+        }
+        BASH_PENDING_SIGNALS
+            .iter()
+            .enumerate()
+            .filter(|(_, pending)| pending.swap(false, Ordering::Relaxed))
+            .map(|(sig, _)| fish_widestring::wcs2bytes(&RawSignal::new(sig as i32).name()[3..]))
+            .collect()
+    }
+
+    pub fn push_scope(&mut self) -> std::io::Result<()> {
+        self.scopes.push(self.dispositions.clone());
+        for (sig, disposition) in self.dispositions.clone() {
+            if disposition == rash::host::SignalDisposition::Trap {
+                self.dispositions
+                    .insert(sig, rash::host::SignalDisposition::Default);
+            }
+        }
+        self.refresh_child_ignored();
+        Ok(())
+    }
+
+    pub fn pop_scope(&mut self) -> std::io::Result<()> {
+        let previous = self.scopes.pop().expect("matching Bash signal scope");
+        self.dispositions = previous;
+        self.refresh_child_ignored();
+        Ok(())
+    }
+
+    fn refresh_child_ignored(&self) {
+        for (sig, ignored) in BASH_CHILD_IGNORED.iter().enumerate() {
+            ignored.store(
+                self.active
+                    && self.dispositions.get(&(sig as i32))
+                        == Some(&rash::host::SignalDisposition::Ignore),
+                Ordering::Relaxed,
+            );
+        }
+    }
+
+    pub fn first_pending(&self) -> Option<i32> {
+        if !self.scopes.is_empty() {
+            return None;
+        }
+        BASH_PENDING_SIGNALS
+            .iter()
+            .position(|pending| pending.load(Ordering::Relaxed))
+            .map(|sig| sig as i32)
+    }
+
+    pub fn in_subshell(&self) -> bool {
+        !self.scopes.is_empty()
+    }
+}
+
+impl Drop for BashSignals {
+    fn drop(&mut self) {
+        let _ = self.set_active(false);
+        for pending in &BASH_PENDING_SIGNALS {
+            pending.store(false, Ordering::Relaxed);
+        }
+    }
+}
 
 /// Set the cancellation signal to zero.
 /// In generally this should only be done in interactive sessions.
@@ -76,10 +313,17 @@ extern "C" fn fish_signal_handler(
     }
 
     // Check if fish script cares about this.
-    let observed = is_signal_observed(sig);
-    if observed {
+    let fish_observed = is_signal_observed(sig);
+    if fish_observed {
         enqueue_signal(sig);
     }
+    let bash_disposition = BASH_SIGNAL_DISPOSITIONS
+        .get(sig as usize)
+        .map_or(0, |value| value.load(Ordering::Relaxed));
+    if bash_disposition == 2 {
+        BASH_PENDING_SIGNALS[sig as usize].store(true, Ordering::Relaxed);
+    }
+    let observed = fish_observed || bash_disposition != 0;
 
     // Do some signal-specific stuff.
     match sig {
@@ -101,6 +345,9 @@ extern "C" fn fish_signal_handler(
             // Cancel unless the signal was trapped.
             if !observed {
                 CANCELLATION_SIGNAL.store(libc::SIGINT, Ordering::Relaxed);
+                if BASH_SCRIPT_ACTIVE.load(Ordering::Relaxed) {
+                    signal_safe_reader_set_exit_signal(sig);
+                }
             }
             signal_safe_reader_handle_sigint();
             topic_monitor::principal().post(Topic::SigHupIntTerm);
@@ -121,13 +368,22 @@ extern "C" fn fish_signal_handler(
 /// This is called after fork - it should be async signal safe.
 pub fn signal_reset_handlers() {
     let act = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty()).into();
+    let ignored = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty()).into();
 
     for data in SIGNAL_TABLE.iter() {
         if data.signal == libc::SIGHUP && sighup_disposition() == libc::SIG_IGN {
             continue;
         }
         unsafe {
-            libc::sigaction(data.signal.code(), &act, std::ptr::null_mut());
+            libc::sigaction(
+                data.signal.code(),
+                if bash_signal_is_ignored(data.signal.code()) {
+                    &ignored
+                } else {
+                    &act
+                },
+                std::ptr::null_mut(),
+            );
         };
     }
 }
