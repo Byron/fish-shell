@@ -199,6 +199,31 @@ Here are the remaining advantages of a full installation, as currently done by C
   which are used by some package managers to house third-party completions.
   Regardless of build system, fish uses ``$XDG_DATA_DIRS/{vendor_completion.d,vendor_conf.d,vendor_functions.d}``.
 
+Building on Windows with MSYS2
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Install `MSYS2 <https://www.msys2.org/>`__ and open its **MSYS2 MSYS** shell.
+Git Bash (from Git for Windows) includes an MSYS runtime, but does not
+include the ``pacman`` package manager or the build toolchain used here.
+
+Use the MSYS Rust toolchain installed by
+``pacman``. This toolchain targets ``x86_64-pc-cygwin`` and provides the Unix
+APIs fish needs. The native Windows Rust toolchains installed by ``rustup``
+and the MinGW Rust packages cannot build fish.
+
+First update MSYS2 with ``pacman -Syu``. If prompted to close the shell,
+reopen it and run the update again. Then, from the fish source directory:
+
+.. code:: shell
+
+    pacman -S --needed rust gcc git
+    /usr/bin/cargo build --locked --bins
+    ./target/debug/fish.exe --no-config -c 'echo (math 1 + 1)'
+
+Run the resulting binaries from MSYS2 so its runtime DLLs and Unix utilities
+are available. As with other Cargo builds, Sphinx and gettext are optional;
+install ``gettext`` with ``pacman`` before building to enable message translations.
+
 Contributing Changes to the Code
 --------------------------------
 
