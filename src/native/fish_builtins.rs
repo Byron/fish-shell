@@ -46,6 +46,7 @@ pub(super) fn is_builtin(name: &str) -> bool {
             | "kill"
             | "disown"
             | "complete"
+            | "set_color"
     )
 }
 
@@ -98,6 +99,12 @@ impl Session {
             return Ok(());
         }
         match name {
+            "set_color" => {
+                let color = crate::native::interactive_colors::set_color(args)
+                    .map_err(|error| Error::new(format!("set_color: {error}")))?;
+                self.write(color.as_bytes(), host, output)?;
+                self.status = 0;
+            }
             "complete" => self.complete_builtin(args, host, output)?,
             "true" | ":" => self.status = 0,
             "false" => self.status = 1,
@@ -238,9 +245,9 @@ impl Session {
             "eval" => return self.eval_source(&args.join(" "), host, output),
             // Keep Fish builtins reserved while their native implementations are pending.
             "printf" | "string" | "math" | "read" | "status" | "functions" | "type" | "command"
-            | "builtin" | "argparse" | "contains" | "random" | "set_color" | "jobs" | "fg"
-            | "bg" | "wait" | "disown" | "exec" | "ulimit" | "umask" | "bind" | "commandline"
-            | "emit" | "history" | "abbr" => {
+            | "builtin" | "argparse" | "contains" | "random" | "jobs" | "fg" | "bg" | "wait"
+            | "disown" | "exec" | "ulimit" | "umask" | "bind" | "commandline" | "emit"
+            | "history" | "abbr" => {
                 return Err(unsupported(&format!("the {name} builtin")));
             }
             _ => {

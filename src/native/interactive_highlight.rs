@@ -4,6 +4,7 @@
 //! while painting input. The caller resolves literal commands against its
 //! current builtin/function/PATH snapshot.
 
+use super::interactive_colors::Palette;
 use crate::ast::{self, Leaf as _};
 use crate::parse_constants::{ParseTokenType, ParseTreeFlags};
 use crate::tokenizer::{TokFlags, TokenType, Tokenizer};
@@ -22,17 +23,27 @@ enum Role {
     Operator,
     Comment,
     Error,
+    Param,
+    Option,
+    Redirection,
+    End,
 }
 
 impl Role {
-    fn sgr(self) -> &'static str {
+    fn variable(self) -> &'static str {
         match self {
-            Self::Normal => "0",
-            Self::Command | Self::Keyword => "34",
-            Self::Quote => "33",
-            Self::Escape | Self::Variable | Self::Operator => "36",
-            Self::Comment => "90",
-            Self::Error => "91",
+            Self::Normal => "fish_color_normal",
+            Self::Command => "fish_color_command",
+            Self::Keyword => "fish_color_keyword",
+            Self::Quote => "fish_color_quote",
+            Self::Escape => "fish_color_escape",
+            Self::Variable | Self::Operator => "fish_color_operator",
+            Self::Comment => "fish_color_comment",
+            Self::Error => "fish_color_error",
+            Self::Param => "fish_color_param",
+            Self::Option => "fish_color_option",
+            Self::Redirection => "fish_color_redirection",
+            Self::End => "fish_color_end",
         }
     }
 }
@@ -60,10 +71,20 @@ impl Colors {
 
 /// Return terminal styling without changing any of the input's characters.
 /// `cursor` is a UTF-8 byte offset, as used by the native line editor.
+#[cfg(test)]
 pub(super) fn highlight(
     line: &str,
     cursor: usize,
     command_exists: impl Fn(&str) -> bool,
+) -> String {
+    highlight_with_palette(line, cursor, command_exists, &Palette::default())
+}
+
+pub(super) fn highlight_with_palette(
+    line: &str,
+    cursor: usize,
+    command_exists: impl Fn(&str) -> bool,
+    palette: &Palette,
 ) -> String {
     let source = WString::from(line);
     let mut colors = Colors {
@@ -88,6 +109,7 @@ pub(super) fn highlight(
                 .find(|&(_, close)| cursor == close + 1)
         });
     let mut result = String::with_capacity(line.len() + 32);
+    result.push_str(&palette.sequence("fish_color_normal", false));
     let mut previous = (Role::Normal, false);
     for (index, (character, role)) in line.chars().zip(colors.roles).enumerate() {
         let emphasize = active_pair.is_some_and(|(a, b)| index == a || index == b);
@@ -95,24 +117,13 @@ pub(super) fn highlight(
         if current != previous {
             // Reset attributes before every color change; a quote's underline
             // must not leak into the following argument or the next prompt.
-            result.push_str("\x1b[0;");
-            result.push_str(role.sgr());
-            if emphasize {
-                result.push_str(";1;4");
-            }
-            result.push('m');
+            result.push_str(&palette.sequence(role.variable(), emphasize));
             previous = current;
         }
         result.push(character);
     }
-    if previous != (Role::Normal, false) {
-        result.push_str("\x1b[0m");
-    }
+    result.push_str("\x1b[0m");
     result
-}
-
-pub(super) fn highlight_hint(hint: &str) -> String {
-    format!("\x1b[90m{hint}\x1b[0m")
 }
 
 fn highlight_source(
@@ -141,6 +152,15 @@ fn highlight_source(
     let mut unknown_commands = vec![];
     for node in tree.walk() {
         match node.kind() {
+            ast::Kind::Argument(argument) => {
+                let range = ast::Node::source_range(argument).as_usize();
+                let role = if source[range.clone()].to_string().starts_with('-') {
+                    Role::Option
+                } else {
+                    Role::Param
+                };
+                colors.paint(offset + range.start..offset + range.end, role);
+            }
             ast::Kind::DecoratedStatement(statement) => {
                 if let Some(range) = statement.command.range() {
                     let range = range.as_usize();
@@ -203,6 +223,10 @@ fn highlight_source(
             TokenType::Error => {
                 colors.paint(offset + range.start..offset + range.end, Role::Error);
             }
+            TokenType::Redirect => {
+                colors.paint(offset + range.start..offset + range.end, Role::Redirection)
+            }
+            TokenType::End => colors.paint(offset + range.start..offset + range.end, Role::End),
             _ => colors.paint(offset + range.start..offset + range.end, Role::Operator),
         }
     }
@@ -501,7 +525,7 @@ mod tests {
         assert_role(line, "cat", Role::Command);
         assert_role(line, "end", Role::Keyword);
         assert_role(line, "# cargo", Role::Comment);
-        assert_role("echo cargo", "cargo", Role::Normal);
+        assert_role("echo cargo", "cargo", Role::Param);
         assert_role("[ true ]", "[", Role::Command);
         assert_role("echo okay; missing-command", "missing-command", Role::Error);
         assert_role("'missing command' arg", "'missing command'", Role::Error);
@@ -515,7 +539,7 @@ mod tests {
         assert_role(line, "\\u03b1", Role::Escape);
         assert_role(line, "$items", Role::Variable);
         assert_role(line, "[", Role::Operator);
-        assert_role(line, "🐟", Role::Normal);
+        assert_role(line, "🐟", Role::Param);
         assert_role("echo $", "$", Role::Error);
         assert_role("echo \\uD800", "\\uD800", Role::Error);
         assert_role("echo # '$x'", "# '$x'", Role::Comment);
@@ -526,9 +550,9 @@ mod tests {
     fn substitutions_use_command_context_without_running_source() {
         let line = "echo \"$(echo (cargo --version))\" (missing-command)";
         assert_role(line, "cargo", Role::Command);
-        assert_role(line, "--version", Role::Normal);
+        assert_role(line, "--version", Role::Option);
         assert_role(line, "missing-command", Role::Error);
-        assert_role("$(echo argument)", "argument", Role::Normal);
+        assert_role("$(echo argument)", "argument", Role::Param);
         assert_role("echo (echo '# )'; cargo)", "cargo", Role::Command);
         assert_role("echo (echo # )\ncargo)", "cargo", Role::Command);
         let visited = RefCell::new(Vec::new());
@@ -555,7 +579,10 @@ mod tests {
         assert!(rendered.contains(";1;4m)"));
         assert_eq!(without_ansi(&rendered), line);
         assert!(rendered.ends_with("\x1b[0m"));
-        assert_eq!(highlight_hint(" future"), "\x1b[90m future\x1b[0m");
+        assert_eq!(
+            Palette::default().highlight_hint(" future"),
+            "\x1b[90m future\x1b[0m"
+        );
     }
 
     #[test]

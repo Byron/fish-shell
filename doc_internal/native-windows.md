@@ -136,8 +136,24 @@ Ctrl-A/Ctrl-E, Alt-B/Alt-F, Ctrl-W, Ctrl-U/Ctrl-K, Ctrl-Y and Ctrl-_ for undo.
 The native Fish editor colors commands, keywords, quoted strings, variables,
 escapes, operators and comments as you type, and marks unknown literal commands
 and malformed escapes in red. Matching delimiters are emphasized at the cursor.
-Coloring uses the shared Fish grammar without executing input or substitutions;
-it does not yet apply the POSIX reader's configurable `fish_color_*` palette.
+Coloring uses the shared Fish grammar without executing input or substitutions.
+Customize it with `fish_color_normal`, `fish_color_command`, `fish_color_param`,
+`fish_color_option`, `fish_color_keyword`, `fish_color_quote`, `fish_color_escape`,
+`fish_color_operator`, `fish_color_redirection`, `fish_color_end`,
+`fish_color_comment`, `fish_color_error` and `fish_color_autosuggestion`.
+Colors accept names, bright names, RGB hex values and attributes such as `--bold`
+and `--underline`; background colors use `--background COLOR`. Invalid settings
+fall back to defaults. `set -g fish_autosuggestion_enabled 0` disables suggestions.
+
+The native `set_color` builtin supports those colors and attributes for prompts:
+
+```fish
+function fish_prompt
+    set_color green
+    printf '%s> ' $PWD
+    set_color normal
+end
+```
 
 Completion understands command positions after pipes, logical operators and
 command substitutions. Native Fish offers directory-only `cd` completion,

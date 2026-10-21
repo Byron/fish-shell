@@ -271,6 +271,17 @@ impl Session {
         result
     }
 
+    pub(super) fn editor_variables(&self) -> BTreeMap<String, Vec<String>> {
+        self.variable_names()
+            .into_iter()
+            .filter(|name| name.starts_with("fish_"))
+            .map(|name| {
+                let values = self.values(&name);
+                (name, values)
+            })
+            .collect()
+    }
+
     pub fn prompt(&mut self, host: &mut impl Host) -> Result<Option<String>> {
         if !self.functions.contains_key("fish_prompt") {
             return Ok(None);

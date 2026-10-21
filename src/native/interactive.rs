@@ -23,6 +23,13 @@ pub struct Editor {
 
 impl Editor {
     #[cfg(windows)]
+    pub(super) fn set_variables(
+        &mut self,
+        variables: &std::collections::BTreeMap<String, Vec<String>>,
+    ) {
+        self.inner.set_variables(variables);
+    }
+    #[cfg(windows)]
     pub(super) fn set_registrations(
         &mut self,
         registrations: Vec<super::interactive_completion::CompletionSpec>,
@@ -166,6 +173,17 @@ mod windows {
     }
 
     impl Editor {
+        pub(super) fn set_variables(
+            &mut self,
+            variables: &std::collections::BTreeMap<String, Vec<String>>,
+        ) {
+            let helper = self.editor.helper_mut().unwrap();
+            helper.palette = crate::native::interactive_colors::Palette::from_variables(variables);
+            helper.autosuggestion = variables
+                .get("fish_autosuggestion_enabled")
+                .and_then(|value| value.first())
+                .is_none_or(|value| value != "0");
+        }
         pub(super) fn set_registrations(
             &mut self,
             registrations: Vec<crate::native::interactive_completion::CompletionSpec>,
@@ -305,6 +323,8 @@ mod windows {
     struct Completion {
         fish: bool,
         engine: CompletionEngine,
+        palette: crate::native::interactive_colors::Palette,
+        autosuggestion: bool,
     }
 
     impl Completion {
@@ -312,6 +332,8 @@ mod windows {
             Self {
                 fish: language == "fish",
                 engine: CompletionEngine::new(language),
+                palette: Default::default(),
+                autosuggestion: true,
             }
         }
     }
@@ -330,14 +352,17 @@ mod windows {
     impl Highlighter for Completion {
         fn highlight<'l>(&self, line: &'l str, pos: usize) -> std::borrow::Cow<'l, str> {
             if self.fish {
-                std::borrow::Cow::Owned(crate::native::interactive_highlight::highlight(
-                    line,
-                    pos,
-                    |name| {
-                        self.engine
-                            .command_exists(name, &std::env::current_dir().unwrap_or_default())
-                    },
-                ))
+                std::borrow::Cow::Owned(
+                    crate::native::interactive_highlight::highlight_with_palette(
+                        line,
+                        pos,
+                        |name| {
+                            self.engine
+                                .command_exists(name, &std::env::current_dir().unwrap_or_default())
+                        },
+                        &self.palette,
+                    ),
+                )
             } else {
                 std::borrow::Cow::Borrowed(line)
             }
@@ -348,13 +373,13 @@ mod windows {
         }
 
         fn highlight_hint<'h>(&self, hint: &'h str) -> std::borrow::Cow<'h, str> {
-            std::borrow::Cow::Owned(crate::native::interactive_highlight::highlight_hint(hint))
+            std::borrow::Cow::Owned(self.palette.highlight_hint(hint))
         }
     }
     impl Hinter for Completion {
         type Hint = String;
         fn hint(&self, line: &str, pos: usize, ctx: &Context<'_>) -> Option<String> {
-            if !self.fish || line.starts_with(char::is_whitespace) {
+            if !self.fish || !self.autosuggestion || line.starts_with(char::is_whitespace) {
                 return None;
             }
             HistoryHinter::new().hint(line, pos, ctx)

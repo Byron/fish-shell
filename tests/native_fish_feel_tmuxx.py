@@ -272,6 +272,26 @@ def main():
             styles = styled_input(invalid)
             assert styles[0] in (31, 91), (invalid, styles)
 
+            send("set -g fish_color_command magenta; set -g fish_color_param green")
+            expect_input("")
+            source = "echo FEEL_custom_palette"
+            styles = styled_input(source)
+            assert styles[0] == 35, styles
+            assert styles[source.index("FEEL_")] == 32, styles
+            send("set -e fish_color_command; set -e fish_color_param")
+            expect_input("")
+            send("function fish_prompt; set_color green; printf 'FEEL> '; set_color normal; end")
+            expect_input("")
+            send("echo FEEL_disabled_hint suffix")
+            expect("FEEL_disabled_hint suffix")
+            send("set -g fish_autosuggestion_enabled 0")
+            expect_input("")
+            literal("echo FEEL_disabled_hint")
+            expect_input("echo FEEL_disabled_hint")
+            keys("C-c")
+            send("set -e fish_autosuggestion_enabled")
+            expect_input("")
+
             send("exit 0")
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
