@@ -132,6 +132,12 @@ Unfinished Fish blocks, quotes and pipelines stay in one editable buffer after
 Enter, so you can return to earlier lines before submitting the whole command.
 Alt-Enter inserts a newline explicitly. Standard editing shortcuts include
 Ctrl-A/Ctrl-E, Alt-B/Alt-F, Ctrl-W, Ctrl-U/Ctrl-K, Ctrl-Y and Ctrl-_ for undo.
+Continuation lines are indented using the shared Fish grammar, including nested
+blocks and substitutions. Quoted contents and backslash continuations receive
+only the requested newline, preserving their literal contents. Existing lines
+are not automatically reformatted when `end` or `else` is typed. Ctrl-V and
+Shift-Insert insert clipboard text as one edit; terminal-handled paste and
+bracketed-paste sequences are not yet handled by the native reader.
 
 The native Fish editor colors commands, keywords, quoted strings, variables,
 escapes, operators and comments as you type, and marks unknown literal commands

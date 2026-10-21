@@ -259,7 +259,28 @@ mod windows {
                 }
                 editor.bind_sequence(
                     KeyEvent(KeyCode::Enter, Modifiers::ALT),
-                    pager.wrap(Some(Cmd::Newline.into())),
+                    pager.wrap(Some(EventHandler::Conditional(Box::new(
+                        crate::native::interactive_layout::EnterKey {
+                            force_newline: true,
+                        },
+                    )))),
+                );
+                for key in [
+                    KeyEvent(KeyCode::Enter, Modifiers::NONE),
+                    KeyEvent::ctrl('J'),
+                ] {
+                    editor.bind_sequence(
+                        key,
+                        pager.wrap(Some(EventHandler::Conditional(Box::new(
+                            crate::native::interactive_layout::EnterKey {
+                                force_newline: false,
+                            },
+                        )))),
+                    );
+                }
+                editor.bind_sequence(
+                    KeyEvent(KeyCode::Insert, Modifiers::SHIFT),
+                    pager.wrap(Some(Cmd::PasteFromClipboard.into())),
                 );
                 editor.bind_sequence(KeyEvent::ctrl('_'), pager.wrap(Some(Cmd::Undo(1).into())));
             }

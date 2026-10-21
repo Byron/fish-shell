@@ -221,6 +221,10 @@ def main():
             send("end")
             expect("FEEL_multiline_correct")
             assert "FEEL_multiline_wrong" not in capture().splitlines()
+            send("printf '<%s>\\n' 'FEEL_quote")
+            send("continued'")
+            expect("<FEEL_quote")
+            expect("continued>")
 
             # Enter evaluates syntax errors instead of trapping the user in a
             # buffer that can never be completed; Ctrl-C also discards blocks.
