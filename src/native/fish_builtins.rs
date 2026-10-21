@@ -1,5 +1,53 @@
 use super::*;
 
+#[path = "fish_extra_builtins.rs"]
+mod extra;
+#[path = "fish_numeric.rs"]
+pub(super) mod numeric;
+#[path = "fish_printf.rs"]
+mod printf;
+#[path = "fish_string.rs"]
+mod string;
+
+pub(super) fn is_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "true"
+            | ":"
+            | "false"
+            | "echo"
+            | "set"
+            | "pwd"
+            | "cd"
+            | "count"
+            | "exit"
+            | "return"
+            | "break"
+            | "continue"
+            | "test"
+            | "["
+            | "source"
+            | "."
+            | "eval"
+            | "printf"
+            | "math"
+            | "string"
+            | "contains"
+            | "read"
+            | "status"
+            | "type"
+            | "command"
+            | "builtin"
+            | "functions"
+            | "jobs"
+            | "bg"
+            | "fg"
+            | "wait"
+            | "kill"
+            | "disown"
+    )
+}
+
 impl Session {
     pub(super) fn dispatch(
         &mut self,
@@ -44,6 +92,9 @@ impl Session {
         }
         if decoration == StatementDecoration::Command {
             return self.external(name, args, host, output);
+        }
+        if self.extra_builtin(name, args, host, output)? {
+            return Ok(());
         }
         match name {
             "true" | ":" => self.status = 0,

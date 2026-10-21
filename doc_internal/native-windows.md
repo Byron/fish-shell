@@ -62,9 +62,15 @@ descriptors 0, 1 and 2; list variables, quoting and simple integer indices;
 `if`/`else`, `begin`, `for`, `while`, functions without options, `not`, and logical
 chains. Initial builtins include `echo`, `set`, `cd`, `pwd`, `count`, `test`, `[`,
 `true`, `false`, `source`, `eval`, `exit`, `return`, `break` and `continue`.
+Native Fish also provides `printf`, `math`, `contains`, `read`, `type`, command
+queries, function queries/removal, and common `status` queries. `math` uses the
+same arithmetic parser and functions as POSIX Fish. `string` supports literal
+split, join, replace, trim, case conversion, Unicode length/substrings, repeat,
+escaping, and wildcard matching, with arguments or redirected standard input.
 Command substitutions, globbing, brace expansion, `switch`, block redirections,
-function options and the full builtin set are not implemented. In particular,
-native Fish does not yet provide the `printf`, `string`, `math` or `status` builtins.
+function options and the full builtin set are not implemented. Regular-expression
+string operations, advanced read options and locale-specific numeric formatting
+remain unavailable; unsupported options produce diagnostics.
 
 Use `rash`, `fish --rash-shell`, or `fish --script-language=bash` for Bash syntax:
 

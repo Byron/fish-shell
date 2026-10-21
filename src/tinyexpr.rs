@@ -30,10 +30,12 @@ use std::{
     ops::{BitAnd, BitOr, BitXor},
 };
 
-use crate::{
-    prelude::*,
-    wutil::{Error as wcstodError, wcstod::wcstod_underscores},
-};
+#[cfg(windows)]
+use crate::native::fish::builtins::numeric::{Error as wcstodError, wcstod::wcstod_underscores};
+use crate::prelude::*;
+#[cfg(not(windows))]
+use crate::wutil::{Error as wcstodError, wcstod::wcstod_underscores};
+#[cfg(not(windows))]
 use fish_common::assert_sorted_by_name;
 
 #[derive(Clone, Copy)]
@@ -308,9 +310,11 @@ const BUILTINS: &[(&wstr, Function)] = &[
     (L!("tau"), Function::Constant(TAU)),
 ];
 
+#[cfg(not(windows))]
 assert_sorted_by_name!(BUILTINS, 0);
 
 fn find_builtin(name: &wstr) -> Option<Function> {
+    debug_assert!(BUILTINS.windows(2).all(|pair| pair[0].0 <= pair[1].0));
     let idx = BUILTINS
         .binary_search_by_key(&name, |(name, _expr)| name)
         .ok()?;
