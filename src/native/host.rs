@@ -378,16 +378,20 @@ impl Host for NativeHost {
         Ok(ReadResult::Line(line))
     }
 
-    fn fd_is_terminal(&mut self, fd: i32, redirects: &[Redirection]) -> Result<bool> {
+    fn fd_is_terminal(
+        &mut self,
+        fd: i32,
+        redirects: &[Redirection],
+        capture: bool,
+    ) -> Result<bool> {
         use std::io::IsTerminal;
-        match &targets(redirects, false)?[descriptor(fd)?] {
+        match &targets(redirects, capture)?[descriptor(fd)?] {
             Target::Inherited(0) => Ok(io::stdin().is_terminal()),
             Target::Inherited(1) => Ok(io::stdout().is_terminal()),
             Target::Inherited(2) => Ok(io::stderr().is_terminal()),
             Target::File(file) => Ok(file.is_terminal()),
-            _ => Err(Error::new(format!(
-                "descriptor {fd} is closed or unavailable"
-            ))),
+            Target::Capture | Target::Closed => Ok(false),
+            _ => Err(Error::new(format!("descriptor {fd} is unavailable"))),
         }
     }
 
@@ -505,6 +509,50 @@ mod tests {
             .unwrap();
         assert!(host.write(2, b"file", &redirects, true).unwrap().is_empty());
         assert_eq!(std::fs::read(&file.0).unwrap(), b"file");
+    }
+
+    #[test]
+    fn terminal_queries_resolve_capture_and_ordered_descriptor_duplication() {
+        use std::io::IsTerminal;
+        let mut host = NativeHost::new().unwrap();
+        let stderr_is_terminal = std::io::stderr().is_terminal();
+        assert!(!host.fd_is_terminal(1, &[], true).unwrap());
+        let stderr_to_capture = Redirection {
+            fd: 2,
+            action: RedirectAction::Dup(1),
+        };
+        assert!(!host.fd_is_terminal(2, &[stderr_to_capture], true).unwrap());
+        let stdout_to_stderr = Redirection {
+            fd: 1,
+            action: RedirectAction::Dup(2),
+        };
+        assert_eq!(
+            host.fd_is_terminal(1, &[stdout_to_stderr.clone()], true)
+                .unwrap(),
+            stderr_is_terminal
+        );
+        // A later close must not retroactively change the previously duplicated handle.
+        let closed_stderr = Redirection {
+            fd: 2,
+            action: RedirectAction::Close,
+        };
+        assert_eq!(
+            host.fd_is_terminal(1, &[stdout_to_stderr, closed_stderr.clone()], true)
+                .unwrap(),
+            stderr_is_terminal
+        );
+        assert!(!host.fd_is_terminal(2, &[closed_stderr], true).unwrap());
+        let file = TestFile::new();
+        let file_first = [
+            file.redirect(1),
+            Redirection {
+                fd: 2,
+                action: RedirectAction::Dup(1),
+            },
+        ];
+        let redirects = host.prepare_redirects(&file_first).unwrap();
+        assert!(!host.fd_is_terminal(1, &redirects, false).unwrap());
+        assert!(!host.fd_is_terminal(2, &redirects, false).unwrap());
     }
 
     #[test]

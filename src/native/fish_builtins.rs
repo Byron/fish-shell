@@ -279,17 +279,7 @@ impl Session {
                 };
                 self.status = 0;
             }
-            "test" | "[" => {
-                let args = if name == "[" {
-                    if args.last().map(String::as_str) != Some("]") {
-                        return Err(Error::new("[: missing ]"));
-                    }
-                    &args[..args.len() - 1]
-                } else {
-                    args
-                };
-                self.status = i32::from(!test(args)?);
-            }
+            "test" | "[" => self.test_builtin(name, args, host, output)?,
             "source" | "." => {
                 return self.source_builtin(args, host, output);
             }
@@ -677,43 +667,4 @@ fn index_error(error: variable_indices::InvalidIndex, status: i32) -> Error {
         message: format!("set: Invalid index starting at '{}'", error.0),
         status,
     }
-}
-
-fn test(args: &[String]) -> Result<bool> {
-    let strings: Vec<&str> = args.iter().map(String::as_str).collect();
-    Ok(match strings.as_slice() {
-        [] => false,
-        [value] => !value.is_empty(),
-        ["!", rest @ ..] => {
-            return test(&rest.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>()).map(|v| !v);
-        }
-        ["-n", value] => !value.is_empty(),
-        ["-z", value] => value.is_empty(),
-        ["-e", path] => std::path::Path::new(path).exists(),
-        ["-f", path] => std::path::Path::new(path).is_file(),
-        ["-d", path] => std::path::Path::new(path).is_dir(),
-        [left, "=" | "==", right] => left == right,
-        [left, "!=", right] => left != right,
-        [
-            left,
-            op @ ("-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge"),
-            right,
-        ] => {
-            let left = left
-                .parse::<f64>()
-                .map_err(|_| Error::new("test: expected a number"))?;
-            let right = right
-                .parse::<f64>()
-                .map_err(|_| Error::new("test: expected a number"))?;
-            match *op {
-                "-eq" => left == right,
-                "-ne" => left != right,
-                "-lt" => left < right,
-                "-le" => left <= right,
-                "-gt" => left > right,
-                _ => left >= right,
-            }
-        }
-        _ => return Err(unsupported("this test expression")),
-    })
 }

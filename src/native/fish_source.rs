@@ -46,7 +46,7 @@ impl Session {
         let filename = input.unwrap_or("-");
         let source = if input.is_none() || input == Some("-") {
             if input.is_none() {
-                match host.fd_is_terminal(0, &output.redirects) {
+                match host.fd_is_terminal(0, &output.redirects, output.capture) {
                     Ok(true) => {
                         return self.source_failure(
                             1,
@@ -198,7 +198,7 @@ mod tests {
             Ok(ReadResult::Line(self.input.pop_front().unwrap_or_default()))
         }
 
-        fn fd_is_terminal(&mut self, fd: i32, _: &[Redirection]) -> Result<bool> {
+        fn fd_is_terminal(&mut self, fd: i32, _: &[Redirection], _: bool) -> Result<bool> {
             assert_eq!(fd, 0);
             Ok(self.terminal)
         }

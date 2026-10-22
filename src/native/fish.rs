@@ -26,6 +26,8 @@ mod functions;
 mod history_builtin;
 #[path = "fish_source.rs"]
 mod source_builtin;
+#[path = "fish_test.rs"]
+mod test_builtin;
 #[path = "fish_universal.rs"]
 mod universal;
 pub(crate) use expand::unescape_literal;

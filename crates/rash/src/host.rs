@@ -134,7 +134,12 @@ pub trait Host {
 
     /// Inspect a resolved descriptor, including redirections, without I/O.
     /// Hosts without terminal streams may retain the default.
-    fn fd_is_terminal(&mut self, _fd: i32, _redirects: &[Redirection]) -> Result<bool> {
+    fn fd_is_terminal(
+        &mut self,
+        _fd: i32,
+        _redirects: &[Redirection],
+        _capture: bool,
+    ) -> Result<bool> {
         Ok(false)
     }
 

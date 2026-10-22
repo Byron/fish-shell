@@ -114,6 +114,11 @@ counts, and validation commands. It writes local `_flag_*`, `argv_opts`, and
 remaining `argv` values for the caller. The `path` builtin still needs further
 shared implementation work.
 
+`test` and `[` share the POSIX expression parser, including parentheses, boolean
+combinations and precise integer comparisons. File and terminal predicates use
+Windows metadata, access rights and stream handles. Unix ownership and special
+permission bits remain platform limitations.
+
 `source FILE [ARGS...]`, `source - [ARGS...]`, and piped `source` load Fish code
 into the current session. Source-local variables and `argv` disappear afterward;
 functions and global changes remain. Input is read and parsed before evaluation.
