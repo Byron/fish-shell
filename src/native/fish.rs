@@ -1617,18 +1617,33 @@ mod tests {
     }
 
     #[test]
-    fn native_windows_status_rejects_operands() {
+    fn native_windows_status_rejects_operands_without_aborting_scripts() {
         let mut session = Session::new().unwrap();
         let mut capture = Capture::default();
-        let error = session
-            .eval("status is-native-windows extra", &mut capture)
-            .unwrap_err();
-        assert_eq!(error.status, 2);
         assert_eq!(
-            error.message,
-            "status is-native-windows: expected 0 arguments; got 1"
+            session
+                .eval("status is-native-windows extra", &mut capture)
+                .unwrap(),
+            2
         );
-        assert!(capture.0.is_empty());
+        assert_eq!(
+            capture.0,
+            b"status is-native-windows: expected 0 arguments; got 1\n"
+        );
+        capture.0.clear();
+        assert_eq!(
+            session
+                .eval(
+                    "status is-native-windows extra; echo status:$status; echo survived",
+                    &mut capture,
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            capture.0,
+            b"status is-native-windows: expected 0 arguments; got 1\nstatus:2\nsurvived\n"
+        );
     }
 
     #[test]
