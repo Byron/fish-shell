@@ -20,12 +20,7 @@ impl<H: Host> Context for NativeContext<'_, H> {
         let path = Path::new(&path);
         // Device handles need not have filesystem metadata.
         if predicate == StatPredicate::c {
-            use std::os::windows::io::AsRawHandle;
-            use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_CHAR, GetFileType};
-            return Ok(open_for_access(path, 0).is_ok_and(|file| {
-                // The live file owns this handle for the duration of the query.
-                unsafe { GetFileType(file.as_raw_handle()) == FILE_TYPE_CHAR }
-            }));
+            return Ok(is_character_device(path));
         }
         let Ok(metadata) = fs::metadata(path) else {
             return Ok(false);
@@ -115,10 +110,19 @@ impl<H: Host> Context for NativeContext<'_, H> {
     }
 }
 
+pub(super) fn is_character_device(path: &Path) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_CHAR, GetFileType};
+    open_for_access(path, 0).is_ok_and(|file| {
+        // The live file owns this handle for the duration of the query.
+        unsafe { GetFileType(file.as_raw_handle()) == FILE_TYPE_CHAR }
+    })
+}
+
 /// Opening an existing handle probes Windows access without writing, creating,
 /// or truncating anything. Share all access so the probe itself imposes no lock.
 /// A conflicting existing sharing mode can still make the requested access fail.
-fn open_for_access(path: &Path, access: u32) -> std::io::Result<fs::File> {
+pub(super) fn open_for_access(path: &Path, access: u32) -> std::io::Result<fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,

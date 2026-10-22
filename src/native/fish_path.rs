@@ -1,7 +1,7 @@
 //! Portable lexical path operations with Windows filesystem resolution.
 use super::*;
 use crate::path_lexical::{windows_basename, windows_dirname, windows_normalize, windows_validate};
-use fish_wgetopt::{ArgType::NoArgument, WGetopter, WOption, wopt};
+use fish_wgetopt::{ArgType::*, WGetopter, WOption, wopt};
 use fish_widestring::L;
 use rash::host::ReadResult;
 use std::path::{Component, Path, PathBuf, Prefix};
@@ -14,6 +14,89 @@ struct Options {
     no_extension: bool,
     no_symlinks: bool,
     help: bool,
+    relative: bool,
+    reverse: bool,
+    unique: bool,
+    invert: bool,
+    all: bool,
+    key: Option<String>,
+    has_types: bool,
+    types: Vec<String>,
+    has_permissions: bool,
+    permissions: Vec<String>,
+}
+
+const MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SORT_PATHS: usize = 100_000;
+
+const SUBCOMMANDS: &[&str] = &[
+    "dirname",
+    "basename",
+    "normalize",
+    "resolve",
+    "extension",
+    "change-extension",
+    "filter",
+    "is",
+    "mtime",
+    "sort",
+];
+
+fn extension_offset(path: &wstr) -> Result<Option<usize>> {
+    let basename = windows_basename(path).map_err(|reason| error(reason.to_string(), 2))?;
+    // Windows basenames preserve drive and UNC roots. Dots in a server or
+    // share name are part of that root, not a file's extension.
+    if !Path::new(&path.to_string())
+        .components()
+        .any(|component| matches!(component, Component::Normal(_)))
+    {
+        return Ok(None);
+    }
+    Ok(crate::path_lexical::extension_offset(path, &basename))
+}
+
+fn modification_seconds(path: &str) -> Option<i64> {
+    let time = std::fs::metadata(path).ok()?.modified().ok()?;
+    Some(match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(value) => i64::try_from(value.as_secs()).ok()?,
+        Err(value) => {
+            let duration = value.duration();
+            -i64::try_from(duration.as_secs()).ok()? - i64::from(duration.subsec_nanos() != 0)
+        }
+    })
+}
+
+fn filter_matches(path: &str, options: &Options) -> bool {
+    let path = Path::new(path);
+    let metadata = std::fs::metadata(path).ok();
+    if !options.has_types && !options.has_permissions {
+        return metadata.is_some();
+    }
+    if options.has_types
+        && !options.types.iter().any(|kind| match kind.as_str() {
+            "file" => metadata.as_ref().is_some_and(std::fs::Metadata::is_file),
+            "dir" => metadata.as_ref().is_some_and(std::fs::Metadata::is_dir),
+            "link" => {
+                metadata.is_some()
+                    && std::fs::symlink_metadata(path).is_ok_and(|value| value.is_symlink())
+            }
+            "char" => super::test_builtin::is_character_device(path),
+            _ => false,
+        })
+    {
+        return false;
+    }
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::FILE_EXECUTE;
+    let access = options.permissions.iter().fold(0, |mask, name| {
+        mask | match name.as_str() {
+            "read" => GENERIC_READ,
+            "write" => GENERIC_WRITE,
+            "exec" => FILE_EXECUTE,
+            _ => unreachable!("permission validated during parsing"),
+        }
+    });
+    access == 0 || super::test_builtin::open_for_access(path, access).is_ok()
 }
 
 fn error(message: impl Into<String>, status: i32) -> Error {
@@ -210,25 +293,20 @@ impl Session {
             match args.split_first() {
                 Some((command, _)) if matches!(command.as_str(), "-h" | "--help") => {
                     self.write(
-                        b"path dirname|basename|normalize|resolve [-qzZ] [PATH ...]\n",
+                        b"path dirname|basename|normalize|resolve|extension|change-extension|filter|is|mtime|sort [OPTIONS] [PATH ...]\n",
                         host,
                         output,
                     )?;
                     self.status = 0;
                     return Ok(());
                 }
-                Some((command, args))
-                    if matches!(
-                        command.as_str(),
-                        "dirname" | "basename" | "normalize" | "resolve"
-                    ) =>
-                {
+                Some((command, args)) if SUBCOMMANDS.contains(&command.as_str()) => {
                     (command.as_str(), args)
                 }
                 Some((command, _)) => {
                     return Err(error(format!("unsupported subcommand {command}"), 2));
                 }
-                None => return Err(error("expected dirname, basename, normalize or resolve", 2)),
+                None => return Err(error("expected a subcommand", 2)),
             }
         };
         let mut opts = Options::default();
@@ -244,11 +322,23 @@ impl Session {
             wopt(L!("no-extension"), NoArgument, 'E'),
             wopt(L!("no-symlinks"), NoArgument, 's'),
             wopt(L!("help"), NoArgument, 'h'),
+            wopt(L!("relative"), NoArgument, 'R'),
+            wopt(L!("reverse"), NoArgument, 'r'),
+            wopt(L!("unique"), NoArgument, 'u'),
+            wopt(L!("key"), RequiredArgument, '\x01'),
+            wopt(L!("type"), RequiredArgument, 't'),
+            wopt(L!("perm"), RequiredArgument, 'p'),
+            wopt(L!("invert"), NoArgument, 'v'),
+            wopt(L!("all"), NoArgument, '\x02'),
         ];
-        let short = if operation == "realpath" {
-            L!("+hs")
-        } else {
-            L!("hqzZE")
+        let filter = matches!(operation, "filter" | "is");
+        let short = match operation {
+            "realpath" => L!("+hs"),
+            "filter" | "is" => L!("hqzZt:p:rwxfdlv"),
+            "mtime" => L!("hqzZR"),
+            "sort" => L!("hqzZru"),
+            "basename" => L!("hqzZE"),
+            _ => L!("hqzZ"),
         };
         let mut getopt = WGetopter::new(short, LONG, &mut args);
         while let Some(option) = getopt.next_opt() {
@@ -259,6 +349,80 @@ impl Session {
                 'z' if operation != "realpath" => opts.null_in = true,
                 'Z' if operation != "realpath" => opts.null_out = true,
                 'E' if operation == "basename" => opts.no_extension = true,
+                'R' if operation == "mtime" => opts.relative = true,
+                'r' if operation == "sort" => opts.reverse = true,
+                'u' if operation == "sort" => opts.unique = true,
+                '\x01' if operation == "sort" => {
+                    let key = getopt.woptarg.unwrap().to_string();
+                    if !matches!(key.as_str(), "basename" | "dirname" | "path") {
+                        return Err(error(format!("sort: invalid sort key {key}"), 2));
+                    }
+                    opts.key = Some(key);
+                }
+                'v' if filter => opts.invert = true,
+                '\x02' if filter => opts.all = true,
+                'f' | 'd' | 'l' if filter => {
+                    opts.has_types = true;
+                    opts.types.push(
+                        match option {
+                            'f' => "file",
+                            'd' => "dir",
+                            _ => "link",
+                        }
+                        .into(),
+                    );
+                }
+                'r' | 'w' | 'x' if filter => {
+                    opts.has_permissions = true;
+                    opts.permissions.push(
+                        match option {
+                            'r' => "read",
+                            'w' => "write",
+                            _ => "exec",
+                        }
+                        .into(),
+                    );
+                }
+                't' | 'p' if filter => {
+                    if option == 't' {
+                        opts.has_types = true;
+                    } else {
+                        opts.has_permissions = true;
+                    }
+                    for value in getopt
+                        .woptarg
+                        .unwrap()
+                        .to_string()
+                        .split(',')
+                        .filter(|value| !value.is_empty())
+                    {
+                        if option == 't' {
+                            if !matches!(
+                                value,
+                                "file" | "dir" | "link" | "block" | "char" | "fifo" | "socket"
+                            ) {
+                                return Err(error(format!("{operation}: invalid type {value}"), 2));
+                            }
+                            opts.types.push(value.into());
+                        } else {
+                            if matches!(value, "suid" | "sgid" | "user" | "group") {
+                                return Err(error(
+                                    format!(
+                                        "{operation}: permission {value} requires POSIX ownership or mode bits"
+                                    ),
+                                    2,
+                                ));
+                            }
+                            if !matches!(value, "read" | "write" | "exec") {
+                                return Err(error(
+                                    format!("{operation}: invalid permission {value}"),
+                                    2,
+                                ));
+                            }
+                            opts.permissions.push(value.into());
+                        }
+                    }
+                }
                 _ => {
                     return Err(error(
                         format!(
@@ -270,7 +434,7 @@ impl Session {
                 }
             }
         }
-        let operands: Vec<String> = getopt.argv[getopt.wopt_index..]
+        let mut operands: Vec<String> = getopt.argv[getopt.wopt_index..]
             .iter()
             .map(|value| value.to_string())
             .collect();
@@ -279,7 +443,7 @@ impl Session {
                 if operation == "realpath" {
                     b"realpath [-s|--no-symlinks] PATH ...\n"
                 } else {
-                    b"path dirname|basename|normalize|resolve [-qzZ] [PATH ...]\n"
+                    b"path dirname|basename|normalize|resolve|extension|change-extension|filter|is|mtime|sort [OPTIONS] [PATH ...]\n"
                 },
                 host,
                 output,
@@ -290,6 +454,15 @@ impl Session {
         if operation == "realpath" && operands.is_empty() {
             return Err(error("expected at least one path", 2));
         }
+        let replacement = if operation == "change-extension" {
+            if operands.is_empty() {
+                return Err(error("change-extension: missing replacement", 2));
+            }
+            Some(operands.remove(0))
+        } else {
+            None
+        };
+        opts.quiet |= operation == "is";
         let from_stdin = operation != "realpath" && output.stdin_is_directly_redirected;
         if from_stdin && !operands.is_empty() {
             return Err(error(
@@ -299,6 +472,13 @@ impl Session {
         }
         let mut transformed = false;
         let mut failed = false;
+        let mut seen = 0;
+        let mut matched = 0;
+        let mut sorted: Vec<(WString, WString)> = Vec::new();
+        let mut sort_bytes = 0usize;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |value| value.as_secs() as i64);
         let mut inputs = operands.into_iter();
         let mut pending = std::collections::VecDeque::new();
         let mut buffered = Vec::new();
@@ -323,7 +503,7 @@ impl Session {
                     eof = bytes.is_empty();
                     let null = *null_in.get_or_insert_with(|| bytes.contains(&0));
                     buffered.extend(bytes);
-                    if buffered.len() > 16 * 1024 * 1024 {
+                    if buffered.len() > MAX_INPUT_BYTES {
                         return Err(error("path input limit exceeded", 1));
                     }
                     let separator = if null { 0 } else { b'\n' };
@@ -348,7 +528,10 @@ impl Session {
             let Some(input) = input else {
                 break;
             };
-            if input.is_empty() && operation != "realpath" {
+            seen += 1;
+            if input.is_empty()
+                && matches!(operation, "dirname" | "basename" | "normalize" | "resolve")
+            {
                 continue;
             }
             if let Err(problem) = validate(&input) {
@@ -357,7 +540,71 @@ impl Session {
                 continue;
             }
             let wide = WString::from(input.as_str());
+            if filter {
+                if filter_matches(&input, &opts) == opts.invert {
+                    continue;
+                }
+                matched += 1;
+                transformed = true;
+                if opts.all {
+                    continue;
+                }
+                if opts.quiet {
+                    break;
+                }
+                if input.starts_with('-') {
+                    self.write(b"./", host, output)?;
+                }
+                self.write(input.as_bytes(), host, output)?;
+                self.write(if opts.null_out { b"\0" } else { b"\n" }, host, output)?;
+                continue;
+            }
+            if operation == "sort" {
+                sort_bytes = sort_bytes.saturating_add(input.len());
+                if sort_bytes > MAX_INPUT_BYTES || sorted.len() >= MAX_SORT_PATHS {
+                    return Err(error("path sort input limit exceeded", 1));
+                }
+                let key = match opts.key.as_deref() {
+                    Some("basename") => windows_basename(&wide),
+                    Some("dirname") => windows_dirname(&wide),
+                    _ => Ok(wide.clone()),
+                }
+                .map_err(|reason| error(reason.to_string(), 2))?;
+                sorted.push((key, wide));
+                continue;
+            }
+            let mut succeeded = None;
             let value = match operation {
+                "mtime" => {
+                    let Some(seconds) = modification_seconds(&input) else {
+                        continue;
+                    };
+                    succeeded = Some(true);
+                    Ok(if opts.relative {
+                        now - seconds
+                    } else {
+                        seconds
+                    }
+                    .to_string())
+                }
+                "extension" => {
+                    let offset = extension_offset(&wide)?;
+                    succeeded = Some(offset.is_some());
+                    Ok(offset.map_or_else(String::new, |at| wide[at..].to_string()))
+                }
+                "change-extension" => {
+                    let mut value =
+                        wide[..extension_offset(&wide)?.unwrap_or(wide.len())].to_owned();
+                    let replacement = replacement.as_ref().unwrap();
+                    if !replacement.is_empty() {
+                        if !replacement.starts_with('.') {
+                            value.push('.');
+                        }
+                        value.push_utfstr(&WString::from(replacement.as_str()));
+                    }
+                    succeeded = Some(true);
+                    Ok(value.to_string())
+                }
                 "realpath" => realpath(&input, opts.no_symlinks),
                 "resolve" => resolve(&input),
                 "dirname" => windows_dirname(&wide)
@@ -396,7 +643,8 @@ impl Session {
             if operation == "normalize" && value.starts_with('-') {
                 value.insert_str(0, ".\\");
             }
-            transformed |= value != input || matches!(operation, "resolve" | "realpath");
+            transformed |=
+                succeeded.unwrap_or(value != input || matches!(operation, "resolve" | "realpath"));
             if opts.quiet && transformed {
                 break;
             }
@@ -404,6 +652,37 @@ impl Session {
                 self.write(value.as_bytes(), host, output)?;
                 self.write(if opts.null_out { b"\0" } else { b"\n" }, host, output)?;
             }
+        }
+        if operation == "sort" {
+            if host.cancelled() {
+                self.status = 130;
+                return Ok(());
+            }
+            sorted.sort_by(|left, right| {
+                let order = fish_util::wcsfilecmp_glob(&left.0, &right.0);
+                if opts.reverse { order.reverse() } else { order }
+            });
+            if opts.unique {
+                sorted.dedup_by(|left, right| left.0 == right.0);
+            }
+            if host.cancelled() {
+                self.status = 130;
+                return Ok(());
+            }
+            if !opts.quiet {
+                for (_, path) in sorted {
+                    if host.cancelled() {
+                        self.status = 130;
+                        return Ok(());
+                    }
+                    self.write(path.to_string().as_bytes(), host, output)?;
+                    self.write(if opts.null_out { b"\0" } else { b"\n" }, host, output)?;
+                }
+            }
+            transformed = true;
+        }
+        if opts.all {
+            transformed = seen > 0 && matched == seen;
         }
         self.status = i32::from(failed || !transformed);
         Ok(())

@@ -4,6 +4,19 @@
 //! policies differ by platform; component reduction does not consult the filesystem.
 use fish_widestring::{L, WExt as _, WString, wstr};
 
+/// Locate the final extension using a basename supplied by the platform adapter.
+/// A leading dot and the special directory names do not introduce extensions.
+pub(crate) fn extension_offset(path: &wstr, basename: &wstr) -> Option<usize> {
+    if basename == "." || basename == ".." {
+        return None;
+    }
+    basename
+        .chars()
+        .rposition(|c| c == '.')
+        .filter(|&position| position != 0)
+        .map(|position| position + path.len() - basename.len())
+}
+
 struct Root<'a> {
     prefix: &'a wstr,
     rooted: bool,

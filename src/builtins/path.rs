@@ -502,26 +502,7 @@ fn path_mtime(parser: &mut Parser, streams: &mut IoStreams, args: &mut [&wstr]) 
 }
 
 fn find_extension(path: &wstr) -> Option<usize> {
-    // The extension belongs to the basename,
-    // if there is a "." before the last component it doesn't matter.
-    // e.g. ~/.config/fish/conf.d/foo
-    // does not have an extension! The ".d" here is not a file extension for "foo".
-    // And "~/.config" doesn't have an extension either - the ".config" is the filename.
-    let filename = wbasename(path);
-
-    // "." and ".." aren't really *files* and therefore don't have an extension.
-    if filename == "." || filename == ".." {
-        return None;
-    }
-
-    // If we don't have a "." or the "." is the first in the filename,
-    // we do not have an extension
-    let pos = filename.chars().rposition(|c| c == '.');
-    match pos {
-        None | Some(0) => None,
-        // Convert pos back to what it would be in the original path.
-        Some(pos) => Some(pos + path.len() - filename.len()),
-    }
+    crate::path_lexical::extension_offset(path, wbasename(path))
 }
 
 fn path_extension(

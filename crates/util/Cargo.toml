@@ -8,9 +8,11 @@ license.workspace = true
 
 [dependencies]
 fish-widestring.workspace = true
+rand.workspace = true
+
+[target.'cfg(not(windows))'.dependencies]
 libc.workspace = true
 nix.workspace = true
-rand.workspace = true
 
 [lints]
 workspace = true

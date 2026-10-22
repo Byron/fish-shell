@@ -125,13 +125,18 @@ options, repeated and optional arguments, mutually exclusive options, argument
 counts, and validation commands. It writes local `_flag_*`, `argv_opts`, and
 remaining `argv` values for the caller.
 
-Native `path basename`, `path dirname`, `path normalize`, and `path resolve`
-support startup scripts that locate files relative to `status filename`.
-Lexical path operations share their core with POSIX Fish, with Windows drive
-and UNC roots handled separately. `builtin realpath -s` makes an absolute path
-without resolving links in its argument. Filesystem resolution uses Windows
-semantics; Unix permission filters and special device namespaces remain outside
-this native subset.
+Native `path` supports basename/dirname, normalization/resolution, extensions,
+filtering, modification times and natural sorting. Lexical operations, extension
+rules and the natural comparator share their core with POSIX Fish, with Windows
+drive and UNC roots handled separately. `path filter`/`path is` support file,
+directory, link and character-device checks, Windows read/write/execute access
+probes, inversion and `--all`. POSIX ownership and special mode-bit filters report
+unsupported options; block devices, FIFOs and Unix sockets have no matching
+ordinary Windows file type. `path sort` supports reverse/unique output and
+basename/dirname keys, with a 16 MiB or 100,000-path input limit.
+`builtin realpath -s` makes an absolute path without resolving links in its
+argument. Filesystem resolution uses Windows semantics; special device
+namespaces remain outside this native subset.
 
 `test` and `[` share the POSIX expression parser, including parentheses, boolean
 combinations and precise integer comparisons. File and terminal predicates use

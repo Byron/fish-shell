@@ -1,9 +1,12 @@
 //! Generic utilities library.
 
 use fish_widestring::prelude::*;
+#[cfg(not(windows))]
 use nix::errno::Errno;
 use rand::{SeedableRng as _, rngs::SmallRng};
-use std::{cmp::Ordering, ffi::CStr, io::Write as _, time};
+use std::{cmp::Ordering, time};
+#[cfg(not(windows))]
+use std::{ffi::CStr, io::Write as _};
 
 /// Compares two wide character strings with an (arguably) intuitive ordering. This function tries
 /// to order strings in a way which is intuitive to humans with regards to sorting strings
@@ -245,6 +248,7 @@ fn wcsfilecmp_leading_digits(a: &wstr, b: &wstr) -> (Ordering, usize, usize) {
 
 /// Prints the provided string, followed by a colon, space, and the string representation of the
 /// current errno via [`libc::strerror`].
+#[cfg(not(windows))]
 pub fn perror(s: &str) {
     let e = Errno::last_raw();
     let mut stderr = std::io::stderr().lock();
