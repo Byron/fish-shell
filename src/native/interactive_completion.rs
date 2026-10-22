@@ -17,6 +17,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
+#[path = "interactive_completion_paths.rs"]
+mod variable_paths;
+
 /// A registration keeps source unevaluated until a relevant completion query.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct CompletionSpec {
@@ -65,6 +68,7 @@ pub(super) struct CompletionEngine {
     executables: BTreeSet<String>,
     executable_paths: BTreeMap<String, PathBuf>,
     variables: Vec<String>,
+    variable_values: BTreeMap<String, super::fish::Variable>,
     registrations: Vec<CompletionSpec>,
     wrappers: BTreeMap<String, Vec<Vec<String>>>,
     #[cfg(feature = "git")]
@@ -98,6 +102,7 @@ impl CompletionEngine {
             executables: BTreeSet::new(),
             executable_paths: BTreeMap::new(),
             variables: Vec::new(),
+            variable_values: BTreeMap::new(),
             registrations: Vec::new(),
             wrappers: BTreeMap::new(),
             #[cfg(feature = "git")]
@@ -126,6 +131,7 @@ impl CompletionEngine {
         self.executables.clear();
         self.executable_paths.clear();
         self.variables = variables;
+        self.variable_values.clear();
         for name in super::utilities::names() {
             self.commands.insert((*name).into());
             self.executables.insert((*name).into());
@@ -160,6 +166,10 @@ impl CompletionEngine {
 
     pub(super) fn set_registrations(&mut self, registrations: Vec<CompletionSpec>) {
         self.registrations = registrations;
+    }
+
+    pub(super) fn set_variable_values(&mut self, values: BTreeMap<String, super::fish::Variable>) {
+        self.variable_values = values;
     }
 
     pub(super) fn set_wrappers(&mut self, wrappers: Vec<(String, Vec<String>)>) {
@@ -270,9 +280,9 @@ impl CompletionEngine {
             }
             return Ok((start, result));
         }
-        // Partial substitutions and literal dollar signs are not paths. Never
-        // evaluate them, and do not accidentally replace them with a literal.
-        if word.expansion
+        // Only bounded variable directory expressions are eligible for path
+        // lookup. Typed substitutions are never evaluated.
+        if (word.expansion && self.variable_path(line, pos, &word, "").is_none())
             || word.value.contains('\n')
             || word.value.contains('`') && self.input_language != InputLanguage::Bash
         {
@@ -326,7 +336,12 @@ impl CompletionEngine {
         }
 
         if files {
-            if let Some(prefix) = matches.file_prefix.clone() {
+            if word.expansion {
+                let option = matches.file_prefix.clone().unwrap_or_default();
+                if let Some(path) = self.variable_path(line, pos, &word, &option) {
+                    self.complete_variable_paths(&word, &path, line, pos, cwd, &mut matches);
+                }
+            } else if let Some(prefix) = matches.file_prefix.clone() {
                 let mut argument = word.clone();
                 argument.value = word.value[prefix.len()..].into();
                 let mut paths = Candidates::new(&argument.value);
@@ -371,7 +386,7 @@ impl CompletionEngine {
         if word.comment
             || word.redirect
             || word.variable.is_some()
-            || word.expansion
+            || (word.expansion && self.variable_path(line, pos, &word, "").is_none())
             || word.value.contains('\n')
             || word.value.contains('`') && self.input_language != InputLanguage::Bash
         {
@@ -1049,6 +1064,8 @@ struct Candidate {
     rank: Rank,
     order_group: Option<usize>,
     sequence: usize,
+    /// A directory expression must retain its variable and quote syntax.
+    replacement: Option<String>,
 }
 
 struct Candidates {
@@ -1093,6 +1110,7 @@ impl Candidates {
                 rank,
                 order_group: self.order_group,
                 sequence,
+                replacement: None,
             });
     }
 
@@ -1139,7 +1157,9 @@ impl Candidates {
                 },
                 replacement: format!(
                     "{}{}",
-                    if quote {
+                    if let Some(replacement) = entry.replacement {
+                        replacement
+                    } else if quote {
                         quote_completion(&entry.value)
                     } else {
                         entry.value
@@ -2224,6 +2244,191 @@ mod tests {
                     &line[pos..]
                 ),
                 "echo \"$HOME\""
+            );
+        }
+    }
+
+    fn path_variables(
+        values: &[(&str, Vec<String>)],
+    ) -> BTreeMap<String, super::super::fish::Variable> {
+        values
+            .iter()
+            .map(|(name, values)| {
+                (
+                    (*name).into(),
+                    super::super::fish::Variable {
+                        values: values.clone(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn variable_directory_completion_preserves_quotes_and_literal_filenames() {
+        let directory = Directory::new();
+        let filename = "space 🐟's (report) $final.txt";
+        std::fs::write(directory.0.join(filename), "").unwrap();
+        std::fs::create_dir(directory.0.join("source tree")).unwrap();
+        let mut engine = engine();
+        engine.set_variable_values(path_variables(&[
+            ("base", vec![directory.0.to_string_lossy().into_owned()]),
+            ("HOME", vec![directory.0.to_string_lossy().into_owned()]),
+        ]));
+        for line in [
+            "echo $base/spa",
+            "echo \"$base/spa",
+            "echo \"$base\"/spa",
+            "echo $base/'spa",
+            "echo $base/sp\"a",
+            "echo $base/SPA",
+            "echo ~/spa",
+        ] {
+            let (start, candidates) = engine.complete(line, line.len(), &directory.0);
+            assert_eq!(start, 5, "{line}");
+            assert_eq!(candidates.len(), 1, "{line}");
+            let replacement = candidates[0].replacement.trim_end();
+            assert!(
+                replacement.contains("$base") || replacement.starts_with("~/"),
+                "{replacement}"
+            );
+            let value =
+                super::super::fish::completion_words(replacement, &engine.variable_values, true)
+                    .unwrap();
+            assert_eq!(
+                value,
+                [format!("{}/{filename}", directory.0.to_string_lossy())],
+                "{line}"
+            );
+        }
+        assert_eq!(
+            replacements(&engine, "cd \"$base/so", &directory.0),
+            ["\"$base/source tree/"]
+        );
+        assert_eq!(
+            replacements(&engine, "echo ~/so", &directory.0),
+            ["~/source\\ tree/"]
+        );
+        assert!(replacements(&engine, "echo '$base/spa", &directory.0).is_empty());
+        assert!(replacements(&engine, "echo \\$base/spa", &directory.0).is_empty());
+        engine.set_input_language(InputLanguage::Bash);
+        assert!(replacements(&engine, "echo $base/spa", &directory.0).is_empty());
+    }
+
+    #[test]
+    fn variable_path_lists_slices_and_indirection_use_session_values() {
+        let first = Directory::new();
+        let second = Directory::new();
+        std::fs::write(first.0.join("first.txt"), "").unwrap();
+        std::fs::write(second.0.join("final.txt"), "").unwrap();
+        for directory in [&first, &second] {
+            std::fs::write(directory.0.join("shared.txt"), "").unwrap();
+        }
+        let mut engine = engine();
+        engine.set_variable_values(path_variables(&[
+            (
+                "roots",
+                vec![
+                    first.0.to_string_lossy().into_owned(),
+                    second.0.to_string_lossy().into_owned(),
+                ],
+            ),
+            ("ref", vec!["roots".into()]),
+        ]));
+        assert_eq!(
+            replacements(&engine, "echo $roots/fi", &first.0),
+            ["$roots/final.txt ", "$roots/first.txt "]
+        );
+        assert_eq!(
+            replacements(&engine, "echo $roots[-1]/fi", &first.0),
+            ["$roots[-1]/final.txt "]
+        );
+        assert_eq!(
+            replacements(&engine, "echo $$ref/fi", &first.0),
+            ["$$ref/final.txt ", "$$ref/first.txt "]
+        );
+        assert_eq!(
+            replacements(&engine, "echo $roots/sh", &first.0),
+            ["$roots/shared.txt "]
+        );
+        assert!(replacements(&engine, "echo \"$roots/fi", &first.0).is_empty());
+        assert!(replacements(&engine, "echo $missing/fi", &first.0).is_empty());
+    }
+
+    #[test]
+    fn variable_paths_preserve_cursor_suffixes_and_obey_file_policy() {
+        let directory = Directory::new();
+        std::fs::write(directory.0.join("final.txt"), "").unwrap();
+        let mut engine = engine();
+        engine.set_variable_values(path_variables(&[(
+            "base",
+            vec![directory.0.to_string_lossy().into_owned()],
+        )]));
+        for (line, pos, expected) in [
+            (
+                "echo $base/f.txt | cat",
+                "echo $base/f".len(),
+                "echo $base/final.txt | cat",
+            ),
+            (
+                "echo \"$base/f.txt\"",
+                "echo \"$base/f".len(),
+                "echo \"$base/final.txt\"",
+            ),
+            (
+                "echo $base/final.txt",
+                "echo $base/f".len(),
+                "echo $base/final.txt",
+            ),
+        ] {
+            let (start, candidates) = engine.complete(line, pos, &directory.0);
+            assert_eq!(candidates.len(), 1, "{line}");
+            assert_eq!(
+                format!(
+                    "{}{}{}",
+                    &line[..start],
+                    candidates[0].replacement,
+                    &line[pos..]
+                ),
+                expected
+            );
+        }
+        engine.set_registrations(vec![CompletionSpec {
+            command: "probe".into(),
+            no_files: true,
+            ..Default::default()
+        }]);
+        assert!(replacements(&engine, "probe $base/fi", &directory.0).is_empty());
+        assert_eq!(
+            replacements(&engine, "probe > $base/fi", &directory.0),
+            ["$base/final.txt "]
+        );
+        engine.registrations[0].force_files = true;
+        assert_eq!(
+            replacements(&engine, "probe $base/fi", &directory.0),
+            ["$base/final.txt "]
+        );
+        engine.set_registrations(vec![CompletionSpec {
+            command: "probe".into(),
+            short_option: Some('I'),
+            requires_argument: true,
+            ..Default::default()
+        }]);
+        assert_eq!(
+            replacements(&engine, "probe -I$base/fi", &directory.0),
+            ["-I$base/final.txt "]
+        );
+        for line in [
+            "echo (echo unsafe)/fi",
+            "echo $base/(echo unsafe)/fi",
+            "echo $base[1(echo unsafe)]/fi",
+            "echo $base/*/fi",
+            "echo $base/$name.txt",
+        ] {
+            assert!(
+                replacements(&engine, line, &directory.0).is_empty(),
+                "{line}"
             );
         }
     }

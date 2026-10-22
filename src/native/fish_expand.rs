@@ -282,8 +282,90 @@ pub(super) fn word_with(
     input: &str,
     mut expand: impl FnMut(Request<'_>) -> Result<Vec<String>>,
 ) -> Result<Vec<String>> {
-    let words = expand_chars(&input.chars().collect::<Vec<_>>(), &mut expand, 0)?;
+    let words = expand_chars(
+        &input.chars().collect::<Vec<_>>(),
+        &mut expand,
+        0,
+        Limits::EXECUTION,
+    )?;
     glob::expand(words)
+}
+
+/// Expand completion directory expressions with the evaluator's quoting and
+/// slicing rules. Never execute substitutions or enumerate wildcard matches.
+pub(in crate::native) fn completion_words(
+    input: &str,
+    variables: &std::collections::BTreeMap<String, super::Variable>,
+    allow_variables: bool,
+) -> Result<Vec<String>> {
+    if input.len() > 16 * 1024 {
+        return Err(Error::new("completion expression limit exceeded"));
+    }
+    let mut requested_bytes = 0usize;
+    let mut expand = |request: Request<'_>| {
+        let values = match request {
+            Request::Variable(name) if allow_variables => {
+                let values = variables.get(name).map(|var| &var.values);
+                if let Some(values) = values {
+                    requested_bytes = requested_bytes
+                        .saturating_add(values.iter().map(String::len).sum::<usize>());
+                    if values.len() > Limits::COMPLETION.words
+                        || requested_bytes > Limits::COMPLETION.characters
+                    {
+                        return Err(Error::new("completion variable limit exceeded"));
+                    }
+                }
+                values.cloned().unwrap_or_default()
+            }
+            Request::VariableSeparator(name) if allow_variables => vec![
+                if variables.get(name).is_some_and(|var| var.pathvar) {
+                    ";"
+                } else {
+                    " "
+                }
+                .into(),
+            ],
+            _ => return Err(Error::new("completion requires a literal filename")),
+        };
+        Ok(values)
+    };
+    let words = expand_chars(
+        &input.chars().collect::<Vec<_>>(),
+        &mut expand,
+        0,
+        Limits::COMPLETION,
+    )?;
+    if words.iter().flatten().any(|item| *item == Item::Star) {
+        return Err(Error::new("wildcards are not completion directories"));
+    }
+    Ok(words.iter().map(|word| rendered(word)).collect())
+}
+
+#[derive(Clone, Copy)]
+struct Limits {
+    words: usize,
+    characters: usize,
+}
+
+impl Limits {
+    const EXECUTION: Self = Self {
+        words: 100_000,
+        characters: usize::MAX,
+    };
+    const COMPLETION: Self = Self {
+        words: 512,
+        characters: 1024 * 1024,
+    };
+
+    fn check(self, words: &[Vec<Item>]) -> Result<()> {
+        if words.len() > self.words
+            || (self.characters != usize::MAX
+                && words.iter().map(Vec::len).sum::<usize>() > self.characters)
+        {
+            return Err(Error::new("Fish expansion limit exceeded"));
+        }
+        Ok(())
+    }
 }
 
 fn literal(value: &str) -> Vec<Item> {
@@ -298,9 +380,20 @@ fn rendered(items: &[Item]) -> String {
         })
         .collect()
 }
-fn append(results: &mut Vec<Vec<Item>>, values: Vec<Vec<Item>>) -> Result<()> {
-    if results.len().saturating_mul(values.len()) > 100_000 {
+fn append(results: &mut Vec<Vec<Item>>, values: Vec<Vec<Item>>, limits: Limits) -> Result<()> {
+    if results.len().saturating_mul(values.len()) > limits.words {
         return Err(Error::new("too many Fish expansion results"));
+    }
+    if limits.characters != usize::MAX {
+        let prefix = results.iter().map(Vec::len).sum::<usize>();
+        let suffix = values.iter().map(Vec::len).sum::<usize>();
+        if prefix
+            .saturating_mul(values.len())
+            .saturating_add(suffix.saturating_mul(results.len()))
+            > limits.characters
+        {
+            return Err(Error::new("completion expansion size limit exceeded"));
+        }
     }
     let mut combined = Vec::new();
     // Fish expands the rightmost list on the outside of the Cartesian product.
@@ -319,6 +412,7 @@ fn expand_chars(
     chars: &[char],
     expand: &mut impl FnMut(Request<'_>) -> Result<Vec<String>>,
     depth: usize,
+    limits: Limits,
 ) -> Result<Vec<Vec<Item>>> {
     if depth >= 128 {
         return Err(Error::new("maximum Fish expansion nesting exceeded"));
@@ -369,8 +463,9 @@ fn expand_chars(
                 }
                 let name: String = chars[start..index].iter().collect();
                 if quote == Quote::Double {
-                    let value = quoted_variable(&name, levels, chars, &mut index, expand, depth)?;
-                    append(&mut results, vec![literal(&value)])?;
+                    let value =
+                        quoted_variable(&name, levels, chars, &mut index, expand, depth, limits)?;
+                    append(&mut results, vec![literal(&value)], limits)?;
                     continue;
                 }
                 let mut values = expand(Request::Variable(&name))?;
@@ -383,12 +478,13 @@ fn expand_chars(
                         values = indirect;
                     }
                     if chars.get(index) == Some(&'[') {
-                        values = slice(chars, &mut index, values, expand, depth)?;
+                        values = slice(chars, &mut index, values, expand, depth, limits)?;
                     }
                 }
                 append(
                     &mut results,
                     values.iter().map(|value| literal(value)).collect(),
+                    limits,
                 )?;
             }
             '$' if quote != Quote::Single && chars.get(index) == Some(&'(') => {
@@ -401,11 +497,12 @@ fn expand_chars(
                 })?;
                 index = end;
                 if chars.get(index) == Some(&'[') {
-                    values = slice(chars, &mut index, values, expand, depth)?;
+                    values = slice(chars, &mut index, values, expand, depth, limits)?;
                 }
                 append(
                     &mut results,
                     values.iter().map(|value| literal(value)).collect(),
+                    limits,
                 )?;
             }
             '(' if quote == Quote::None => {
@@ -417,11 +514,12 @@ fn expand_chars(
                 })?;
                 index = end;
                 if chars.get(index) == Some(&'[') {
-                    values = slice(chars, &mut index, values, expand, depth)?;
+                    values = slice(chars, &mut index, values, expand, depth, limits)?;
                 }
                 append(
                     &mut results,
                     values.iter().map(|value| literal(value)).collect(),
+                    limits,
                 )?;
             }
             '{' if quote == Quote::None => {
@@ -440,11 +538,12 @@ fn expand_chars(
                         while part.last().is_some_and(|c| c.is_whitespace()) {
                             part = &part[..part.len() - 1];
                         }
-                        alternatives.extend(expand_chars(part, expand, depth + 1)?);
+                        alternatives.extend(expand_chars(part, expand, depth + 1, limits)?);
+                        limits.check(&alternatives)?;
                     }
-                    append(&mut results, alternatives)?;
+                    append(&mut results, alternatives, limits)?;
                 } else {
-                    let values = expand_chars(&chars[index..end - 1], expand, depth + 1)?;
+                    let values = expand_chars(&chars[index..end - 1], expand, depth + 1, limits)?;
                     let values = values
                         .into_iter()
                         .map(|mut value| {
@@ -453,7 +552,7 @@ fn expand_chars(
                             value
                         })
                         .collect();
-                    append(&mut results, values)?;
+                    append(&mut results, values, limits)?;
                 }
                 index = end;
             }
@@ -462,7 +561,7 @@ fn expand_chars(
                     return Err(unsupported("named-user home expansion"));
                 }
                 let home = expand(Request::Variable("HOME"))?.join(" ");
-                append(&mut results, vec![literal(&home)])?;
+                append(&mut results, vec![literal(&home)], limits)?;
             }
             '*' if quote == Quote::None => {
                 for value in &mut results {
@@ -475,6 +574,7 @@ fn expand_chars(
                 }
             }
         }
+        limits.check(&results)?;
     }
     if quote != Quote::None {
         return Err(Error::new("unterminated quote"));
@@ -493,6 +593,7 @@ fn quoted_variable(
     index: &mut usize,
     expand: &mut impl FnMut(Request<'_>) -> Result<Vec<String>>,
     depth: usize,
+    limits: Limits,
 ) -> Result<String> {
     let mut name = name.to_owned();
     let mut suffix = String::new();
@@ -503,7 +604,7 @@ fn quoted_variable(
             expand(Request::Variable(&name))?
         };
         if suffix.is_empty() && chars.get(*index) == Some(&'[') {
-            values = slice(chars, index, values, expand, depth)?;
+            values = slice(chars, index, values, expand, depth, limits)?;
         }
         let separators = expand(Request::VariableSeparator(&name))?;
         let separator = separators.first().map_or(" ", String::as_str);
@@ -592,6 +693,7 @@ fn slice(
     values: Vec<String>,
     expand: &mut impl FnMut(Request<'_>) -> Result<Vec<String>>,
     depth: usize,
+    limits: Limits,
 ) -> Result<Vec<String>> {
     *index += 1;
     let start = *index;
@@ -601,7 +703,7 @@ fn slice(
     if *index == chars.len() {
         return Err(Error::new("unterminated variable index"));
     }
-    let specs = expand_chars(&chars[start..*index], expand, depth + 1)?;
+    let specs = expand_chars(&chars[start..*index], expand, depth + 1, limits)?;
     *index += 1;
     let specs = specs
         .iter()
@@ -609,6 +711,7 @@ fn slice(
         .collect::<Vec<_>>()
         .join(" ");
     let mut selected = Vec::new();
+    let mut selected_bytes = 0usize;
     let len = values.len() as isize;
     let resolve = |text: &str, default: isize| -> Result<isize> {
         let n = if text.is_empty() {
@@ -628,31 +731,105 @@ fn slice(
             let right = resolve(right, -1)?;
             if left <= right {
                 for i in left.max(0)..=right.min(len - 1) {
-                    selected.push(values[i as usize].clone());
+                    select_slice(
+                        &mut selected,
+                        &mut selected_bytes,
+                        &values[i as usize],
+                        limits,
+                    )?;
                 }
             } else {
                 for i in (right.max(0)..=left.min(len - 1)).rev() {
-                    selected.push(values[i as usize].clone());
+                    select_slice(
+                        &mut selected,
+                        &mut selected_bytes,
+                        &values[i as usize],
+                        limits,
+                    )?;
                 }
             }
         } else {
             let i = resolve(spec, 1)?;
             if i >= 0 {
                 if let Some(value) = values.get(i as usize) {
-                    selected.push(value.clone());
+                    select_slice(&mut selected, &mut selected_bytes, value, limits)?;
                 }
             }
-        }
-        if selected.len() > 100_000 {
-            return Err(Error::new("too many Fish list indices"));
         }
     }
     Ok(selected)
 }
 
+fn select_slice(
+    selected: &mut Vec<String>,
+    bytes: &mut usize,
+    value: &str,
+    limits: Limits,
+) -> Result<()> {
+    if selected.len() >= limits.words {
+        return Err(Error::new("too many Fish list indices"));
+    }
+    *bytes = bytes.saturating_add(value.len());
+    if *bytes > limits.characters {
+        return Err(Error::new("completion slice size limit exceeded"));
+    }
+    selected.push(value.to_owned());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completion_expansion_is_bounded_and_preserves_variable_metadata() {
+        let mut variables = std::collections::BTreeMap::from([
+            (
+                "roots".into(),
+                super::super::Variable {
+                    values: vec!["one".into(), "two".into()],
+                    pathvar: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                "ref".into(),
+                super::super::Variable {
+                    values: vec!["roots".into()],
+                    ..Default::default()
+                },
+            ),
+        ]);
+        assert_eq!(
+            completion_words("$roots[-1]/", &variables, true).unwrap(),
+            ["two/"]
+        );
+        assert_eq!(
+            completion_words("\"$$ref/\"", &variables, true).unwrap(),
+            ["one;two/"]
+        );
+        for source in [
+            "(echo unsafe)/",
+            "$(echo unsafe)/",
+            "$roots[(echo unsafe)]/",
+            "$roots/*/",
+        ] {
+            assert!(
+                completion_words(source, &variables, true).is_err(),
+                "{source}"
+            );
+        }
+        assert!(completion_words("$roots", &variables, false).is_err());
+        variables.get_mut("roots").unwrap().values = vec!["x".into(); 32];
+        assert!(completion_words("$roots$roots/", &variables, true).is_err());
+        variables.get_mut("roots").unwrap().values = vec!["x".into(); 513];
+        assert!(completion_words("$roots/", &variables, true).is_err());
+        variables.get_mut("roots").unwrap().values = vec!["x".repeat(1024 * 1024 + 1)];
+        assert!(completion_words("$roots/", &variables, true).is_err());
+        variables.get_mut("roots").unwrap().values = vec!["x".repeat(512 * 1024)];
+        assert!(completion_words("$roots[1 1 1]/", &variables, true).is_err());
+        assert!(completion_words("\"$roots[1 1 1]/\"", &variables, true).is_err());
+    }
 
     #[test]
     fn fish_lists_and_quotes() {

@@ -27,6 +27,18 @@ impl Directory {
     fn path(&self) -> &std::path::Path {
         &self.0
     }
+
+    fn query(&self, source: &str) -> String {
+        let result = Command::new(env!("CARGO_BIN_EXE_fish"))
+            .args(["-N", "-c", source])
+            .current_dir(self.path())
+            .env("FISH_NATIVE_CONFIG_HOME", self.path().join("config"))
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        assert!(result.stderr.is_empty(), "{result:?}");
+        String::from_utf8(result.stdout).unwrap()
+    }
 }
 
 impl Drop for Directory {
@@ -362,6 +374,92 @@ fn command_inventory_distinguishes_empty_path_lists_and_preserves_path_elements(
             "explicit\n./native_inventory_probe.exe\n",
             "semicolon\nnative_semicolon_probe\tCommand\n"
         )
+    );
+}
+
+#[test]
+fn variable_directory_queries_keep_expressions_and_use_current_home() {
+    let directory = Directory::new();
+    std::fs::write(directory.path().join("sample file.txt"), b"").unwrap();
+    assert_eq!(
+        directory.query(
+            r#"
+            set -l base $PWD
+            complete -C 'echo $base/sam'
+            complete --escape -C 'echo "$base/sam'
+            complete -C 'echo $base[1]/sam'
+            set -l HOME $PWD
+            complete -C 'echo ~/sam'
+        "#
+        ),
+        concat!(
+            "$base/sample file.txt\n",
+            "\"$base/sample file.txt\"\n",
+            "$base[1]/sample file.txt\n",
+            "~/sample file.txt\n"
+        )
+    );
+}
+
+#[test]
+fn variable_directory_queries_refresh_lists_and_function_local_values() {
+    let directory = Directory::new();
+    for (folder, name) in [("first", "first.txt"), ("second", "final.txt")] {
+        let path = directory.path().join(folder);
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join(name), b"").unwrap();
+    }
+    assert_eq!(
+        directory.query(
+            r#"
+            set base "$PWD/first"
+            function native_path_query --argument-names base
+                complete -C 'echo $base/fi'
+            end
+            native_path_query "$PWD/second"
+            complete -C 'echo $base/fi'
+            set base "$PWD/second"
+            complete -C 'echo $base/fi'
+            set roots "$PWD/first" "$PWD/second"
+            complete -C 'echo $roots/fi'
+            complete -C 'echo $roots[-1]/fi'
+        "#
+        ),
+        concat!(
+            "$base/final.txt\n$base/first.txt\n$base/final.txt\n",
+            "$roots/final.txt\n$roots/first.txt\n$roots[-1]/final.txt\n"
+        )
+    );
+}
+
+#[test]
+fn variable_directories_autoload_file_policy_without_running_typed_substitutions() {
+    let directory = Directory::new();
+    std::fs::write(directory.path().join("final.txt"), b"").unwrap();
+    std::fs::create_dir(directory.path().join("completions")).unwrap();
+    std::fs::write(
+        directory.path().join("completions/native_files.fish"),
+        b"complete -c native_files -f\n",
+    )
+    .unwrap();
+    assert_eq!(
+        directory.query(
+            r#"
+            set base $PWD
+            set fish_complete_path "$PWD/completions"
+            function native_files; end
+            complete -C 'native_files $base/fi'
+            complete -C 'native_files > $base/fi'
+            complete -c native_files -F
+            complete -C 'native_files $base/fi'
+            complete -C 'echo $base/(set -g typed_ran yes)/fi'
+            complete -C 'echo $base[(set -g typed_ran yes)]/fi'
+            complete -C 'echo $base/*/fi'
+            set -q typed_ran
+            echo untouched:$status
+        "#
+        ),
+        "$base/final.txt\n$base/final.txt\nuntouched:1\n"
     );
 }
 

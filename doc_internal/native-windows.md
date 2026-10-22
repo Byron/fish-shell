@@ -309,6 +309,16 @@ completed multiline submissions are stored as one history entry. Ctrl-C cancels
 the current edit and returns to the prompt. Ctrl-Z at the prompt does not suspend
 the shell itself.
 
+Fish path completion expands directory expressions such as `$project/src/`,
+`$projects[-1]/` and `~/` using the current session's variables. Lists, indirection
+and quoted variables follow the evaluator's expansion rules; inserted completions
+retain the typed variable expressions and quote literal filename characters.
+This also works in redirection targets and respects completion file policies.
+Typed command substitutions and wildcard directory expressions are refused.
+Variable expansion in the filename being completed, and Bash variable paths,
+remain unavailable. Completion expansion limits protect the editor from large
+Cartesian products and repeated slices.
+
 Native Fish suggests the remainder of a matching history entry in gray as you
 type. Right or Ctrl-F accepts the suggestion at the end of the input;
 Alt-Right or Alt-F accepts one word. Ctrl-E accepts the rest of the suggested

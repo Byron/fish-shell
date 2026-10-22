@@ -43,6 +43,7 @@ mod test_builtin;
 mod universal;
 #[path = "fish_utilities.rs"]
 mod utilities_builtin;
+pub(super) use expand::completion_words;
 pub(crate) use expand::unescape_literal;
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -421,6 +422,19 @@ impl Session {
                     rash::os::from_bytes(&name).ok()?,
                     rash::os::from_bytes(&value).ok()?,
                 ))
+            })
+            .collect()
+    }
+
+    pub(super) fn completion_variables(&self) -> BTreeMap<String, Variable> {
+        self.variable_names()
+            .into_iter()
+            .map(|name| {
+                let variable = self.variable(&name).cloned().unwrap_or_else(|| Variable {
+                    values: self.values(&name),
+                    ..Default::default()
+                });
+                (name, variable)
             })
             .collect()
     }

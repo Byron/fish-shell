@@ -87,6 +87,7 @@ impl Session {
         loop {
             let (commands, path, variables) = self.completion_context();
             engine.set_context(commands, path, variables);
+            engine.set_variable_values(self.completion_variables());
             engine.set_input_language(self.input_language);
             engine.set_registrations(self.completions.clone());
             engine.set_wrappers(self.completion_wrappers());

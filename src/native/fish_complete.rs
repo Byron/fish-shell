@@ -357,6 +357,7 @@ impl Session {
             // evaluator mutations remain in the live session for subsequent queries.
             let (commands, path, variables) = self.completion_context();
             engine.set_context(commands, path, variables);
+            engine.set_variable_values(self.completion_variables());
             engine.set_environment(self.completion_environment());
             engine.set_input_language(self.input_language);
             engine.set_registrations(self.completions.clone());
