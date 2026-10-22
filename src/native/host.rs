@@ -84,6 +84,10 @@ fn checked_os(bytes: &[u8]) -> Result<std::ffi::OsString> {
 }
 
 fn open_file(path: &[u8], mode: OpenMode) -> Result<Arc<File>> {
+    // Shared Fish startup commonly redirects optional capability checks here.
+    // Windows has the same sink/source semantics through its NUL device.
+    #[cfg(windows)]
+    let path = if path == b"/dev/null" { b"NUL" } else { path };
     let mut options = OpenOptions::new();
     match mode {
         OpenMode::Read => {
@@ -377,6 +381,37 @@ mod job_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn posix_null_redirects_use_the_windows_null_device() {
+        for mode in [
+            OpenMode::Write,
+            OpenMode::Append,
+            OpenMode::Clobber,
+            OpenMode::ReadWrite,
+        ] {
+            let file = open_file(b"/dev/null", mode).unwrap();
+            (&*file).write_all(b"discarded").unwrap();
+        }
+        let file = open_file(b"/dev/null", OpenMode::Read).unwrap();
+        assert_eq!((&*file).read(&mut [0; 1]).unwrap(), 0);
+        let mut host = NativeHost::new().unwrap();
+        let redirects = host
+            .prepare_redirects(&[Redirection {
+                fd: 2,
+                action: RedirectAction::File {
+                    path: b"/dev/null".to_vec(),
+                    mode: OpenMode::Write,
+                },
+            }])
+            .unwrap();
+        assert!(
+            host.write(2, b"quiet probe", &redirects, true)
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     pub(super) struct TestFile(pub(super) PathBuf);
 

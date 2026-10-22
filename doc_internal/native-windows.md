@@ -108,6 +108,8 @@ UTF-8 and rejects unrepresentable values rather than replacing characters.
 Windows `PATH` uses semicolons, inherited `Path` is imported as `PATH`, and command
 lookup supports the `.exe` suffix. Prefer quoted Windows paths or forward slashes
 in shell source. Rash source and internal values remain byte-oriented.
+Native redirections recognize `/dev/null` as the Windows `NUL` device, so shared
+startup probes such as `status is-native-windows 2>/dev/null` work unchanged.
 
 With a terminal and no command or script, the native Windows frontend offers
 interactive line editing and history, described below. The portable process host

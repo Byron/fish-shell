@@ -81,6 +81,16 @@ fn assert_success(output: &Output) {
 }
 
 #[test]
+fn native_fish_supports_quiet_backend_checks_and_null_input() {
+    let scratch = Scratch::new();
+    let output = shell("fish", &scratch.0)
+        .args(["-c", "if status is-native-windows 2>/dev/null; echo native; end; echo hidden >/dev/null; read value </dev/null; echo eof:$status"])
+        .output().unwrap();
+    assert_success(&output);
+    assert_eq!(stdout(&output), "native\neof:1\n");
+}
+
+#[test]
 fn fish_uses_fish_functions_lists_blocks_and_unicode_arguments() {
     let scratch = Scratch::new();
     let source = "set values one 'two words'; \
