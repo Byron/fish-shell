@@ -350,7 +350,9 @@ impl Session {
     pub fn completion_context(&self) -> (Vec<String>, Option<std::ffi::OsString>, Vec<String>) {
         (
             self.function_names(),
-            Some(self.values("PATH").join(";").into()),
+            self.command_search_environment()
+                .ok()
+                .and_then(|(path, _)| path),
             self.variable_names(),
         )
     }

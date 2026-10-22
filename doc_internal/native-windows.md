@@ -143,6 +143,11 @@ keep their priority; programs selected through `PATH` are never retried as
 packaged utilities after an error. Explicit executable paths use only that path.
 `command -q` and `type -q` recognize packaged utilities; `command -s` and `type -p`
 print real executable paths only. `type -t` reports `utility` for a fallback.
+Command completion and highlighting also recognize packaged utilities when PATH
+is empty. Bare executable completions follow PATH; files in the current directory
+need an explicit `./` unless PATH includes that directory. An empty PATH list
+searches no directories, while an empty element explicitly includes the current
+directory.
 Disable the feature with `--no-default-features` and explicitly select the other
 desired Cargo features.
 
@@ -288,8 +293,9 @@ remain documented in [rash-compatibility.md](rash-compatibility.md).
 Native Windows Fish and Rash use a Unicode line editor that works through ConPTY.
 Left/Right, Home/End, Backspace and Delete edit the current input; Up/Down recall
 history. Tab completes filenames and command names from builtins, the session's
-functions and its current `PATH`. Completion quotes spaces and shell punctuation
-in filenames without evaluating shell source. Input can span multiple lines;
+functions, packaged utilities and its current `PATH`. Completion quotes spaces
+and shell punctuation in filenames without evaluating shell source. Input can
+span multiple lines;
 completed multiline submissions are stored as one history entry. Ctrl-C cancels
 the current edit and returns to the prompt. Ctrl-Z at the prompt does not suspend
 the shell itself.

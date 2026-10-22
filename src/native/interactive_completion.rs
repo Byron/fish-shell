@@ -126,12 +126,21 @@ impl CompletionEngine {
         self.executables.clear();
         self.executable_paths.clear();
         self.variables = variables;
-        let directories = std::env::current_dir().ok().into_iter().chain(
-            path.as_ref()
-                .into_iter()
-                .flat_map(|path| std::env::split_paths(path)),
-        );
+        for name in super::utilities::names() {
+            self.commands.insert((*name).into());
+            self.executables.insert((*name).into());
+        }
+        let directories = path
+            .as_ref()
+            .into_iter()
+            .flat_map(|path| std::env::split_paths(path));
         for directory in directories {
+            let directory = if directory.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                directory
+            };
+            let directory = std::path::absolute(&directory).unwrap_or(directory);
             let Ok(entries) = std::fs::read_dir(directory) else {
                 continue;
             };
@@ -807,17 +816,11 @@ impl CompletionEngine {
             if command.is_none() && !word.redirect && !is_directory && !executable_name(name) {
                 continue;
             }
-            let name = if command.is_none()
-                && directory.is_empty()
-                && !is_directory
-                && !prefix
-                    .rsplit_once('.')
-                    .is_some_and(|(_, suffix)| "exe".starts_with(&suffix.to_ascii_lowercase()))
-            {
-                command_name(name)
-            } else {
-                name
-            };
+            if command.is_none() && !word.redirect && !is_directory && directory.is_empty() {
+                // Bare command names come from PATH or packaged utilities.
+                // A local executable outside PATH requires an explicit path.
+                continue;
+            }
             let value = format!("{directory}{name}{}", if is_directory { "/" } else { "" });
             // Match the basename rather than characters in the already typed
             // directory. Preserve ~/ instead of replacing it with a long path.
@@ -1786,6 +1789,29 @@ mod tests {
     }
 
     #[test]
+    fn packaged_utilities_complete_as_external_commands_without_path() {
+        let directory = Directory::new();
+        let mut engine = engine();
+        engine.set_context(Vec::new(), None, Vec::new());
+        for name in super::super::utilities::names() {
+            assert!(engine.commands.contains(*name), "{name}");
+            assert!(engine.executables.contains(*name), "{name}");
+            assert!(!engine.builtins.contains(*name), "{name}");
+            assert!(!engine.executable_paths.contains_key(*name), "{name}");
+            assert!(engine.command_exists(name, &directory.0), "{name}");
+            assert!(
+                replacements(&engine, name, &directory.0).contains(&format!("{name} ")),
+                "{name}"
+            );
+            assert!(
+                !replacements(&engine, &format!("builtin {name}"), &directory.0)
+                    .contains(&format!("{name} ")),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn wrappers_reuse_registrations_and_preserve_fixed_arguments() {
         let directory = Directory::new();
         let mut engine = engine();
@@ -2091,6 +2117,13 @@ mod tests {
         );
         engine.set_context(Vec::new(), None, Vec::new());
         assert!(replacements(&engine, "native-p", &absent).is_empty());
+        assert!(replacements(&engine, "native-p", &directory.0).is_empty());
+        assert!(!engine.command_exists("native-probe", &directory.0));
+        assert_eq!(
+            replacements(&engine, "./native-p", &directory.0),
+            ["./native-probe.exe "]
+        );
+        assert!(engine.command_exists("./native-probe.exe", &directory.0));
     }
 
     #[test]

@@ -289,6 +289,7 @@ fn path_registrations_and_file_policy_follow_command_and_wrapper_precedence() {
         "#,
         ])
         .current_dir(directory.path())
+        .env("PATH", directory.path())
         .output()
         .unwrap();
     assert!(
@@ -320,6 +321,47 @@ fn completion_sees_current_session_variables_and_functions() {
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         "native_completion_variable\tVariable\nnative_completion_function\tCommand\n"
+    );
+}
+
+#[test]
+fn command_inventory_distinguishes_empty_path_lists_and_preserves_path_elements() {
+    let directory = Directory::new();
+    std::fs::write(directory.path().join("native_inventory_probe.exe"), b"").unwrap();
+    let tools = directory.path().join("tool;bin");
+    std::fs::create_dir(&tools).unwrap();
+    std::fs::write(tools.join("native_semicolon_probe.exe"), b"").unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_fish"))
+        .args([
+            "-N",
+            "-c",
+            r#"
+            set -g PATH
+            echo absent
+            complete -C native_inventory_
+            set -g PATH ''
+            echo current
+            complete -C native_inventory_
+            set -g PATH
+            echo explicit
+            complete -C './native_inventory_'
+            set --unpath PATH "$PWD/tool;bin"
+            echo semicolon
+            complete -C native_semicolon_
+            "#,
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{result:?}");
+    assert!(result.stderr.is_empty(), "{result:?}");
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        concat!(
+            "absent\ncurrent\nnative_inventory_probe\tCommand\n",
+            "explicit\n./native_inventory_probe.exe\n",
+            "semicolon\nnative_semicolon_probe\tCommand\n"
+        )
     );
 }
 
