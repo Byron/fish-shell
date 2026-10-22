@@ -26,6 +26,8 @@ mod functions;
 mod history_builtin;
 #[path = "fish_path.rs"]
 mod path_builtin;
+#[path = "fish_random.rs"]
+mod random_builtin;
 #[path = "fish_source.rs"]
 mod source_builtin;
 #[path = "fish_test.rs"]
@@ -100,6 +102,9 @@ pub struct Session {
     history: Option<super::history::History>,
     #[serde(default)]
     pub(super) private_history: bool,
+    /// Cloned and serialized with worker snapshots; initialized only by random.
+    #[serde(default)]
+    random: Option<crate::random_core::Engine>,
     status: i32,
     pipeline: Vec<i32>,
     last_pid: Option<u32>,
@@ -257,6 +262,7 @@ impl Session {
             bindings: Default::default(),
             history: None,
             private_history: false,
+            random: None,
             status: 0,
             pipeline: vec![0],
             last_pid: None,

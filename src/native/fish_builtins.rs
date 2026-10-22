@@ -48,6 +48,7 @@ pub(super) const BUILTIN_NAMES: &[&str] = &[
     "path",
     "printf",
     "pwd",
+    "random",
     "read",
     "realpath",
     "return",
@@ -288,6 +289,7 @@ impl Session {
                 };
                 self.status = 0;
             }
+            "random" => self.random_builtin(args, host, output)?,
             "test" | "[" => self.test_builtin(name, args, host, output)?,
             "source" | "." => {
                 return self.source_builtin(args, host, output);
@@ -295,8 +297,8 @@ impl Session {
             "eval" => return self.eval_source(&args.join(" "), host, output),
             // Keep Fish builtins reserved while their native implementations are pending.
             "printf" | "string" | "math" | "read" | "status" | "functions" | "type" | "command"
-            | "builtin" | "argparse" | "contains" | "random" | "jobs" | "fg" | "bg" | "wait"
-            | "disown" | "exec" | "ulimit" | "umask" => {
+            | "builtin" | "argparse" | "contains" | "jobs" | "fg" | "bg" | "wait" | "disown"
+            | "exec" | "ulimit" | "umask" => {
                 return Err(unsupported(&format!("the {name} builtin")));
             }
             _ => {

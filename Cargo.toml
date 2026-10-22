@@ -164,6 +164,7 @@ xterm-color.workspace = true
 portable-atomic.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+rand = { workspace = true, features = ["serde"] }
 fd-lock = "4.0"
 num-traits.workspace = true
 pcre2.workspace = true
