@@ -168,6 +168,14 @@ an unscoped assignment updates an existing universal variable when no closer
 scope defines it. `set --path` and `--unpath` control whether a variable splits
 and exports using Windows' semicolon path separator.
 
+Normal native startup installs the same `fish_user_paths` handler as POSIX Fish,
+using Windows' semicolon separator. User paths are prepended to `PATH` without
+duplicates, and removing them preserves entries that were already in `PATH`.
+The bundled `fish_add_path` works with global or universal user paths, direct
+`PATH` updates, append/prepend, move, dry-run and verbose options. Native `_`
+prints the original message text; it does not load POSIX localization support.
+This portable setup runs before user snippets and is skipped with `--no-config`.
+
 Indexed `set` assignments, queries and erasures use the same index parser as
 POSIX Fish, including negative indexes and ranges. For example, `set -e words[1]`
 removes the first element and `set -q words[-1]` checks for a last element.

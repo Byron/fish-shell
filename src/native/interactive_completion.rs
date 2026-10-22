@@ -69,6 +69,7 @@ impl CompletionEngine {
             [
                 ":",
                 "__fish_git",
+                "_",
                 ".",
                 "[",
                 "echo",

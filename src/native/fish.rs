@@ -373,6 +373,26 @@ impl Session {
         )
     }
 
+    pub(crate) fn initialize_user_paths(&mut self, host: &mut impl Host) -> Result<()> {
+        const PATH: &str = "functions/__fish_reconstruct_path.fish";
+        let asset = crate::autoload::Asset::get(PATH)
+            .ok_or_else(|| Error::new(format!("startup source missing: {PATH}")))?;
+        let source = std::str::from_utf8(&asset.data)
+            .map_err(|_| Error::new("startup source must be UTF-8"))?;
+        // Install explicitly: an autoloaded event handler would be removed when
+        // user configuration changes fish_function_path.
+        let mut output = Output::default();
+        self.eval_sourced(
+            source,
+            format!("embedded:{PATH}"),
+            &[],
+            true,
+            host,
+            &mut output,
+        )?;
+        self.eval_source("__fish_reconstruct_path", host, &mut output)
+    }
+
     pub(super) fn editor_variables(&self) -> BTreeMap<String, Vec<String>> {
         self.variable_names()
             .into_iter()

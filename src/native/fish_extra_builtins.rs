@@ -9,6 +9,14 @@ impl Session {
         output: &mut Output,
     ) -> Result<bool> {
         match name {
+            "_" => {
+                // Native Fish has no message catalog yet. Match the untranslated
+                // gettext behavior, including concatenation without a newline.
+                for argument in args {
+                    self.write(argument.as_bytes(), host, output)?;
+                }
+                self.status = 0;
+            }
             "__fish_git" => {
                 if args.first().is_some_and(|arg| arg == "--is-enabled") {
                     self.status = i32::from(!cfg!(feature = "git"));

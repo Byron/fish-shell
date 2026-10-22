@@ -492,6 +492,7 @@ fn execute(options: Options) -> Result<i32> {
                 session
                     .initialize_universals(directory.join("native_fish_variables"), &mut host)?;
             }
+            session.initialize_user_paths(&mut host)?;
             for path in startup::files() {
                 if let Err(error) = session.load_config(&path, &mut host) {
                     report(

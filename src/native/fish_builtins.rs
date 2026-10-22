@@ -15,6 +15,7 @@ pub(super) fn is_builtin(name: &str) -> bool {
         name,
         "true"
             | "__fish_git"
+            | "_"
             | ":"
             | "false"
             | "echo"
