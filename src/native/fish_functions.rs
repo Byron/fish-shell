@@ -2,6 +2,8 @@
 use super::*;
 use crate::function_options::{self, Context, ParseError};
 use crate::parser_keywords::parser_keywords_is_reserved;
+use fish_wgetopt::{ArgType, WGetopter, WOption, wopt};
+use fish_widestring::L;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct Function {
@@ -130,6 +132,196 @@ impl Context for NativeContext {
 }
 
 impl Session {
+    pub(super) fn functions_builtin(
+        &mut self,
+        args: &[String],
+        host: &mut impl Host,
+        output: &mut Output,
+    ) -> Result<()> {
+        self.refresh_function_paths();
+        let wide: Vec<WString> = std::iter::once("functions")
+            .chain(args.iter().map(String::as_str))
+            .map(WString::from)
+            .collect();
+        let mut argv: Vec<&wstr> = wide.iter().map(WString::as_utfstr).collect();
+        const OPTIONS: &[WOption] = &[
+            wopt(L!("query"), ArgType::NoArgument, 'q'),
+            wopt(L!("erase"), ArgType::NoArgument, 'e'),
+            wopt(L!("names"), ArgType::NoArgument, 'n'),
+            wopt(L!("copy"), ArgType::NoArgument, 'c'),
+            wopt(L!("help"), ArgType::NoArgument, 'h'),
+        ];
+        let mut options = WGetopter::new(L!("qench"), OPTIONS, &mut argv);
+        let (mut query, mut erase, mut names_only, mut copy, mut help) =
+            (false, false, false, false, false);
+        while let Some(option) = options.next_opt() {
+            match option {
+                'q' => query = true,
+                'e' => erase = true,
+                'n' => names_only = true,
+                'c' => copy = true,
+                'h' => help = true,
+                _ => {
+                    let argument = options.argv[options.wopt_index.saturating_sub(1)];
+                    return self.functions_failure(
+                        2,
+                        &format!("{argument}: invalid functions option"),
+                        host,
+                        output,
+                    );
+                }
+            }
+        }
+        let args: Vec<String> = options.argv[options.wopt_index..]
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect();
+        if help {
+            self.write(
+                b"functions [-q|-e|-n] [NAME ...]; functions --copy SOURCE DESTINATION\n",
+                host,
+                output,
+            )?;
+            self.status = 0;
+            return Ok(());
+        }
+        if [query, erase, names_only, copy]
+            .into_iter()
+            .filter(|enabled| *enabled)
+            .count()
+            > 1
+        {
+            return self.functions_failure(2, "invalid combination of options", host, output);
+        }
+        if copy {
+            return self.copy_function(&args, host, output);
+        }
+        let names = if args.is_empty() {
+            if names_only {
+                self.function_names()
+            } else {
+                self.functions.keys().cloned().collect()
+            }
+        } else {
+            args
+        };
+        self.status = 0;
+        for name in names {
+            if names_only {
+                self.write(format!("{name}\n").as_bytes(), host, output)?;
+                continue;
+            }
+            if erase {
+                self.autoload_tombstones.insert(name.clone());
+                self.autoloaded_functions.remove(&name);
+                self.status |= i32::from(self.functions.remove(&name).is_none());
+            } else {
+                self.ensure_function(&name, host, output)?;
+                if self.flow == Flow::Exit {
+                    return Ok(());
+                }
+                if let Some(function) = self.functions.get(&name) {
+                    if !query {
+                        self.write(function.definition(&name).as_bytes(), host, output)?;
+                    }
+                } else {
+                    self.status = 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn copy_function(
+        &mut self,
+        args: &[String],
+        host: &mut impl Host,
+        output: &mut Output,
+    ) -> Result<()> {
+        let [source, destination] = args else {
+            return self.functions_failure(
+                2,
+                "expected exactly two names (current function name, and new function name)",
+                host,
+                output,
+            );
+        };
+        self.ensure_function(source, host, output)?;
+        if self.flow == Flow::Exit {
+            return Ok(());
+        }
+        if !self.functions.contains_key(source) {
+            return self.functions_failure(
+                1,
+                &format!("function '{source}' does not exist"),
+                host,
+                output,
+            );
+        }
+        let destination_wide = WString::from(destination.as_str());
+        if !function_options::valid_function_name(&destination_wide)
+            || parser_keywords_is_reserved(&destination_wide)
+        {
+            return self.functions_failure(
+                2,
+                &format!("illegal function name '{destination}'"),
+                host,
+                output,
+            );
+        }
+        self.ensure_function(destination, host, output)?;
+        if self.flow == Flow::Exit {
+            return Ok(());
+        }
+        if self.functions.contains_key(destination) {
+            return self.functions_failure(
+                1,
+                &format!(
+                    "function '{destination}' already exists; cannot create copy of '{source}'"
+                ),
+                host,
+                output,
+            );
+        }
+        // Autoloading the destination may have changed or erased the source.
+        let Some(mut function) = self.functions.get(source).cloned() else {
+            return self.functions_failure(
+                1,
+                &format!("function '{source}' does not exist"),
+                host,
+                output,
+            );
+        };
+        // POSIX copies properties, but event and completion registrations belong
+        // to the original name. The new definition is attributed to the copy site.
+        function.events.clear();
+        function.wrap_targets.clear();
+        function.origin = self.source_origin.clone();
+        self.autoload_tombstones.remove(destination);
+        self.autoloaded_functions.remove(destination);
+        self.functions.insert(destination.clone(), function);
+        self.status = 0;
+        Ok(())
+    }
+
+    fn functions_failure(
+        &mut self,
+        status: i32,
+        message: &str,
+        host: &mut impl Host,
+        output: &mut Output,
+    ) -> Result<()> {
+        self.status = status;
+        self.pipeline = vec![status];
+        output.bytes.extend(host.write(
+            2,
+            format!("functions: {message}\n").as_bytes(),
+            &output.redirects,
+            output.capture,
+        )?);
+        Ok(())
+    }
+
     pub(super) fn define_function(
         &mut self,
         header: &ast::FunctionHeader,

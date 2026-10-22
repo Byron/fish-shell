@@ -127,6 +127,12 @@ support `--description`/`-d`, `--wraps`/`-w`, `--argument-names`/`-a`,
 snapshots; named arguments and scope boundaries follow Fish semantics. Printed
 definitions preserve these properties.
 
+`functions --copy OLD NEW` copies a function for wrappers such as a customized
+`fish_prompt`. The copy retains its description, named arguments, captured values
+and scope behavior. As in POSIX Fish, event handlers and completion wrappers are
+not copied, and an existing destination is not overwritten. `status filename`
+inside the copy reports the file where it was copied.
+
 Functions can subscribe to `--on-variable` changes or named `--on-event` events.
 `emit EVENT ARGS...` invokes named handlers with the supplied arguments. Variable
 handlers receive `VARIABLE SET NAME` or `VARIABLE ERASE NAME`; they run after
