@@ -2,6 +2,7 @@
 use crate::tokenizer::{
     Tok, TokFlags, TokenType, Tokenizer, comment_end, is_token_delimiter, quote_end,
 };
+use fish_wcstringutil::escape::line_continuation_length;
 use fish_widestring::prelude::*;
 use std::ops::{self, Range};
 
@@ -212,7 +213,12 @@ fn locate_cmdsub(
                     None => break,
                 }
             } else if c == '\\' {
-                escaped = true;
+                let continuation = line_continuation_length(&input[pos..]);
+                if continuation > 0 {
+                    pos += continuation - 1;
+                } else {
+                    escaped = true;
+                }
             } else if c == '#' && is_token_begin {
                 pos = comment_end(input.into(), pos) - 1;
             } else if c == '$' {

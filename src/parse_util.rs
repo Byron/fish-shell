@@ -378,13 +378,16 @@ impl<'a> IndentVisitor<'a> {
     fn record_line_continuations_until(&mut self, offset: usize) {
         let gap_text = &self.src[self.last_leaf_end..offset];
         let gap_text = gap_text.as_char_slice();
-        let Some(escaped_nl) = gap_text.windows(2).position(|w| *w == ['\\', '\n']) else {
+        let Some((escaped_nl, length)) = gap_text.iter().enumerate().find_map(|(pos, _)| {
+            let length = fish_wcstringutil::escape::line_continuation_length(&gap_text[pos..]);
+            (length > 0).then_some((pos, length))
+        }) else {
             return;
         };
         if gap_text[..escaped_nl].contains(&'#') {
             return;
         }
-        let mut newline = escaped_nl + 1;
+        let mut newline = escaped_nl + length - 1;
         // The gap text might contain multiple newlines if there are multiple lines that
         // don't contain an AST node, for example, comment lines, or lines containing only
         // the escaped newline.

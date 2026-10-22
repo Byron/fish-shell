@@ -1,5 +1,6 @@
 //! Fish quoting and list expansion for the native evaluator's initial subset.
 use super::{Error, Result, unsupported};
+use fish_wcstringutil::escape::line_continuation_length;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Quote {
@@ -60,7 +61,10 @@ pub(super) fn syntax(input: &str, depth: usize) -> Result<()> {
                 }
             }
             '\\' => {
-                if chars.get(index).is_some_and(|c| {
+                let continuation = line_continuation_length(&chars[index - 1..]);
+                if quote != Quote::Single && continuation > 0 {
+                    index += continuation - 1;
+                } else if chars.get(index).is_some_and(|c| {
                     quote == Quote::None
                         || (quote == Quote::Single && matches!(c, '\\' | '\''))
                         || (quote == Quote::Double && matches!(c, '\\' | '"' | '$' | '\n'))
@@ -108,6 +112,11 @@ pub(crate) fn unescape_literal(input: &str) -> Result<String> {
 }
 
 fn escape_char(chars: &[char], index: &mut usize, quote: Quote) -> Result<Option<char>> {
+    let continuation = line_continuation_length(&chars[*index - 1..]);
+    if quote != Quote::Single && continuation > 0 {
+        *index += continuation - 1;
+        return Ok(None);
+    }
     let c = *chars
         .get(*index)
         .ok_or_else(|| Error::new("incomplete escape sequence"))?;
@@ -118,9 +127,6 @@ fn escape_char(chars: &[char], index: &mut usize, quote: Quote) -> Result<Option
         return Ok(Some('\\'));
     }
     *index += 1;
-    if c == '\n' {
-        return Ok(None);
-    }
     if quote != Quote::None {
         return Ok(Some(c));
     }

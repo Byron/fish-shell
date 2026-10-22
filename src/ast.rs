@@ -2819,7 +2819,13 @@ impl From<TokenType> for ParseTokenType {
 }
 
 fn is_keyword_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '\'' || c == '"' || c == '\\' || c == '\n' || c == '!'
+    c.is_ascii_alphanumeric()
+        || c == '\''
+        || c == '"'
+        || c == '\\'
+        || c == '\n'
+        || c == '\r'
+        || c == '!'
 }
 
 /// Given a token, returns unescaped keyword, or the empty string.

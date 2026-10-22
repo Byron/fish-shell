@@ -8,6 +8,7 @@ use crate::parser_keywords::parser_keywords_is_subcommand;
 use crate::prelude::*;
 use crate::redirection::RedirectionMode;
 use fish_feature_flags::{FeatureFlag, feature_test};
+use fish_wcstringutil::escape::line_continuation_length;
 // These are descriptor numbers in Fish syntax, including on Windows.
 const STDIN_FILENO: i32 = 0;
 const STDOUT_FILENO: i32 = 1;
@@ -314,8 +315,9 @@ impl<'c> Iterator for Tokenizer<'c> {
         // it.
         loop {
             let i = self.token_cursor;
-            if self.text.get(i..i + 2) == Some(L!("\\\n")) {
-                self.token_cursor += 2;
+            let continuation = line_continuation_length(&self.text.as_char_slice()[i..]);
+            if continuation > 0 {
+                self.token_cursor += continuation;
                 self.continue_line_after_comment = true;
             } else if i < self.text.len() && iswspace_not_nl(self.text.char_at(i)) {
                 self.token_cursor += 1;
@@ -682,7 +684,11 @@ impl<'c> Tokenizer<'c> {
             // Now proceed with the evaluation of the token, first checking to see if the token
             // has been explicitly ignored (escaped).
             else if c == '\\' {
-                if self.token_cursor + 1 < self.text.len() {
+                let continuation =
+                    line_continuation_length(&self.text.as_char_slice()[self.token_cursor..]);
+                if continuation > 0 {
+                    self.token_cursor += continuation - 1;
+                } else if self.token_cursor + 1 < self.text.len() {
                     self.token_cursor += 1;
                 } else if !self.accept_unfinished {
                     return self.call_error(

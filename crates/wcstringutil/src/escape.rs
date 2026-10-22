@@ -479,6 +479,16 @@ pub fn unescape_string(input: &wstr, style: UnescapeStringStyle) -> Option<WStri
     }
 }
 
+/// Length of a backslash followed by an LF or CRLF line ending, or zero.
+/// Call only where backslashes can continue a line, never inside single quotes.
+pub fn line_continuation_length(input: &[char]) -> usize {
+    match input {
+        ['\\', '\n', ..] => 2,
+        ['\\', '\r', '\n', ..] => 3,
+        _ => 0,
+    }
+}
+
 /// Returns the unescaped version of input, or None on error.
 fn unescape_string_internal(input: &wstr, flags: UnescapeFlags) -> Option<WString> {
     let mut result = WString::new();
@@ -685,6 +695,12 @@ fn unescape_string_internal(input: &wstr, flags: UnescapeFlags) -> Option<WStrin
                     };
                 }
                 '\\' => {
+                    let continuation =
+                        line_continuation_length(&input.as_char_slice()[input_position..]);
+                    if continuation > 0 {
+                        input_position += continuation;
+                        continue;
+                    }
                     match input.char_at(input_position + 1) {
                         '\0' => {
                             if !allow_incomplete {
@@ -695,11 +711,6 @@ fn unescape_string_internal(input: &wstr, flags: UnescapeFlags) -> Option<WStrin
                         }
                         '\\' | '$' | '"' => {
                             to_append_or_none = Some(input.char_at(input_position + 1));
-                            input_position += 1; /* Skip over the backslash */
-                        }
-                        '\n' => {
-                            /* Swallow newline */
-                            to_append_or_none = None;
                             input_position += 1; /* Skip over the backslash */
                         }
                         _ => {
@@ -819,6 +830,10 @@ pub fn unescape_one(
     unescape_special: bool,
 ) -> Option<usize> {
     assert_eq!(input.char_at(0), '\\', "not an escape");
+    let continuation = line_continuation_length(input.as_char_slice());
+    if continuation > 0 {
+        return Some(continuation);
+    }
 
     // Here's the character we'll ultimately append, or none. Note that '\0' is a
     // valid thing to append.
@@ -961,10 +976,6 @@ pub fn unescape_one(
             'v' => {
                 result_char_or_none = Some('\x0b');
             }
-            // If a backslash is followed by an actual newline, swallow them both.
-            '\n' => {
-                result_char_or_none = None;
-            }
             _ => {
                 if unescape_special {
                     result.push(INTERNAL_SEPARATOR);
@@ -997,6 +1008,23 @@ pub fn unescape_one(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn script_line_continuations_preserve_other_carriage_returns() {
+        for (source, expected) in [
+            (L!("pre\\\r\npost"), L!("prepost")),
+            (L!("\"pre\\\r\npost\""), L!("prepost")),
+            (L!("'pre\\\r\npost'"), L!("pre\\\r\npost")),
+            (L!("\"pre\r\npost\""), L!("pre\r\npost")),
+            (L!("pre\\\rpost"), L!("pre\rpost")),
+        ] {
+            assert_eq!(
+                unescape_string(source, UnescapeStringStyle::default()).as_deref(),
+                Some(expected),
+                "{source:?}"
+            );
+        }
+    }
 
     mod unescape_one {
         use super::*;

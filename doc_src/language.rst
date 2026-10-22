@@ -76,6 +76,8 @@ Between single quotes, fish performs no expansions. Between double quotes, fish 
 
 The only meaningful escape sequences in single quotes are ``\'``, which escapes a single quote and ``\\``, which escapes the backslash symbol. The only meaningful escapes in double quotes are ``\"``, which escapes a double quote, ``\$``, which escapes a dollar character, ``\`` followed by a newline, which deletes the backslash and the newline, and ``\\``, which escapes the backslash symbol.
 
+A backslash followed by either an LF or CRLF line ending continues the current line outside single quotes. Both the backslash and the complete line ending are removed; other literal carriage returns are preserved.
+
 Single quotes have no special meaning within double quotes and vice versa.
 
 More examples::
