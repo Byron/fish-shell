@@ -145,6 +145,7 @@ impl Session {
             wopt(L!("names"), ArgType::NoArgument, 'n'),
             wopt(L!("copy"), ArgType::NoArgument, 'c'),
             wopt(L!("help"), ArgType::NoArgument, 'h'),
+            wopt(L!("no-details"), ArgType::NoArgument, '\x02'),
         ];
         let mut options = WGetopter::new(L!("qench"), OPTIONS, &mut argv);
         let (mut query, mut erase, mut names_only, mut copy, mut help) =
@@ -156,6 +157,10 @@ impl Session {
                 'n' => names_only = true,
                 'c' => copy = true,
                 'h' => help = true,
+                // Native definitions already omit the source-location comments
+                // suppressed by POSIX --no-details. The shared funcsave helper
+                // requests this form for files that will be autoloaded later.
+                '\x02' => (),
                 _ => {
                     let argument = options.argv[options.wopt_index.saturating_sub(1)];
                     return self.functions_failure(

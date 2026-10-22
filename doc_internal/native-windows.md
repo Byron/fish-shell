@@ -246,9 +246,11 @@ definitions preserve these properties.
 The bundled `alias` helper creates wrappers in the current session, including
 self-named wrappers around builtins or external commands. Native `read --list`
 and `builtin --names` provide its list parsing and recursion checks. Saved alias
-function files load normally. Bare `alias` listing can load POSIX-only helpers,
-and `alias --save` still depends on unsupported `funcsave` options and POSIX
-filesystem utilities; those two helper modes remain outside the native subset.
+function files load normally. The bundled `alias --save` and `funcsave` helpers
+save definitions through `functions --no-details` into the selected
+configuration's functions directory, or `funcsave --directory`. Descriptions,
+wrapper completions, argument names and captured values survive a fresh session.
+Bare `alias` listing can still load POSIX-only helpers.
 
 `functions --copy OLD NEW` copies a function for wrappers such as a customized
 `fish_prompt`. The copy retains its description, named arguments, captured values
