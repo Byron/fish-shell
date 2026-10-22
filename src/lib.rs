@@ -14,6 +14,7 @@ pub(crate) mod function_options;
 pub mod history_core;
 pub(crate) mod string_regex;
 pub(crate) mod universal_variables;
+pub(crate) mod variable_indices;
 
 #[macro_use]
 #[cfg(not(windows))]

@@ -63,18 +63,24 @@ impl Session {
     pub(super) fn set_universal(
         &mut self,
         name: &str,
-        operation: impl FnOnce(Option<&Variable>) -> Option<Variable>,
+        operation: impl FnOnce(Option<&Variable>) -> Result<Option<Variable>>,
         erase: bool,
         no_event: bool,
         host: &mut impl Host,
     ) -> Result<bool> {
-        let (existed, remote_changes) =
-            self.universals
-                .update(name, operation)
-                .map_err(|error| Error {
-                    message: format!("set: universal variable {name}: {error}"),
-                    status: 1,
-                })?;
+        let (existed, remote_changes) = self
+            .universals
+            .try_update(name, |old| operation(old).map_err(std::io::Error::other))
+            .map_err(|error| {
+                error
+                    .get_ref()
+                    .and_then(|error| error.downcast_ref::<Error>())
+                    .cloned()
+                    .unwrap_or_else(|| Error {
+                        message: format!("set: universal variable {name}: {error}"),
+                        status: 1,
+                    })
+            })?;
         self.universal_events(remote_changes, Some(name), host)?;
         if name == "fish_function_path" {
             self.refresh_function_paths();

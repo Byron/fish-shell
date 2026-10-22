@@ -282,3 +282,70 @@ fn path_metadata_survives_prefixes_arguments_captures_and_loop_bindings() {
         "2\nC:\\one;D:\\two\n2\nE:\\three;F:\\four\nC:\\one;D:\\two\nC:\\one D:\\two\n1\n"
     );
 }
+
+#[test]
+fn universal_indexes_use_the_target_scope_and_preserve_failed_transactions() {
+    let fixture = Fixture::new();
+    assert_eq!(
+        fixture.run(
+            r#"
+        set -Ux --path shared one two three
+        set -gu --unpath shared shadow
+        set -U shared[-1] changed
+        set -eU shared[1]
+        set -eg shared
+        echo "$shared"
+        set -qxU --path shared
+        echo flags=$status
+    "#
+        ),
+        "two;changed\nflags=0\n"
+    );
+    let before = std::fs::read(fixture.file()).unwrap();
+    let output = fixture.output("set -U shared[0] wrong; echo failure=$status; echo \"$shared\"");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "failure=2\ntwo;changed\n"
+    );
+    assert_eq!(std::fs::read(fixture.file()).unwrap(), before);
+}
+
+#[test]
+fn concurrent_universal_slice_erasure_resolves_negative_indexes_under_the_lock() {
+    let fixture = Fixture::new();
+    fixture.run(&format!(
+        "set -U shared {}",
+        (0..40)
+            .map(|index| format!("v{index}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    ));
+    let mut children: Vec<_> = (0..4)
+        .map(|_| {
+            fixture
+                .command()
+                .args([
+                    "-c",
+                    "for number in 1 2 3 4 5 6 7 8 9 10; set -eU shared[-1]; end",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for child in children.drain(..) {
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+    }
+    assert_eq!(
+        fixture.run("count $shared; set -qU shared; echo exists=$status"),
+        "0\nexists=0\n"
+    );
+}

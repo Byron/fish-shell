@@ -1,4 +1,5 @@
 use super::*;
+use crate::variable_indices;
 
 #[path = "fish_extra_builtins.rs"]
 mod extra;
@@ -181,12 +182,14 @@ impl Session {
                 Err(error) => {
                     self.status = error.status;
                     self.pipeline = vec![self.status];
-                    output.bytes.extend(host.write(
-                        2,
-                        format!("{}\n", error.message).as_bytes(),
-                        &output.redirects,
-                        output.capture,
-                    )?);
+                    if !error.message.is_empty() {
+                        output.bytes.extend(host.write(
+                            2,
+                            format!("{}\n", error.message).as_bytes(),
+                            &output.redirects,
+                            output.capture,
+                        )?);
+                    }
                 }
             },
             "emit" => {
@@ -348,6 +351,27 @@ impl Session {
         Ok(())
     }
 
+    fn set_scope_variable(
+        &self,
+        name: &str,
+        local: bool,
+        global: bool,
+        universal: bool,
+    ) -> Option<&Variable> {
+        if universal {
+            self.universals.vars.get(name)
+        } else if global {
+            self.variables.get(name)
+        } else if local {
+            self.scopes[self.scope_start()..]
+                .iter()
+                .rev()
+                .find_map(|scope| scope.get(name))
+        } else {
+            self.variable(name)
+        }
+    }
+
     /// Return whether this was an assignment, preserving the preceding status.
     fn set(&mut self, args: &[String], host: &mut impl Host, output: &mut Output) -> Result<bool> {
         let (mut local, mut global, mut universal) = (false, false, false);
@@ -408,38 +432,41 @@ impl Session {
             if erase || append || prepend || names {
                 return Err(Error::new("set: incompatible options"));
             }
-            for name in args {
-                valid_name(name)?;
+            let mut missing = 0usize;
+            for argument in args {
+                let expression = WString::from(argument.as_str());
+                let name = variable_indices::variable_name(&expression).to_string();
+                valid_name(&name)?;
+                let electric = (!local
+                    && !universal
+                    && matches!(
+                        name.as_str(),
+                        "status" | "pipestatus" | "last_pid" | "fish_pid"
+                    ))
+                .then(|| Variable {
+                    values: self.values(&name),
+                    ..Default::default()
+                });
+                let variable = self
+                    .set_scope_variable(&name, local, global, universal)
+                    .or(electric.as_ref())
+                    .filter(|variable| {
+                        !exported.is_some_and(|flag| flag != variable.exported)
+                            && !pathvar.is_some_and(|flag| flag != variable.pathvar)
+                    });
+                let length = variable.map_or(0, |variable| variable.values.len());
+                let indexes = variable_indices::parse(&expression, length)
+                    .map_err(|error| index_error(error, 1))?;
+                missing += if indexes.is_empty() {
+                    usize::from(variable.is_none())
+                } else {
+                    indexes
+                        .iter()
+                        .filter(|&&index| index < 1 || index as usize > length)
+                        .count()
+                };
             }
-            self.status = args
-                .iter()
-                .filter(|name| {
-                    let variable = if universal {
-                        self.universals.vars.get(*name)
-                    } else if global {
-                        self.variables.get(*name)
-                    } else if local {
-                        self.scopes[self.scope_start()..]
-                            .iter()
-                            .rev()
-                            .find_map(|scope| scope.get(*name))
-                    } else {
-                        self.variable(name)
-                    };
-                    if !local
-                        && !universal
-                        && exported != Some(true)
-                        && matches!(name.as_str(), "status" | "fish_pid")
-                    {
-                        return false;
-                    }
-                    variable.is_none_or(|variable| {
-                        exported.is_some_and(|flag| flag != variable.exported)
-                            || pathvar.is_some_and(|flag| flag != variable.pathvar)
-                    })
-                })
-                .count()
-                .min(255) as i32;
+            self.status = missing.min(255) as i32;
             return Ok(false);
         }
         if erase && (append || prepend || exported.is_some() || pathvar.is_some() || names) {
@@ -474,7 +501,10 @@ impl Session {
             self.status = 0;
             return Ok(false);
         }
-        let name = &args[0];
+        let expression = WString::from(args[0].as_str());
+        let name_string = variable_indices::variable_name(&expression).to_string();
+        let name = &name_string;
+        let indexed = variable_indices::has_indexes(&expression);
         valid_name(name)?;
         if matches!(
             name.as_str(),
@@ -501,61 +531,124 @@ impl Session {
         let shadow_values = (universal
             && (visible_scope.is_some() || self.variables.contains_key(name)))
         .then(|| self.variable(name).unwrap().values.clone());
-        let assign = |old: Option<&Variable>| {
-            if erase {
-                return None;
-            }
-            let pathvar = pathvar
-                .or_else(|| old.map(|var| var.pathvar))
-                .unwrap_or_else(|| name.ends_with("PATH"));
-            let mut values = args[1..].to_vec();
-            if append || prepend {
-                let mut combined = Vec::new();
-                if prepend {
-                    combined.extend(values.clone());
+        let assign =
+            |old: Option<&Variable>, selected: Option<&Variable>| -> Result<Option<Variable>> {
+                let indexes = variable_indices::parse(
+                    &expression,
+                    selected.map_or(0, |value| value.values.len()),
+                )
+                .map_err(|error| index_error(error, if erase { 1 } else { 2 }))?;
+                if erase && indexes.is_empty() {
+                    return Ok(None);
                 }
-                combined.extend(
-                    shadow_values
-                        .clone()
-                        .or_else(|| old.map(|value| value.values.clone()))
-                        .unwrap_or_default(),
-                );
-                if append {
-                    combined.extend(values);
+                if erase && selected.is_none() {
+                    return Err(Error {
+                        message: String::new(),
+                        status: 1,
+                    });
                 }
-                values = combined;
-            }
-            if pathvar {
-                values = values
-                    .into_iter()
-                    .flat_map(|value| value.split(';').map(str::to_owned).collect::<Vec<_>>())
-                    .collect();
-            }
-            Some(Variable {
-                values,
-                exported: exported
-                    .or_else(|| old.map(|var| var.exported))
-                    .unwrap_or(false),
-                pathvar,
-            })
-        };
+                let pathvar = pathvar
+                    .or_else(|| old.map(|var| var.pathvar))
+                    .unwrap_or_else(|| name.ends_with("PATH"));
+                let mut values = args[1..].to_vec();
+                if !indexes.is_empty() {
+                    let original = selected
+                        .map(|value| value.values.clone())
+                        .unwrap_or_default();
+                    values = if erase {
+                        variable_indices::erased_at_indexes(original, indexes)
+                    } else {
+                        if append || prepend {
+                            return Err(Error::new(
+                                "set: cannot append or prepend when assigning to a slice",
+                            ));
+                        }
+                        if indexes.iter().any(|&index| index <= 0) {
+                            return Err(Error::new("set: array index out of bounds"));
+                        }
+                        if indexes.len() != values.len() {
+                            return Err(Error::new(format!(
+                                "set: given {} indexes but {} values",
+                                indexes.len(),
+                                values.len()
+                            )));
+                        }
+                        let mut result = original;
+                        for (index, value) in indexes.into_iter().zip(values) {
+                            let index = index as usize;
+                            if index > variable_indices::MAX_INDEX_COUNT {
+                                return Err(Error::new(
+                                    "set: array index exceeds the native variable size limit",
+                                ));
+                            }
+                            if index > result.len() {
+                                result.resize(index, String::new());
+                            }
+                            result[index - 1] = value;
+                        }
+                        result
+                    };
+                } else if append || prepend {
+                    let mut combined = Vec::new();
+                    if prepend {
+                        combined.extend(values.clone());
+                    }
+                    combined.extend(
+                        shadow_values
+                            .clone()
+                            .or_else(|| old.map(|value| value.values.clone()))
+                            .unwrap_or_default(),
+                    );
+                    if append {
+                        combined.extend(values);
+                    }
+                    values = combined;
+                }
+                if pathvar {
+                    values = values
+                        .into_iter()
+                        .flat_map(|value| value.split(';').map(str::to_owned).collect::<Vec<_>>())
+                        .collect();
+                }
+                Ok(Some(Variable {
+                    values,
+                    exported: exported
+                        .or_else(|| old.map(|var| var.exported))
+                        .unwrap_or(false),
+                    pathvar,
+                }))
+            };
         if implicit_universal || (universal && self.universals.enabled()) {
-            return self.set_universal(name, assign, erase, no_event, host);
+            let assigned = self.set_universal(
+                name,
+                |old| assign(old, old),
+                erase && !indexed,
+                no_event,
+                host,
+            )?;
+            if erase && indexed {
+                self.status = 0;
+                return Ok(false);
+            }
+            return Ok(assigned);
         }
         if universal {
             // POSIX --no-config redirects universal assignments to globals;
             // explicit universal queries and erases still see the empty scope.
             if erase {
+                // Validate slices even though --no-config has no universal scope.
+                assign(None, None)?;
                 self.status = 4;
                 return Ok(false);
             }
             global = true;
         }
-        let value = assign(self.variable(name));
+        let selected = self.set_scope_variable(name, local, global, false);
+        let value = assign(self.variable(name), selected)?;
         let function_scope = self.function_frames.last().map(|frame| frame.local_scope);
         let scope = if global {
             &mut self.variables
-        } else if local && erase {
+        } else if local && erase && !indexed {
             if let Some(index) = visible_scope {
                 &mut self.scopes[index]
             } else {
@@ -588,12 +681,19 @@ impl Session {
             self.refresh_function_paths();
         }
         if !no_event && existed {
-            self.fire_variable_event(name, erase, host)?;
+            self.fire_variable_event(name, erase && !indexed, host)?;
         }
         if erase {
             self.status = i32::from(!existed);
         }
         Ok(!erase)
+    }
+}
+
+fn index_error(error: variable_indices::InvalidIndex, status: i32) -> Error {
+    Error {
+        message: format!("set: Invalid index starting at '{}'", error.0),
+        status,
     }
 }
 

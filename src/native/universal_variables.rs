@@ -61,10 +61,19 @@ impl Store {
 
     /// Commit one explicit mutation, never a saved session snapshot. Workers
     /// carry no dirty queue, so stale worker state cannot replay earlier writes.
+    #[cfg(test)]
     pub(super) fn update(
         &mut self,
         name: &str,
         operation: impl FnOnce(Option<&Variable>) -> Option<Variable>,
+    ) -> io::Result<(bool, Vec<Change>)> {
+        self.try_update(name, |old| Ok(operation(old)))
+    }
+
+    pub(super) fn try_update(
+        &mut self,
+        name: &str,
+        operation: impl FnOnce(Option<&Variable>) -> io::Result<Option<Variable>>,
     ) -> io::Result<(bool, Vec<Change>)> {
         let path = self
             .path
@@ -81,7 +90,7 @@ impl Store {
             }
             let remote_changes = changes(&self.vars, &vars);
             let existed = vars.contains_key(name);
-            let value = operation(vars.get(name));
+            let value = operation(vars.get(name))?;
             let changed = vars.get(name) != value.as_ref();
             match value {
                 Some(value) => {

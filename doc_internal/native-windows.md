@@ -132,6 +132,13 @@ an unscoped assignment updates an existing universal variable when no closer
 scope defines it. `set --path` and `--unpath` control whether a variable splits
 and exports using Windows' semicolon path separator.
 
+Indexed `set` assignments, queries and erasures use the same index parser as
+POSIX Fish, including negative indexes and ranges. For example, `set -e words[1]`
+removes the first element and `set -q words[-1]` checks for a last element.
+Universal-variable indexes resolve against the latest stored list while locked.
+Index expansion is limited to one million positions; native indexed assignments
+also limit the highest position to that value.
+
 Native universal variables use `fish/native_fish_variables` under the selected
 configuration home. Their encoding is shared with POSIX Fish, but their file and
 locking are separate; POSIX `fish_variables` is not imported automatically.

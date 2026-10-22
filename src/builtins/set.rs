@@ -9,7 +9,7 @@ use crate::{
     history::{History, history_id},
     parse_execution::varname_error,
     parser::ParserEnvSetMode,
-    wutil::wcstoi::{self, wcstoi_partial},
+    variable_indices,
 };
 use fish_common::{EscapeFlags, EscapeStringStyle, escape, escape_string, help_section};
 use fish_widestring::ELLIPSIS_CHAR;
@@ -420,107 +420,16 @@ fn split_var_and_indexes_internal<'a>(
     mode: EnvMode,
     vars: &dyn Environment,
 ) -> Result<SplitVar<'a>, EnvArrayParseError> {
-    let mut res = SplitVar::default();
-    let open_bracket = arg.find_char('[');
-    res.varname = open_bracket.map_or(arg, |b| &arg[..b]);
-    res.var = vars.getf(res.varname, mode);
-    let Some(open_bracket) = open_bracket else {
-        // Common case of no bracket
-        return Ok(res);
-    };
-
-    // We need the length of the array to validate the indexes.
-    let len = res
-        .var
-        .as_ref()
-        .map(|v| v.as_list().len())
-        .unwrap_or_default();
-    let mut c = arg.slice_from(open_bracket + 1);
-
-    while c.char_at(0) != ']' {
-        let mut consumed = 0;
-        let l_ind: isize;
-        if res.indexes.is_empty() && c.char_at(0) == '.' && c.char_at(1) == '.' {
-            // If we are at the first index expression, a missing start-index means the range starts
-            // at the first item.
-            l_ind = 1; // first index
-        } else {
-            l_ind = wcstoi_partial(c, wcstoi::Options::default(), &mut consumed)
-                .map_err(|_| EnvArrayParseError::InvalidIndex(c.slice_from(consumed).to_owned()))?;
-            c = c.slice_from(consumed);
-            // Skip trailing whitespace.
-            while !c.is_empty() && c.char_at(0).is_whitespace() {
-                c = c.slice_from(1);
-            }
-        }
-
-        // Convert negative index to a positive index.
-        let convert_negative_index = |i: isize| -> isize {
-            if i >= 0 {
-                i
-            } else {
-                isize::try_from(len).unwrap() + i + 1
-            }
-        };
-
-        let l_ind = convert_negative_index(l_ind);
-
-        if c.char_at(0) == '.' && c.char_at(1) == '.' {
-            // If we are at the last index range expression, a missing end-index means the range
-            // spans until the last item.
-            c = c.slice_from(2);
-            let l_ind2: isize;
-            // If we are at the last index range expression, a missing end-index means the range
-            // spans until the last item.
-            let tmp = consumed;
-            if res.indexes.is_empty() && c.char_at(0) == ']' {
-                l_ind2 = -1;
-            } else {
-                l_ind2 =
-                    wcstoi_partial(c, wcstoi::Options::default(), &mut consumed).map_err(|_| {
-                        EnvArrayParseError::InvalidIndex(c.slice_from(consumed - tmp).to_owned())
-                    })?;
-                c = c.slice_from(consumed);
-                // Skip trailing whitespace.
-                while !c.is_empty() && c.char_at(0).is_whitespace() {
-                    c = c.slice_from(1);
-                }
-            }
-
-            let l_ind2 = convert_negative_index(l_ind2);
-            if l_ind < l_ind2 {
-                res.indexes.extend(l_ind..=l_ind2);
-            } else {
-                res.indexes.extend((l_ind2..=l_ind).rev());
-            }
-        } else {
-            res.indexes.push(l_ind);
-        }
-    }
-
-    Ok(res)
-}
-
-/// Given a list of values and 1-based indexes, return a new list with those elements removed.
-/// Note this deliberately accepts both args by value, as it modifies them both.
-fn erased_at_indexes(mut input: Vec<WString>, mut indexes: Vec<isize>) -> Vec<WString> {
-    // Sort our indexes into *descending* order.
-    indexes.sort_by_key(|&index| std::cmp::Reverse(index));
-
-    // Remove duplicates.
-    indexes.dedup();
-
-    // Now when we walk indexes, we encounter larger indexes first.
-    for idx in indexes {
-        let Ok(idx) = usize::try_from(idx) else {
-            continue;
-        };
-        if idx > 0 && idx <= input.len() {
-            // One-based indexing!
-            input.remove(idx - 1);
-        }
-    }
-    input
+    let varname = variable_indices::variable_name(arg);
+    let var = vars.getf(varname, mode);
+    let length = var.as_ref().map_or(0, |var| var.as_list().len());
+    let indexes = variable_indices::parse(arg, length)
+        .map_err(|error| EnvArrayParseError::InvalidIndex(error.0))?;
+    Ok(SplitVar {
+        varname,
+        var,
+        indexes,
+    })
 }
 
 /// Print the names of all environment variables in the scope. It will include the values unless the
@@ -797,7 +706,8 @@ fn erase(
                 let Some(var) = split.var else {
                     return Err(STATUS_CMD_ERROR);
                 };
-                let result = erased_at_indexes(var.as_list().to_owned(), split.indexes);
+                let result =
+                    variable_indices::erased_at_indexes(var.as_list().to_owned(), split.indexes);
                 retval = env_set_reporting_errors(
                     cmd,
                     opts,
