@@ -251,8 +251,30 @@ impl Session {
                 self.status = 0;
             }
             "count" => {
-                self.write(format!("{}\n", args.len()).as_bytes(), host, output)?;
-                self.status = i32::from(args.is_empty());
+                let mut total = args.len();
+                if output.stdin_is_directly_redirected {
+                    loop {
+                        if host.cancelled() {
+                            self.status = 130;
+                            return Ok(());
+                        }
+                        let rash::host::ReadResult::Line(bytes) =
+                            host.read_line(&output.redirects, false)?
+                        else {
+                            self.status = 130;
+                            return Ok(());
+                        };
+                        if bytes.is_empty() {
+                            break;
+                        }
+                        // Like POSIX count, count completed records rather than
+                        // including an unterminated final line. No text decoding
+                        // is needed to count newlines in binary input.
+                        total += bytes.iter().filter(|&&byte| byte == b'\n').count();
+                    }
+                }
+                self.write(format!("{total}\n").as_bytes(), host, output)?;
+                self.status = i32::from(total == 0);
             }
             "exit" | "return" => {
                 if args.len() > 1 {

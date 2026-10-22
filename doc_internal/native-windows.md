@@ -84,7 +84,9 @@ queries, function queries/removal, and common `status` queries. `math` uses the
 same arithmetic parser and functions as POSIX Fish. `random` shares POSIX seed,
 range, step and choice handling. Seeded state follows the native session into
 functions, command substitutions and pipeline workers; final foreground stages
-return their updated state to the caller. `string` supports literal
+return their updated state to the caller. `count` adds newline-terminated records
+from directly piped or redirected stdin to its argument count; an unterminated
+final record does not count. `string` supports literal
 split, join, replace, trim, case conversion, Unicode length/substrings, repeat,
 escaping, and wildcard matching, with arguments or redirected standard input.
 Supported string options accept compact forms such as `string sub -s1 -l16`,

@@ -2,6 +2,62 @@
 use std::process::Command;
 
 #[test]
+fn count_adds_arguments_and_completed_pipeline_records() {
+    let output = Command::new(env!("CARGO_BIN_EXE_fish"))
+        .args([
+            "-N",
+            "-c",
+            r#"
+            count -h --help --
+            printf 'one\n\nlast' | count fixed --
+            printf 'tail' | count
+            echo unterminated:$status
+            printf 'a\r\nb\n' | count
+            printf 'untouched\n' | begin
+                count
+                read saved
+                echo $saved
+            end
+        "#,
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty(), "{:?}", output.stderr);
+    assert_eq!(output.stdout, b"3\n4\n0\nunterminated:1\n2\n0\nuntouched\n");
+}
+
+#[test]
+fn count_reads_only_explicit_stdin_and_accepts_binary_records() {
+    for (source, input, expected) in [
+        (
+            "count; echo count:$status; read saved; echo $saved",
+            b"preserved\n".as_slice(),
+            b"0\ncount:1\npreserved\n".as_slice(),
+        ),
+        (
+            "count first --help <&0",
+            b"\xff\n\0\ntail".as_slice(),
+            b"4\n".as_slice(),
+        ),
+    ] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_fish"))
+            .args(["-N", "-c", source])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(&mut child.stdin.take().unwrap(), input).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{source}");
+        assert!(output.stderr.is_empty(), "{:?}", output.stderr);
+        assert_eq!(output.stdout, expected, "{source}");
+    }
+}
+
+#[test]
 fn fish_native_common_builtins() {
     let output = Command::new(env!("CARGO_BIN_EXE_fish"))
         .args([
