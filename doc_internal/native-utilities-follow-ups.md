@@ -88,6 +88,9 @@ packaged command on a native build with utilities enabled, and use `command`
 lookup on POSIX or feature-disabled builds. Rustup component and documentation
 completions exercise these adapters. Other bundled scripts should be adapted
 when a failing invocation is demonstrated, rather than replacing every command.
+The adapters resolve the native builtin name through a variable: POSIX Fish
+validates literal builtin names while parsing a function, even in an untaken
+branch, so a literal native-only builtin would prevent the shared helper loading.
 
 Utilities that launch commands themselves, including `env`, `xargs`, `find
 -exec`, and AWK subprocesses, use their own process lookup. They cannot discover
