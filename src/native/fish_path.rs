@@ -280,6 +280,22 @@ impl Session {
         Ok(())
     }
 
+    fn write_path_value(
+        &mut self,
+        value: &str,
+        explicit: bool,
+        null_out: bool,
+        host: &mut impl Host,
+        output: &mut Output,
+    ) -> Result<()> {
+        if explicit && !null_out {
+            self.write_separated(value.as_bytes(), true, host, output)
+        } else {
+            self.write(value.as_bytes(), host, output)?;
+            self.write(if null_out { b"\0" } else { b"\n" }, host, output)
+        }
+    }
+
     fn path_builtin_impl(
         &mut self,
         name: &str,
@@ -552,11 +568,12 @@ impl Session {
                 if opts.quiet {
                     break;
                 }
-                if input.starts_with('-') {
-                    self.write(b"./", host, output)?;
-                }
-                self.write(input.as_bytes(), host, output)?;
-                self.write(if opts.null_out { b"\0" } else { b"\n" }, host, output)?;
+                let value = if input.starts_with('-') {
+                    format!("./{input}")
+                } else {
+                    input
+                };
+                self.write_path_value(&value, true, opts.null_out, host, output)?;
                 continue;
             }
             if operation == "sort" {
@@ -649,8 +666,13 @@ impl Session {
                 break;
             }
             if !opts.quiet {
-                self.write(value.as_bytes(), host, output)?;
-                self.write(if opts.null_out { b"\0" } else { b"\n" }, host, output)?;
+                self.write_path_value(
+                    &value,
+                    operation != "realpath",
+                    opts.null_out,
+                    host,
+                    output,
+                )?;
             }
         }
         if operation == "sort" {
@@ -675,8 +697,7 @@ impl Session {
                         self.status = 130;
                         return Ok(());
                     }
-                    self.write(path.to_string().as_bytes(), host, output)?;
-                    self.write(if opts.null_out { b"\0" } else { b"\n" }, host, output)?;
+                    self.write_path_value(&path.to_string(), true, opts.null_out, host, output)?;
                 }
             }
             transformed = true;

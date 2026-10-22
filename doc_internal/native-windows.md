@@ -203,6 +203,10 @@ probes, inversion and `--all`. POSIX ownership and special mode-bit filters repo
 unsupported options; block devices, FIFOs and Unix sockets have no matching
 ordinary Windows file type. `path sort` supports reverse/unique output and
 basename/dirname keys, with a 16 MiB or 100,000-path input limit.
+Path results retain separate command-substitution fields, including empty
+extensions, even alongside ordinary output or across a final pipeline worker.
+Redirects and intermediate pipeline stages use ordinary newline-delimited bytes;
+`path -Z` emits NUL-delimited bytes and composes with `string split0`.
 `builtin realpath -s` makes an absolute path without resolving links in its
 argument. Filesystem resolution uses Windows semantics; special device
 namespaces remain outside this native subset.

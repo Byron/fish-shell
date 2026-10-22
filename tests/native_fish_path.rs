@@ -498,3 +498,57 @@ fn path_sort_rejects_excess_aggregate_input_before_emitting_output() {
         );
     }
 }
+
+#[test]
+fn path_substitutions_keep_explicit_fields_separate_from_adjacent_output() {
+    let fixture = Fixture::new();
+    fs::write(fixture.0.join("-dash"), b"data").unwrap();
+    assert_eq!(
+        stdout(fixture.run(
+            r#"
+        set v (printf prefix; path basename C:/a.txt C:/b.txt; printf suffix)
+        count $v; printf '<%s>\n' $v
+        set v (printf prefix; path extension plain file.txt plain; printf suffix)
+        count $v; printf '<%s>\n' $v
+        set v (printf prefix; path filter -- -dash; path sort z a; printf suffix)
+        count $v; printf '<%s>\n' $v
+    "#
+        )),
+        concat!(
+            "4\n<prefix>\n<a.txt>\n<b.txt>\n<suffix>\n",
+            "5\n<prefix>\n<>\n<.txt>\n<>\n<suffix>\n",
+            "5\n<prefix>\n<./-dash>\n<a>\n<z>\n<suffix>\n"
+        )
+    );
+}
+
+#[test]
+fn path_fields_cross_final_workers_and_serialize_for_byte_stream_consumers() {
+    let fixture = Fixture::new();
+    assert_eq!(
+        stdout(fixture.run(
+            r#"
+        set v (printf prefix; printf '%s\n' plain file.txt | path extension; printf suffix)
+        count $v; printf '<%s>\n' $v
+        set v (printf prefix; path basename C:/a.txt C:/b.txt | string collect)
+        count $v; printf '<%s>\n' $v
+        path basename C:/a.txt C:/b.txt > values
+        set v (printf prefix; string collect < values)
+        count $v; printf '<%s>\n' $v
+        set v (path extension -Z plain file.txt plain | string split0)
+        count $v; printf '<%s>\n' $v
+        set v (printf prefix; builtin realpath .; printf suffix); count $v
+        set v (printf prefix; path resolve .; printf suffix); count $v
+        path basename -Z C:/a.txt C:/b.txt
+    "#
+        )),
+        concat!(
+            "4\n<prefix>\n<>\n<.txt>\n<suffix>\n",
+            "2\n<prefix>\n<a.txt\nb.txt>\n",
+            "2\n<prefix>\n<a.txt\nb.txt>\n",
+            "3\n<>\n<.txt>\n<>\n",
+            "2\n3\n",
+            "a.txt\0b.txt\0"
+        )
+    );
+}
