@@ -28,6 +28,8 @@ use crate::layout::{Layout, Position};
 use crate::line_buffer::LineBuffer;
 use crate::{error, Cmd, Result};
 
+#[path = "windows_redraw.rs"]
+mod redraw;
 #[path = "windows_vt.rs"]
 mod vt;
 
@@ -401,11 +403,57 @@ pub struct ConsoleRenderer {
     buffer: String,
     utf16: Vec<u16>,
     colors_enabled: bool,
+    vt_output: bool,
     bell_style: BellStyle,
+    frame: Option<ConsoleFrame>,
+}
+
+struct ConsoleFrame {
+    contents: redraw::Frame,
+    origin: i16,
+    size: (i16, i16),
+    window: (i16, i16, i16, i16),
+}
+
+impl ConsoleFrame {
+    fn new(
+        contents: redraw::Frame,
+        origin: i16,
+        info: &console::CONSOLE_SCREEN_BUFFER_INFO,
+    ) -> Self {
+        Self {
+            contents,
+            origin,
+            size: (info.dwSize.X, info.dwSize.Y),
+            window: (
+                info.srWindow.Left,
+                info.srWindow.Top,
+                info.srWindow.Right,
+                info.srWindow.Bottom,
+            ),
+        }
+    }
+
+    fn matches(&self, origin: i32, info: &console::CONSOLE_SCREEN_BUFFER_INFO) -> bool {
+        i32::from(self.origin) == origin
+            && self.size == (info.dwSize.X, info.dwSize.Y)
+            && self.window
+                == (
+                    info.srWindow.Left,
+                    info.srWindow.Top,
+                    info.srWindow.Right,
+                    info.srWindow.Bottom,
+                )
+    }
 }
 
 impl ConsoleRenderer {
-    fn new(conout: HANDLE, colors_enabled: bool, bell_style: BellStyle) -> ConsoleRenderer {
+    fn new(
+        conout: HANDLE,
+        colors_enabled: bool,
+        vt_output: bool,
+        bell_style: BellStyle,
+    ) -> ConsoleRenderer {
         // Multi line editing is enabled by ENABLE_WRAP_AT_EOL_OUTPUT mode
         let (cols, _) = get_win_size(conout);
         ConsoleRenderer {
@@ -414,7 +462,9 @@ impl ConsoleRenderer {
             buffer: String::with_capacity(1024),
             utf16: Vec::with_capacity(1024),
             colors_enabled,
+            vt_output,
             bell_style,
+            frame: None,
         }
     }
 
@@ -482,17 +532,185 @@ impl ConsoleRenderer {
         info: &console::CONSOLE_SCREEN_BUFFER_INFO,
         layout: &Layout,
     ) -> Result<()> {
-        let current_row = layout.cursor.row;
-        let old_rows = layout.end.row;
         let mut coord = info.dwCursorPosition;
         coord.X = 0;
-        coord.Y -= current_row as i16;
+        coord.Y = (i32::from(coord.Y) - i32::try_from(layout.cursor.row).unwrap_or(i32::MAX))
+            .clamp(0, i32::from(info.dwSize.Y) - 1) as i16;
         let coord = self.set_console_cursor_position(coord, info.dwSize)?;
+        let rows = layout
+            .end
+            .row
+            .saturating_add(1)
+            .min((info.dwSize.Y - coord.Y) as usize);
         self.clear(
-            (info.dwSize.X * (old_rows as i16 + 1)) as u32,
+            u32::from(info.dwSize.X as u16) * rows as u32,
             coord,
             info.wAttributes,
         )
+    }
+
+    /// Erase only cells after the new text. In particular, never clear a row
+    /// before overwriting it: ConPTY may publish each Win32 operation as a
+    /// separate frame, even when they occur in one refresh_line call.
+    fn clear_row_tail(
+        &mut self,
+        row: i32,
+        start: usize,
+        end: usize,
+        info: &console::CONSOLE_SCREEN_BUFFER_INFO,
+    ) -> Result<()> {
+        let end = end.min(info.dwSize.X as usize);
+        if row < 0 || row >= i32::from(info.dwSize.Y) || start >= end {
+            return Ok(());
+        }
+        if self.vt_output {
+            self.set_console_cursor_position(
+                console::COORD {
+                    X: start as i16,
+                    Y: row as i16,
+                },
+                info.dwSize,
+            )?;
+            // Writing spaces with FillConsoleOutputCharacter can leave the
+            // entire physical row marked as text for ConPTY's resize reflow.
+            // EL removes the stale tail without creating those phantom spaces.
+            self.buffer.clear();
+            self.buffer.push_str("\x1b[0m\x1b[K");
+            return write_to_console(self.conout, &self.buffer, &mut self.utf16);
+        }
+        self.clear(
+            (end - start) as u32,
+            console::COORD {
+                X: start as i16,
+                Y: row as i16,
+            },
+            info.wAttributes,
+        )
+    }
+
+    fn refresh_frame(
+        &mut self,
+        frame: redraw::Frame,
+        previous: Option<ConsoleFrame>,
+        old_layout: &Layout,
+        new_layout: &Layout,
+        info: &console::CONSOLE_SCREEN_BUFFER_INFO,
+    ) -> Result<()> {
+        let origin = i32::from(info.dwCursorPosition.Y)
+            - i32::try_from(old_layout.cursor.row).unwrap_or(i32::MAX);
+        let previous = previous.filter(|old| {
+            old.matches(origin, info)
+                && old.contents.erase_down == frame.erase_down
+                && old
+                    .contents
+                    .matches_end(old_layout.end.row, old_layout.end.col)
+                && origin >= i32::from(info.srWindow.Top)
+                && origin + frame.rows.len().max(old.contents.rows.len()) as i32 - 1
+                    <= i32::from(info.srWindow.Bottom)
+                && frame.rows.iter().enumerate().all(|(index, row)| {
+                    // A full-width write on the last buffer row can scroll.
+                    // Unchanged rows require no write and are safe to retain.
+                    old.contents.rows.get(index) == Some(row)
+                        || row.columns < info.dwSize.X as usize
+                        || origin + (index as i32) < i32::from(info.dwSize.Y) - 1
+                })
+        });
+        let mut guard = self.set_cursor_visibility(false)?;
+        let final_origin;
+        if let Some(previous) = previous {
+            // Every row starts from its own SGR state. Skipping a highlighted
+            // prompt or a selected menu row cannot change later rows' colors.
+            for (index, row) in frame.rows.iter().enumerate() {
+                let old = previous.contents.rows.get(index);
+                if old == Some(row) {
+                    continue;
+                }
+                let y = origin + index as i32;
+                self.set_console_cursor_position(
+                    console::COORD { X: 0, Y: y as i16 },
+                    info.dwSize,
+                )?;
+                self.buffer.clear();
+                frame.append_row(index, &mut self.buffer);
+                write_to_console(self.conout, &self.buffer, &mut self.utf16)?;
+                self.clear_row_tail(
+                    y,
+                    row.columns,
+                    old.map_or(info.dwSize.X as usize, |old| old.columns),
+                    info,
+                )?;
+            }
+            for (index, row) in previous
+                .contents
+                .rows
+                .iter()
+                .enumerate()
+                .skip(frame.rows.len())
+            {
+                self.clear_row_tail(origin + index as i32, 0, row.columns, info)?;
+            }
+            final_origin = origin;
+        } else {
+            // Initial paint, invalidated caches and scrolling write the whole
+            // frame in order. Text is still written before stale tails are
+            // cleared, so even this path has no erase-then-repaint blank frame.
+            self.set_console_cursor_position(
+                console::COORD {
+                    X: 0,
+                    Y: origin.max(0) as i16,
+                },
+                info.dwSize,
+            )?;
+            self.buffer.clear();
+            frame.append_all(&mut self.buffer);
+            write_to_console(self.conout, &self.buffer, &mut self.utf16)?;
+            let after = self.get_console_screen_buffer_info()?;
+            final_origin = i32::from(after.dwCursorPosition.Y)
+                - i32::try_from(new_layout.end.row).unwrap_or(i32::MAX);
+            for (index, row) in frame.rows.iter().enumerate() {
+                self.clear_row_tail(final_origin + index as i32, row.columns, self.cols, &after)?;
+            }
+            let clear_end = if frame.erase_down {
+                // Honor an initial prompt's CSI J after its replacement is
+                // visible. An application may have left content below it.
+                old_layout
+                    .end
+                    .row
+                    .saturating_add(1)
+                    .max((i32::from(after.srWindow.Bottom) + 1 - final_origin).max(0) as usize)
+            } else {
+                old_layout.end.row.saturating_add(1)
+            };
+            for index in frame.rows.len()
+                ..clear_end.min((i32::from(after.dwSize.Y) - final_origin).max(0) as usize)
+            {
+                self.clear_row_tail(final_origin + index as i32, 0, self.cols, &after)?;
+            }
+        }
+        self.buffer.clear();
+        frame.append_final_style(&mut self.buffer);
+        write_to_console(self.conout, &self.buffer, &mut self.utf16)?;
+        let after = self.get_console_screen_buffer_info()?;
+        let cursor = console::COORD {
+            X: new_layout.cursor.col as i16,
+            Y: (final_origin + new_layout.cursor.row as i32).clamp(0, i32::from(after.dwSize.Y) - 1)
+                as i16,
+        };
+        self.set_console_cursor_position(cursor, after.dwSize)?;
+        guard.take();
+        // Cache only a fully visible frame with verified post-write geometry.
+        // In particular, a prompt larger than the viewport cannot be diffed by
+        // using a clamped origin as if its earlier rows were still visible.
+        let after = self.get_console_screen_buffer_info()?;
+        if after.dwSize.X as usize == self.cols
+            && after.dwCursorPosition.X == cursor.X
+            && after.dwCursorPosition.Y == cursor.Y
+            && final_origin >= i32::from(after.srWindow.Top)
+            && final_origin + frame.rows.len() as i32 - 1 <= i32::from(after.srWindow.Bottom)
+        {
+            self.frame = Some(ConsoleFrame::new(frame, final_origin as i16, &after));
+        }
+        Ok(())
     }
 }
 
@@ -536,8 +754,13 @@ impl Renderer for ConsoleRenderer {
         } else {
             cursor.X -= (old.col - new.col) as i16;
         }
-        self.set_console_cursor_position(cursor, info.dwSize)
-            .map(|_| ())
+        let result = self
+            .set_console_cursor_position(cursor, info.dwSize)
+            .map(|_| ());
+        if result.is_err() {
+            self.frame = None;
+        }
+        result
     }
 
     fn refresh_line(
@@ -552,6 +775,8 @@ impl Renderer for ConsoleRenderer {
         let default_prompt = new_layout.default_prompt;
         let cursor = new_layout.cursor;
         let end_pos = new_layout.end;
+        // Taking the cache also invalidates it if any paint operation fails.
+        let previous = self.frame.take();
 
         self.buffer.clear();
         let mut col = 0;
@@ -568,9 +793,9 @@ impl Renderer for ConsoleRenderer {
             col = self.wrap_at_eol(line, col);
         } else {
             // append the prompt
-            self.buffer.push_str(prompt);
+            col = self.wrap_at_eol(prompt, col);
             // append the input line
-            self.buffer.push_str(line);
+            col = self.wrap_at_eol(line, col);
         }
         // append hint
         if let Some(hint) = hint {
@@ -579,10 +804,17 @@ impl Renderer for ConsoleRenderer {
             } else if self.colors_enabled {
                 self.wrap_at_eol(hint, col);
             } else {
-                self.buffer.push_str(hint);
+                self.wrap_at_eol(hint, col);
             }
         }
         let info = self.get_console_screen_buffer_info()?;
+        if let Some(frame) = redraw::Frame::parse(&self.buffer, self.cols, self.vt_output)
+            .filter(|frame| frame.matches_end(end_pos.row, end_pos.col))
+        {
+            return self.refresh_frame(frame, previous, old_layout, new_layout, &info);
+        }
+        // Unknown cursor-changing controls retain the legacy interpretation;
+        // they cannot be safely replayed as independent physical rows.
         // just to avoid flickering
         let mut guard = self.set_cursor_visibility(false)?;
         // position at the start of the prompt, clear to end of previous input
@@ -601,6 +833,7 @@ impl Renderer for ConsoleRenderer {
     }
 
     fn write_and_flush(&mut self, buf: &str) -> Result<()> {
+        self.frame = None;
         write_to_console(self.conout, buf, &mut self.utf16)
     }
 
@@ -640,6 +873,7 @@ impl Renderer for ConsoleRenderer {
 
     /// Clear the screen. Used to handle ctrl+l
     fn clear_screen(&mut self) -> Result<()> {
+        self.frame = None;
         let info = self.get_console_screen_buffer_info()?;
         let coord = console::COORD { X: 0, Y: 0 };
         check(unsafe { console::SetConsoleCursorPosition(self.conout, coord) })?;
@@ -648,6 +882,7 @@ impl Renderer for ConsoleRenderer {
     }
 
     fn clear_rows(&mut self, layout: &Layout) -> Result<()> {
+        self.frame = None;
         let info = self.get_console_screen_buffer_info()?;
         self.clear_old_rows(&info, layout)
     }
@@ -655,6 +890,7 @@ impl Renderer for ConsoleRenderer {
     /// Try to get the number of columns in the current terminal,
     /// or assume 80 if it fails.
     fn update_size(&mut self) {
+        self.frame = None;
         let (cols, _) = get_win_size(self.conout);
         self.cols = cols;
     }
@@ -675,6 +911,7 @@ impl Renderer for ConsoleRenderer {
     }
 
     fn move_cursor_at_leftmost(&mut self, _: &mut ConsoleRawReader) -> Result<()> {
+        self.frame = None;
         let info = self.get_console_screen_buffer_info()?;
         let mut cursor = info.dwCursorPosition;
         if cursor.X == 0 {
@@ -958,7 +1195,12 @@ impl Term for Console {
     }
 
     fn create_writer(&self) -> ConsoleRenderer {
-        ConsoleRenderer::new(self.conout, self.colors_enabled(), self.bell_style)
+        ConsoleRenderer::new(
+            self.conout,
+            self.colors_enabled(),
+            self.ansi_colors_supported,
+            self.bell_style,
+        )
     }
 
     fn writeln(&self) -> Result<()> {

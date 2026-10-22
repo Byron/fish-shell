@@ -6,16 +6,131 @@ Usage: python tests/native_prompt_tmuxx.py FISH_EXE TMUXX_EXE [--starship EXE]
 A private tmuxx owner, copied Fish release, configuration, history, and Starship
 configuration keep this check independent of existing sessions and dotfiles.
 The ANSI fixture always runs; a real Starship fixture also runs when installed.
+Raw pipe-pane output checks every VT operation during typing and completion
+navigation, including temporary erasure that a final screen capture would miss.
 """
 
 import argparse
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
+
+
+def touched_rows(data, position, width, height):
+    """Track the narrow VT subset ConPTY emits while editing our ASCII fixture.
+
+    Inspect every operation, including an erase immediately followed by a write
+    in the same chunk. Unknown control sequences fail instead of hiding writes.
+    This is deliberately not a general terminal emulator.
+    """
+    text = data.decode("ascii")
+    column, row = position
+    saved = position
+    pending_wrap = False
+    touched = set()
+    offset = 0
+
+    def advance_row():
+        nonlocal row
+        row += 1
+        if row == height:
+            touched.update(range(height))
+            row -= 1
+
+    while offset < len(text):
+        char = text[offset]
+        if char == "\x1b":
+            if text.startswith(("\x1b7", "\x1b8"), offset):
+                if text[offset + 1] == "7":
+                    saved = (column, row)
+                else:
+                    column, row = saved
+                pending_wrap = False
+                offset += 2
+                continue
+            if text.startswith("\x1b]", offset):
+                end = re.search(r"\x07|\x1b\\", text[offset + 2:])
+                assert end, f"incomplete OSC in {data!r}"
+                offset += 2 + end.end()
+                continue
+            match = re.match(r"\x1b\[([0-?]*)([ -/]*)([@-~])", text[offset:])
+            assert match, f"unrecognized VT at {text[offset:]!r}"
+            parameters, intermediate, command = match.groups()
+            offset += match.end()
+            if command == "m" or (command in "hl" and parameters in ("?12", "?25", "?2026")):
+                continue
+            assert not intermediate and not parameters.startswith("?"), match[0]
+            values = [int(value or "0") for value in parameters.split(";")]
+            number = values[0] or 1
+            if command in "Hf":
+                row = number - 1
+                column = (values[1] or 1) - 1 if len(values) > 1 else 0
+            elif command == "G":
+                column = number - 1
+            elif command == "d":
+                row = number - 1
+            elif command in "ABCD":
+                if command == "A":
+                    row = max(0, row - number)
+                elif command == "B":
+                    row = min(height - 1, row + number)
+                elif command == "C":
+                    column = min(width - 1, column + number)
+                else:
+                    column = max(0, column - number)
+            elif command in "EF":
+                row = max(0, min(height - 1, row + (number if command == "E" else -number)))
+                column = 0
+            elif command in "KX@P":
+                touched.add(row)
+            elif command == "J":
+                mode = values[0]
+                assert mode in (0, 1, 2), match[0]
+                touched.update(range(row, height) if mode == 0 else
+                               range(row + 1) if mode == 1 else range(height))
+            elif command in "LM":
+                touched.update(range(row, height))
+            elif command in "ST":
+                touched.update(range(height))
+            elif command == "s":
+                saved = (column, row)
+            elif command == "u":
+                column, row = saved
+            else:
+                raise AssertionError(f"unrecognized VT operation {match[0]!r} in {data!r}")
+            pending_wrap = False
+            continue
+        offset += 1
+        if char == "\r":
+            column = 0
+            pending_wrap = False
+        elif char == "\n":
+            advance_row()
+            pending_wrap = False
+        elif char == "\b":
+            column = max(0, column - 1)
+            pending_wrap = False
+        elif char == "\t":
+            column = min(width - 1, (column // 8 + 1) * 8)
+            pending_wrap = False
+        elif char == "\x07":
+            pass
+        else:
+            assert " " <= char <= "~", f"unrecognized control {char!r}"
+            if pending_wrap:
+                advance_row()
+                column = 0
+            touched.add(row)
+            column += 1
+            pending_wrap = column == width
+            column = min(column, width - 1)
+    return touched, (column, row)
 
 
 def main():
@@ -37,6 +152,17 @@ def main():
         shutil.copy2(args.fish.resolve(), fish)
         config = root / "config" / "fish"
         config.mkdir(parents=True)
+        sink = root / "pipe_sink.py"
+        sink.write_text(
+            "import msvcrt, os, pathlib, sys\n"
+            "msvcrt.setmode(0, os.O_BINARY)\n"
+            "with open(sys.argv[1], 'wb', buffering=0) as output:\n"
+            "    pathlib.Path(sys.argv[2]).touch()\n"
+            "    while data := os.read(0, 65536):\n"
+            "        output.write(data)\n"
+            "pathlib.Path(sys.argv[3]).touch()\n",
+            encoding="utf-8",
+        )
         starship_config = root / "starship.toml"
         colors = ("bold #ff1122", "bold #22ff33", "bold #3344ff")
         starship_top = "".join(f"[{char}]({colors[index % len(colors)]})"
@@ -79,8 +205,8 @@ def main():
         def call(*arguments):
             return run(*arguments).stdout.decode("utf-8").replace("\r", "")
 
-        def capture(screen=False):
-            return call("capture-pane", "-p", "-t", pane,
+        def capture(screen=False, joined=False):
+            return call("capture-pane", "-p", *(["-J"] if joined else []), "-t", pane,
                         *([] if screen else ["-S", "-", "-E", "-"]))
 
         def cursor():
@@ -135,11 +261,74 @@ def main():
             missing = [line for line in sentinels if line not in text.splitlines()]
             assert not missing, f"editing erased preceding output {missing}:\n{text.rstrip()}"
 
+        def record_change(description, action, settled):
+            """Capture one settled edit from the actual ConPTY byte stream."""
+            token = uuid.uuid4().hex
+            log, ready, done = (root / (token + suffix) for suffix in (".vt", ".ready", ".done"))
+            arguments = [sys.executable, "-u", str(sink), str(log), str(ready), str(done)]
+            assert all(not any(char in argument for char in '\"%\r\n') for argument in arguments)
+            command = " ".join('"' + argument + '"' for argument in arguments)
+            call("pipe-pane", "-t", pane, command)
+            deadline = time.monotonic() + 10
+            while not ready.exists():
+                assert time.monotonic() < deadline, "raw output sink did not become ready"
+                time.sleep(0.01)
+            before = capture(screen=True).splitlines()
+            start = cursor()
+            dimensions = tuple(int(value) for value in call(
+                "display-message", "-pt", pane, "#{pane_width}|#{pane_height}"
+            ).strip().split("|"))
+            try:
+                action()
+                settled()
+                # Final screen delivery and pipe delivery are independent. Wait
+                # for a nonempty, flushed stream to settle before closing it.
+                previous = -1
+                quiet_since = time.monotonic()
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    size = log.stat().st_size
+                    if size != previous:
+                        previous = size
+                        quiet_since = time.monotonic()
+                    if size and time.monotonic() - quiet_since >= 0.1:
+                        break
+                    time.sleep(0.01)
+                else:
+                    raise AssertionError("no settled ConPTY output for " + description)
+                after = capture(screen=True).splitlines()
+                end = cursor()
+            finally:
+                call("pipe-pane", "-t", pane)
+            deadline = time.monotonic() + 10
+            while not done.exists():
+                assert time.monotonic() < deadline, "raw output sink did not finish"
+                time.sleep(0.01)
+            data = log.read_bytes()
+            return before, start, after, end, dimensions, data
+
+        def unchanged_rows(description, action, settled):
+            """Reject writes to rows whose visible text stays unchanged."""
+            before, start, after, end, dimensions, data = record_change(description, action, settled)
+            changed, actual_cursor = touched_rows(data, start, *dimensions)
+            assert actual_cursor == end, (description, actual_cursor, end, data)
+            protected = {row for row, (old, new) in enumerate(zip(before, after))
+                         if old.strip() and old == new}
+            repainted = protected & changed
+            assert not repainted, (
+                f"{description}: repainted unchanged rows "
+                f"{[(row, before[row]) for row in sorted(repainted)]}; "
+                f"raw prefix={data[:180]!r} ({len(data)} bytes)"
+            )
+            return len(data)
+
         def exercise(name, prompt_definition):
             nonlocal pane, sentinels
             sentinels = [f"PROMPT_preserved_{name}_{index}" for index in range(6)]
             (config / "config.fish").write_text(
                 "set -g fish_autosuggestion_enabled 0\n"
+                "function PROMPT_menu; echo PROMPT_menu_result:$argv; end\n"
+                "complete -c PROMPT_menu -f -a 'alpha beta gamma zebra'\n"
                 + "".join(f"echo {line}\n" for line in sentinels)
                 + prompt_definition + "\n",
                 encoding="utf-8",
@@ -155,12 +344,20 @@ def main():
             # when the first is already wrong, so a failure shows upward drift
             # and lost output rather than hiding them behind the column error.
             failures = []
+            byte_counts = {}
+
+            def check_redraw(description, action, settled):
+                try:
+                    byte_counts[description] = unchanged_rows(name + " " + description, action, settled)
+                except AssertionError as error:
+                    failures.append(str(error))
+
             typed = ""
             for character in ("", "e", "c", "h", "o"):
                 if character:
-                    literal(character)
                     typed += character
-                    expect_input(typed)
+                    check_redraw(f"typing {typed!r}", lambda: literal(character),
+                                 lambda: expect_input(typed))
                 for check in (
                     lambda: require_cursor((8 + len(typed), prompt_row),
                                            f"{name} input {typed!r}"),
@@ -170,7 +367,8 @@ def main():
                         check()
                     except AssertionError as error:
                         failures.append(str(error))
-            assert not failures, "\n\n".join(failures)
+            check_redraw("shortening input", lambda: keys("BSpace"), lambda: expect_input("ech"))
+            check_redraw("restoring input", lambda: literal("o"), lambda: expect_input("echo"))
 
             literal(" PROMPT_command_result")
             expect_input("echo PROMPT_command_result")
@@ -206,20 +404,87 @@ def main():
             sentinels.append("PROMPT_multiline_result")
             require_sentinels()
 
+            # Opening/filtering/cancelling changes menu rows; navigation changes
+            # only the old and new selection. The raw stream must leave every
+            # identical visible row, including prompt and input, untouched.
+            literal("PROMPT_menu ")
+            expect_input("PROMPT_menu ")
+
+            def menu(selected=None):
+                return wait_for(
+                    lambda text: "Search:" in text and "zebra" in text
+                    and (selected is None or "> " + selected in text.splitlines()),
+                    f"missing completion menu selection {selected!r}",
+                )
+
+            check_redraw("opening menu", lambda: keys("Tab"), menu)
+            check_redraw("selecting alpha", lambda: keys("Tab"), lambda: menu("alpha"))
+            check_redraw("selecting beta", lambda: keys("C-n"), lambda: menu("beta"))
+            check_redraw("selecting alpha again", lambda: keys("C-p"), lambda: menu("alpha"))
+            check_redraw("filtering menu", lambda: literal("gam"),
+                         lambda: wait_for(lambda text: "Search: gam_" in text and "> gamma" in text,
+                                          "missing filtered menu"))
+            assert not any(line.strip() in ("alpha", "beta", "zebra", "> alpha", "> beta", "> zebra")
+                           for line in capture(screen=True).splitlines()), "stale candidates after filtering"
+            check_redraw("cancelling menu", lambda: keys("C-g"),
+                         lambda: expect_input("PROMPT_menu "))
+            assert not any(line.startswith("Search:") or line.strip() == "> gamma"
+                           for line in capture(screen=True).splitlines()), "stale cancelled menu"
+            keys("C-c")
+            expect_input("")
+            assert not failures, "\n\n".join(failures)
+
             # A resize must not leave layout from the old prompt width behind.
             current_row = cursor()[1]
             literal("echo PROMPT_resize")
             expect_input("echo PROMPT_resize")
+            # -J retains significant trailing spaces. Clearing a tail must not
+            # turn it into content that reflows into blank rows when narrowed.
+            visible = "PROMPT> echo PROMPT_resize"
+            joined = capture(screen=True, joined=True).splitlines()
+            assert [line for line in joined if line.rstrip() == visible] == [visible], joined
             call("resize-window", "-t", name, "-x", "60", "-y", "40")
             literal("_kept")
             expect_input("echo PROMPT_resize_kept")
             require_cursor((8 + len("echo PROMPT_resize_kept"), current_row),
                            "input after resize")
             require_sentinels()
+            check_redraw("typing after resize", lambda: literal("_again"),
+                         lambda: expect_input("echo PROMPT_resize_kept_again"))
             keys("Enter")
-            expect_output("PROMPT_resize_kept")
+            expect_output("PROMPT_resize_kept_again")
             expect_input("")
-            send("exit")
+
+            # Explicit clearing may redraw everything, but must seed a new
+            # stable frame: the next edit should preserve the restored header.
+            literal("echo PROMPT_clear")
+            keys("C-l")
+            expect_input("echo PROMPT_clear")
+            assert capture(screen=True).splitlines().count("PROMPT_TOP") == 1
+            check_redraw("typing after Ctrl-L", lambda: literal("_kept"),
+                         lambda: expect_input("echo PROMPT_clear_kept"))
+            keys("C-c")
+            expect_input("")
+
+            # Opening a menu at the bottom must scroll. Once it fits, repeated
+            # selection changes should again touch only changed candidate rows.
+            send("for item in " + " ".join(str(index) for index in range(45))
+                 + "; echo PROMPT_scroll_$item; end")
+            expect_output("PROMPT_scroll_44")
+            expect_input("")
+            assert cursor()[1] == 39, ("prompt did not reach screen bottom", cursor())
+            literal("PROMPT_menu ")
+            keys("Tab")
+            menu()
+            assert cursor()[1] < 39, ("opening menu did not scroll input upward", cursor())
+            for key, selected in (("C-n", "alpha"), ("C-n", "beta"), ("C-p", "alpha")):
+                check_redraw("bottom menu " + selected, lambda: keys(key),
+                             lambda: menu(selected))
+            check_redraw("cancelling bottom menu", lambda: keys("C-g"),
+                         lambda: expect_input("PROMPT_menu "))
+            keys("C-c")
+            expect_input("")
+            send("exit 0")
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 state = call("display-message", "-pt", pane,
@@ -230,7 +495,11 @@ def main():
                 time.sleep(0.03)
             else:
                 raise AssertionError(f"native Fish did not exit:\n{capture()}")
-            print(f"PASS native prompt {name}: cursor, output, multiline editing, resize")
+            assert not failures, "\n\n".join(failures)
+            first_key = byte_counts["typing 'e'"]
+            print(f"PASS native prompt {name}: cursor/output, unchanged prompt/menu rows, "
+                  "multiline, resize, Ctrl-L, bottom scrolling; "
+                  f"typing {first_key} B, selection {byte_counts['selecting beta']} B")
 
         def exercise_margin():
             nonlocal pane, sentinels

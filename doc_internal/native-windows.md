@@ -237,6 +237,12 @@ original text and cursor. Selection stays in the menu until accepted. Menu
 rows are never command text or autosuggestions, and Unicode widths and terminal
 resizing use the same renderer as the editable input.
 
+The native renderer retains unchanged screen rows while editing. Typing updates
+the affected input rows; completion navigation updates rows whose selection or
+contents changed. Shortening input or dismissing a menu erases leftover text
+without first blanking the prompt and the rest of the menu. Resizing, scrolling,
+or prompt controls the renderer cannot safely compare can require a full redraw.
+
 Native Fish reads `fish/config.fish` under `XDG_CONFIG_HOME`, or under `%APPDATA%`
 when that variable is not set. Without either location it uses
 `~/.config/fish/config.fish`. `-N`/`--no-config` skips this file. The configuration
@@ -282,7 +288,9 @@ history reload and private mode, Fish configuration and `fish_prompt` status,
 function completion, and separate Rash history.
 
 The prompt check verifies physical cursor coordinates and preservation of
-preceding output during typing, multiline editing and resizing. It always tests
+preceding output during typing, multiline editing and resizing. It inspects raw
+ConPTY output to ensure editing and menu navigation preserve unchanged rows,
+including transient writes and erasures hidden by the final screen state. It tests
 ANSI-colored prompts and also runs native Starship when found on `PATH`; pass
 `--starship C:/path/to/starship.exe` to select an explicit installation.
 
