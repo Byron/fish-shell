@@ -7,9 +7,15 @@ use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const MAGIC: &[u8] = b"fish-native-worker\0\x01";
+const MAGIC: &[u8] = b"fish-native-worker\0\x02";
 const LIMIT: u64 = 64 * 1024 * 1024;
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Envelope {
+    state: Vec<u8>,
+    jobs: Vec<super::host::JobView>,
+}
 
 pub struct PayloadFile(PathBuf);
 
@@ -65,18 +71,20 @@ pub fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
         .map_err(|e| Error::new(format!("interpreter snapshot: {e}")))
 }
 
-pub fn prepare(
+pub(crate) fn prepare(
     language: &str,
     state: Vec<u8>,
+    jobs: Vec<super::host::JobView>,
     env: BTreeMap<Vec<u8>, Vec<u8>>,
     display: Vec<u8>,
 ) -> Result<(rash::host::Command, PayloadFile)> {
     if !matches!(language, "fish" | "rash") || state.len() as u64 > LIMIT {
         return Err(Error::new("invalid interpreter snapshot"));
     }
+    let bytes = encode(&Envelope { state, jobs })?;
     let (payload, mut file) = PayloadFile::create()?;
     file.write_all(MAGIC)?;
-    file.write_all(&state)?;
+    file.write_all(&bytes)?;
     file.flush()?;
     Ok((
         rash::host::Command {
@@ -94,7 +102,7 @@ pub fn prepare(
     ))
 }
 
-pub fn run(language: &str, path: &Path) -> Result<i32> {
+fn read_envelope(path: &Path) -> Result<Envelope> {
     let valid_name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -102,25 +110,69 @@ pub fn run(language: &str, path: &Path) -> Result<i32> {
     if !valid_name {
         return Err(Error::new("invalid interpreter snapshot filename"));
     }
+    let file = File::open(path)?;
+    if file.metadata()?.len() > LIMIT + MAGIC.len() as u64 {
+        return Err(Error::new("invalid interpreter snapshot header or size"));
+    }
     let mut bytes = Vec::new();
-    File::open(path)?
-        .take(LIMIT + MAGIC.len() as u64 + 1)
+    file.take(LIMIT + MAGIC.len() as u64 + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > LIMIT + MAGIC.len() as u64 || !bytes.starts_with(MAGIC) {
         return Err(Error::new("invalid interpreter snapshot header or size"));
     }
-    let mut host = super::host::NativeHost::new_worker()?;
-    let state = &bytes[MAGIC.len()..];
+    decode(&bytes[MAGIC.len()..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_envelope_preserves_opaque_state_and_rejects_old_or_truncated_payloads() {
+        let (_, payload) = prepare(
+            "rash",
+            vec![1, 2, 3],
+            Vec::new(),
+            BTreeMap::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let envelope = read_envelope(payload.path()).unwrap();
+        assert_eq!(envelope.state, [1, 2, 3]);
+        assert!(envelope.jobs.is_empty());
+        std::fs::write(payload.path(), b"fish-native-worker\0\x01old-format").unwrap();
+        assert!(read_envelope(payload.path()).is_err());
+        std::fs::write(payload.path(), MAGIC).unwrap();
+        assert!(read_envelope(payload.path()).is_err());
+        assert!(
+            payload.path().exists(),
+            "invalid input must not be unlinked by validation"
+        );
+    }
+
+    #[test]
+    fn worker_envelope_size_limit_covers_the_complete_payload() {
+        let (payload, mut file) = PayloadFile::create().unwrap();
+        file.write_all(MAGIC).unwrap();
+        file.set_len(LIMIT + MAGIC.len() as u64 + 1).unwrap();
+        drop(file);
+        assert!(read_envelope(payload.path()).is_err());
+    }
+}
+
+pub fn run(language: &str, path: &Path) -> Result<i32> {
+    let Envelope { state, jobs } = read_envelope(path)?;
+    let mut host = super::host::NativeHost::new_worker(jobs)?;
     match language {
         "rash" => {
             // Validate before unlinking. The parent guard tolerates the file's removal.
-            let snapshot = rash::Session::decode_worker(state)?;
+            let snapshot = rash::Session::decode_worker(&state)?;
             std::fs::remove_file(path)?;
             rash::Session::run_worker(snapshot, &mut host)
         }
         #[cfg(windows)]
         "fish" => {
-            let snapshot = decode(state)?;
+            let snapshot = decode(&state)?;
             std::fs::remove_file(path)?;
             super::fish::Session::run_worker(snapshot, &mut host)
         }

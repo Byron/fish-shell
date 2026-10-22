@@ -15,11 +15,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "jobs.rs"]
 mod jobs;
+pub(crate) use jobs::JobView;
 #[path = "process/mod.rs"]
 mod process;
 
 pub struct NativeHost {
     jobs: BTreeMap<u32, jobs::Job>,
+    /// Parent jobs can be inspected in workers, but never controlled or reaped.
+    inherited_jobs: Vec<JobView>,
     next_job: u32,
     notifications: VecDeque<String>,
     controls: process::Controls,
@@ -30,20 +33,28 @@ pub struct NativeHost {
 
 impl NativeHost {
     pub fn new() -> Result<Self> {
-        Self::with_worker(false)
+        Self::with_worker(false, Vec::new())
     }
 
-    pub(crate) fn new_worker() -> Result<Self> {
-        Self::with_worker(true)
+    pub(crate) fn new_worker(inherited_jobs: Vec<JobView>) -> Result<Self> {
+        Self::with_worker(true, inherited_jobs)
     }
 
-    fn with_worker(worker: bool) -> Result<Self> {
+    fn with_worker(worker: bool, inherited_jobs: Vec<JobView>) -> Result<Self> {
         // Fail early if the working directory cannot be represented by this host.
         rash::os::to_bytes(std::env::current_dir()?.as_os_str())?;
         process::install_controls(!worker)?;
+        let next_job = inherited_jobs
+            .iter()
+            .map(|job| job.id)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| Error::new("job IDs exhausted"))?;
         Ok(Self {
             jobs: BTreeMap::new(),
-            next_job: 1,
+            inherited_jobs,
+            next_job,
             notifications: VecDeque::new(),
             controls: process::controls(),
             interrupted: false,
@@ -298,7 +309,9 @@ impl Host for NativeHost {
         env: BTreeMap<Vec<u8>, Vec<u8>>,
         display: Vec<u8>,
     ) -> Result<Command> {
-        let (command, file) = super::worker::prepare(language, state, env, display)?;
+        // Capture before launch inserts this helper pipeline into the job table.
+        let jobs = self.worker_job_views()?;
+        let (command, file) = super::worker::prepare(language, state, jobs, env, display)?;
         self.keep_worker(file);
         Ok(command)
     }
@@ -400,7 +413,7 @@ impl Host for NativeHost {
     }
 
     fn jobs(&self) -> Vec<Vec<u8>> {
-        self.jobs
+        self.job_views()
             .values()
             .map(|job| job.description(false).into_bytes())
             .collect()

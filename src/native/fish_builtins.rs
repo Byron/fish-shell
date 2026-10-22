@@ -351,6 +351,9 @@ impl Session {
             builtin: false,
         };
         let result = host.run_pipeline(&[command], false, output.capture)?;
+        if host.cancelled() {
+            self.cancelled_pipeline = Some(result.pipeline.clone());
+        }
         self.status = result.status;
         output.bytes.extend(result.stdout);
         Ok(())
@@ -511,10 +514,7 @@ impl Session {
         let name = &name_string;
         let indexed = variable_indices::has_indexes(&expression);
         valid_name(name)?;
-        if matches!(
-            name.as_str(),
-            "status" | "pipestatus" | "last_pid" | "fish_pid" | "PWD"
-        ) {
+        if read_only_variable(name) {
             return Err(Error::new(format!("set: {name} is read-only")));
         }
         if erase && args.len() != 1 {

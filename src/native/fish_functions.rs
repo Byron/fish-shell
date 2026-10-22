@@ -90,12 +90,7 @@ impl Context for NativeContext {
     fn validate_variable(&mut self, name: &wstr, read_only_ok: bool) -> Result<()> {
         let name = name.to_string();
         valid_name(&name)?;
-        if !read_only_ok
-            && matches!(
-                name.as_str(),
-                "status" | "pipestatus" | "last_pid" | "fish_pid" | "PWD"
-            )
-        {
+        if !read_only_ok && read_only_variable(&name) {
             return Err(Error::new(format!(
                 "function: variable '{name}' is read-only"
             )));

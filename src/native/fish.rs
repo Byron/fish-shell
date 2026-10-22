@@ -28,6 +28,8 @@ mod history_builtin;
 mod path_builtin;
 #[path = "fish_random.rs"]
 mod random_builtin;
+#[path = "fish_runtime.rs"]
+mod runtime;
 #[path = "fish_source.rs"]
 mod source_builtin;
 #[path = "fish_test.rs"]
@@ -107,6 +109,9 @@ pub struct Session {
     random: Option<crate::random_core::Engine>,
     status: i32,
     pipeline: Vec<i32>,
+    /// Preserve actual process-stage results when the host reports cancellation.
+    #[serde(skip)]
+    cancelled_pipeline: Option<Vec<i32>>,
     last_pid: Option<u32>,
     fish_pid: u32,
     interactive: bool,
@@ -265,6 +270,7 @@ impl Session {
             random: None,
             status: 0,
             pipeline: vec![0],
+            cancelled_pipeline: None,
             last_pid: None,
             fish_pid: std::process::id(),
             interactive: false,
@@ -281,6 +287,7 @@ impl Session {
             worker_pipeline_input: false,
         };
         session.initialize_function_paths();
+        session.initialize_runtime();
         Ok(session)
     }
 
@@ -412,6 +419,11 @@ impl Session {
 
     pub fn prompt(&mut self, host: &mut impl Host) -> Result<Option<String>> {
         self.refresh_universals(host)?;
+        self.refresh_terminal_size(host)?;
+        self.lifecycle_event("fish_prompt", &[], host)?;
+        if self.exit_requested() {
+            return Ok(None);
+        }
         if !self.ensure_function("fish_prompt", host, &mut Output::default())? {
             return Ok(None);
         }
@@ -447,6 +459,7 @@ impl Session {
     }
 
     pub fn eval(&mut self, source: &str, host: &mut impl Host) -> Result<i32> {
+        self.cancelled_pipeline = None;
         let mut output = Output {
             pipeline_input: std::mem::take(&mut self.worker_pipeline_input),
             ..Default::default()
@@ -454,8 +467,13 @@ impl Session {
         let result = self.eval_source(source, host, &mut output);
         if let Err(error) = &result {
             self.status = error.status;
+            self.pipeline = vec![error.status];
         } else if host.cancelled() {
             self.status = 130;
+            // A process can handle Ctrl-C and return a code other than 130.
+            // Keep the host's actual stage results; interpreter-only work has
+            // no process result and gets a single cancellation status instead.
+            self.pipeline = self.cancelled_pipeline.take().unwrap_or_else(|| vec![130]);
         }
         result.map(|_| self.status)
     }
@@ -471,7 +489,10 @@ impl Session {
             Err(error) => {
                 self.status = 2;
                 self.pipeline = vec![2];
-                Err(Error::new(error.message))
+                Err(Error {
+                    message: error.message,
+                    status: 2,
+                })
             }
         }
     }
@@ -670,6 +691,9 @@ impl Session {
             stages.push(stage);
         }
         let result = host.run_pipeline(&stages, background, output.capture)?;
+        if host.cancelled() {
+            self.cancelled_pipeline = Some(result.pipeline.clone());
+        }
         if let Some(file) = result_file.filter(|_| !host.cancelled()) {
             let bytes = std::fs::read(file.path())?;
             if !bytes.is_empty() {
@@ -738,10 +762,7 @@ impl Session {
                     .split_once('=')
                     .ok_or_else(|| Error::new("invalid variable assignment"))?;
                 valid_name(name)?;
-                if matches!(
-                    name,
-                    "status" | "pipestatus" | "last_pid" | "fish_pid" | "PWD"
-                ) {
+                if read_only_variable(name) {
                     return Err(Error::new(format!("{name} is read-only")));
                 }
                 let values = self.expand(value, host)?;
@@ -844,6 +865,9 @@ impl Session {
             ast::BlockStatementHeader::For(header) => {
                 let name = self.expand_one(&text(source, &header.var_name), host)?;
                 valid_name(&name)?;
+                if read_only_variable(&name) {
+                    return Err(Error::new(format!("for: {name} is read-only")));
+                }
                 let mut values = Vec::new();
                 for arg in &header.args {
                     match self.expand(&text(source, arg), host) {
@@ -1042,6 +1066,13 @@ fn valid_name(name: &str) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+pub(super) fn read_only_variable(name: &str) -> bool {
+    matches!(
+        name,
+        "status" | "pipestatus" | "last_pid" | "fish_pid" | "PWD" | "version" | "FISH_VERSION"
+    )
 }
 
 #[path = "fish_blocks.rs"]

@@ -192,6 +192,10 @@ def main():
         env.pop("TMUX", None)
         env.pop("TMUXX_ENDPOINT", None)
         env.pop("NO_COLOR", None)
+        for name in ("fish_function_path", "fish_complete_path", "fish_user_paths",
+                     "__fish_added_user_paths", "version", "FISH_VERSION", "CMD_DURATION",
+                     "COLUMNS", "LINES", "STARSHIP_SESSION_KEY"):
+            env.pop(name, None)
         base = [tmuxx, "-L", label]
 
         def run(*arguments, check=True):
@@ -562,11 +566,10 @@ def main():
             fixtures = [("ansi", "function fish_prompt; "
                          f"printf '\\n{ansi_top}\\e[0m\\n\\e[1;32mPROMPT> \\e[0m'; end")]
             if starship:
-                # Exercise Starship's own SGR output without reading user config
-                # or requiring unrelated Starship initialization functionality.
+                # Use standard initialization, including its function options,
+                # random session key, runtime variables and jobs/count pipeline.
                 executable = starship.as_posix().replace("'", "\\'")
-                fixtures.append(("starship", "function fish_prompt; "
-                                 f"'{executable}' prompt --status=$status; end"))
+                fixtures.append(("starship", f"'{executable}' init fish --print-full-init | source"))
             else:
                 print("SKIP actual Starship: executable not found; ANSI fixture still runs")
             failures = []

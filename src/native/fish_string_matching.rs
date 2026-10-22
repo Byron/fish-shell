@@ -120,10 +120,7 @@ fn run_impl(
                 ));
             }
             let mut matcher = StringMatcher::new(parameters[0], opts, |name| {
-                matches!(
-                    name.to_string().as_str(),
-                    "status" | "pipestatus" | "last_pid" | "fish_pid" | "PWD"
-                )
+                crate::native::fish::read_only_variable(&name.to_string())
             })
             .map_err(|error| regex_error(command, error))?;
             for_each_input(

@@ -449,17 +449,22 @@ fn page_size(rows: usize) -> usize {
 }
 
 fn terminal_size() -> (usize, usize) {
+    console_size().unwrap_or((80, 24))
+}
+
+/// Current native console dimensions, shared by the pager and prompt variables.
+pub(super) fn console_size() -> Option<(usize, usize)> {
     use windows_sys::Win32::System::Console::{
         CONSOLE_SCREEN_BUFFER_INFO, GetConsoleScreenBufferInfo, GetStdHandle, STD_OUTPUT_HANDLE,
     };
     let mut info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { std::mem::zeroed() };
     if unsafe { GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &mut info) } != 0 {
-        (
-            info.dwSize.X.max(1) as usize,
+        Some((
+            (info.srWindow.Right - info.srWindow.Left + 1).max(1) as usize,
             (info.srWindow.Bottom - info.srWindow.Top + 1).max(1) as usize,
-        )
+        ))
     } else {
-        (80, 24)
+        None
     }
 }
 

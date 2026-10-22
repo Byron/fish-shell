@@ -1234,6 +1234,8 @@ fn option_choices(command: &str) -> Option<Choices> {
             ("--no-pager", "Disable pager"),
         ],
         "jobs" => &[
+            ("-g", "Print pipeline group identifiers"),
+            ("--group", "Print pipeline group identifiers"),
             ("-p", "Print process IDs"),
             ("-l", "Include process IDs"),
             ("-r", "Show running jobs"),

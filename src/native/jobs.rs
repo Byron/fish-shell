@@ -5,11 +5,49 @@ use super::*;
 use std::process::Child;
 use std::time::{Duration, Instant};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum State {
     Running,
     Stopped(i32),
     Done(i32),
+}
+
+/// A fork-time query snapshot. No process handles or ownership cross this boundary.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct JobView {
+    pub(super) id: u32,
+    display: String,
+    /// Original successfully spawned PIDs, including members which have exited.
+    pids: Vec<u32>,
+    state: State,
+}
+
+impl JobView {
+    fn is_live(&self) -> bool {
+        !matches!(self.state, State::Done(_))
+    }
+
+    pub(super) fn description(&self, long: bool) -> String {
+        let state = match self.state {
+            State::Running => "Running".to_owned(),
+            State::Stopped(_) => "Stopped".to_owned(),
+            State::Done(0) => "Done".to_owned(),
+            State::Done(code) => format!("Exit {code}"),
+        };
+        let pids = if long {
+            format!(
+                "{} ",
+                self.pids
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        } else {
+            String::new()
+        };
+        format!("[{}] {pids}{state}\t{}", self.id, self.display)
+    }
 }
 
 struct Process {
@@ -68,26 +106,22 @@ impl Job {
     }
 
     pub(super) fn description(&self, long: bool) -> String {
-        let state = match self.state() {
-            State::Running => "Running".to_owned(),
-            State::Stopped(_) => "Stopped".to_owned(),
-            State::Done(0) => "Done".to_owned(),
-            State::Done(code) => format!("Exit {code}"),
-        };
-        let pids = if long {
-            format!(
-                "{} ",
-                self.processes
-                    .iter()
-                    .filter_map(|process| process.child.as_ref())
-                    .map(|child| child.id().to_string())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            )
-        } else {
-            String::new()
-        };
-        format!("[{}] {pids}{state}\t{}", self.id, self.display)
+        self.view().description(long)
+    }
+
+    fn view(&self) -> JobView {
+        JobView {
+            id: self.id,
+            display: self.display.clone(),
+            // Child handles remain in stage order until the whole job is removed.
+            // The first PID therefore stays a stable group identifier after exit.
+            pids: self
+                .processes
+                .iter()
+                .filter_map(|process| process.child.as_ref().map(Child::id))
+                .collect(),
+            state: self.state(),
+        }
     }
 
     fn poll(&mut self) -> Result<()> {
@@ -175,6 +209,24 @@ impl Drop for Job {
 }
 
 impl NativeHost {
+    pub(super) fn job_views(&self) -> BTreeMap<u32, JobView> {
+        self.inherited_jobs
+            .iter()
+            .cloned()
+            .chain(self.jobs.values().map(Job::view))
+            .map(|view| (view.id, view))
+            .collect()
+    }
+
+    pub(super) fn worker_job_views(&mut self) -> Result<Vec<JobView>> {
+        self.refresh_jobs()?;
+        Ok(self
+            .job_views()
+            .into_values()
+            .filter(JobView::is_live)
+            .collect())
+    }
+
     pub(crate) fn keep_worker(&mut self, file: super::super::worker::PayloadFile) {
         self.pending_workers.push(file);
     }
@@ -521,12 +573,20 @@ impl NativeHost {
             b"jobs" => {
                 let mut long = false;
                 let mut pid_only = false;
+                let mut group_only = false;
                 let mut running = false;
                 let mut stopped = false;
                 while let Some(option) = args.first().filter(|arg| arg.starts_with(b"-")) {
                     match option.as_slice() {
                         b"-l" => long = true,
-                        b"-p" => pid_only = true,
+                        b"-p" => {
+                            pid_only = true;
+                            group_only = false;
+                        }
+                        b"-g" | b"--group" => {
+                            group_only = true;
+                            pid_only = false;
+                        }
                         b"-r" => running = true,
                         b"-s" => stopped = true,
                         b"--" => {
@@ -537,22 +597,34 @@ impl NativeHost {
                     }
                     args = &args[1..];
                 }
+                let views = self.job_views();
                 let ids = if args.is_empty() {
-                    self.jobs.keys().copied().collect::<Vec<_>>()
+                    views.keys().copied().collect::<Vec<_>>()
                 } else {
                     args.iter()
-                        .map(|arg| self.resolve_job(arg))
+                        .map(|arg| resolve_job_view(&views, arg))
                         .collect::<Result<Vec<_>>>()?
                 };
+                if group_only {
+                    status = 1;
+                }
                 for id in ids {
-                    let job = &self.jobs[&id];
-                    if running && !matches!(job.state(), State::Running)
-                        || stopped && !matches!(job.state(), State::Stopped(_))
+                    let job = &views[&id];
+                    if running && !matches!(job.state, State::Running)
+                        || stopped && !matches!(job.state, State::Stopped(_))
+                        || group_only && !job.is_live()
                     {
                         continue;
                     }
-                    let line = if pid_only {
-                        job.last_pid()
+                    let line = if group_only {
+                        let Some(pid) = job.pids.first() else {
+                            continue;
+                        };
+                        status = 0;
+                        format!("{pid}\n")
+                    } else if pid_only {
+                        job.pids
+                            .last()
                             .map(|pid| format!("{pid}\n"))
                             .unwrap_or_default()
                     } else {
@@ -734,6 +806,36 @@ impl NativeHost {
     }
 }
 
+/// Query resolution includes inherited snapshots; control resolution above does not.
+fn resolve_job_view(views: &BTreeMap<u32, JobView>, name: &[u8]) -> Result<u32> {
+    let mut active = views.values().rev().filter(|view| view.is_live());
+    match name {
+        b"%" | b"%%" | b"%+" => active
+            .next()
+            .map(|view| view.id)
+            .ok_or_else(|| Error::new("no current job")),
+        b"%-" => active
+            .nth(1)
+            .map(|view| view.id)
+            .ok_or_else(|| Error::new("no previous job")),
+        _ => {
+            if let Some(number) = name.strip_prefix(b"%") {
+                let id = parse_number(number)?;
+                return views
+                    .contains_key(&id)
+                    .then_some(id)
+                    .ok_or_else(|| Error::new("no such job"));
+            }
+            let pid = parse_number(name)?;
+            views
+                .values()
+                .find(|view| view.pids.contains(&pid))
+                .map(|view| view.id)
+                .ok_or_else(|| Error::new("no such job or process"))
+        }
+    }
+}
+
 fn parse_number(bytes: &[u8]) -> Result<u32> {
     std::str::from_utf8(bytes)
         .ok()
@@ -756,3 +858,7 @@ fn parse_signal(bytes: &[u8]) -> Result<process::Signal> {
         )),
     }
 }
+
+#[cfg(test)]
+#[path = "jobs_snapshot_tests.rs"]
+mod snapshot_tests;

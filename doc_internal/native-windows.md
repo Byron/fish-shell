@@ -170,9 +170,12 @@ for that change. Handlers preserve the triggering command's status, execute in
 registration order, and retain their registrations in pipeline workers and printed
 function definitions. Handler output bypasses redirections on the triggering
 command; a handler in a pipeline worker uses that worker's inherited stdout.
-Signal, process/job exit and automatic reader lifecycle
-events remain unsupported. An untaken branch can guard a POSIX-only declaration
-with `status is-native-windows`.
+The native reader emits `fish_prompt`, `fish_preexec`, `fish_postexec`, and
+`fish_cancel`. Pre/post handlers receive the accepted command line, including
+internal newlines, once per submission. `fish_exit` runs once at shell shutdown;
+script and `-c` execution supply the final status as its argument. Signal and
+individual process/job exit subscriptions remain unsupported. An untaken branch
+can guard a POSIX-only declaration with `status is-native-windows`.
 
 `set --universal` (`-U`) stores variables across native sessions, including export
 and path-variable flags. Local and global variables shadow universal values;
@@ -469,6 +472,22 @@ do not contribute to cursor columns or wrapped rows, so editing preserves output
 above the prompt. A user `fish_prompt.fish` can also be autoloaded; without a user
 prompt it displays `fish>`.
 
+Native sessions provide read-only `version` and `FISH_VERSION` variables.
+`CMD_DURATION` starts at zero and records the elapsed milliseconds of the last
+submitted interactive command. `COLUMNS` and `LINES` are refreshed from the
+console before a fresh prompt. `fish -i -c COMMAND` and `fish -i SCRIPT` run once
+with interactive configuration guards enabled, without opening the line editor.
+
+Starship's generated Fish prompt can be initialized with:
+
+```fish
+starship init fish --print-full-init | source
+```
+
+The default `starship init fish` wrapper uses `psub`, which still needs unsupported
+process-substitution helpers. Right and transient prompts, scripted key bindings,
+and regex/function abbreviations remain separate reader work.
+
 Function lookup, `functions -q`, and `type` load requested `.fish` files from
 `$fish_function_path`, which defaults to the selected configuration's `functions`
 directory. Discovery, cached file identities, embedded sources and function-name
@@ -680,7 +699,13 @@ Shell stages run in isolated interpreter processes. A normally completed Fish
 foreground pipeline imports the final stage's variables/functions/cwd, so
 `echo value | read saved` works. Earlier stages and background jobs remain
 isolated, and state from a stopped-then-resumed pipeline is not imported.
-Job builtins inside a pipeline worker see only that worker's own jobs.
+Pipeline workers also receive a snapshot of their parent's active jobs for
+queries; nested workers preserve that snapshot. These inherited entries cannot
+be controlled with `fg`, `bg`, `kill`, `wait`, or `disown` from the worker.
+`jobs -g`/`--group` prints one stable identifier per running or stopped pipeline,
+so `jobs -g | count` works in prompt helpers. On Windows the identifier is the
+pipeline's first process ID, retained after that process exits; it is not a
+Windows Job Object handle. Inherited snapshots do not update while a worker runs.
 
 The isolated `tests/native_job_control_tmuxx.py` check exercises both languages
 through a private tmuxx owner: external and interpreter Ctrl-C/status recovery,

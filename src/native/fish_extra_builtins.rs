@@ -179,6 +179,9 @@ impl Session {
             builtin: true,
         };
         let result = host.run_pipeline(&[command], false, output.capture)?;
+        if host.cancelled() {
+            self.cancelled_pipeline = Some(result.pipeline.clone());
+        }
         self.status = result.status;
         output.bytes.extend(result.stdout);
         Ok(())

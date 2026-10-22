@@ -140,7 +140,7 @@ impl Session {
         )
     }
 
-    fn fire_event(
+    pub(super) fn fire_event(
         &mut self,
         description: &Description,
         arguments: &[String],
