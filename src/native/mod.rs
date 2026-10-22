@@ -2,6 +2,8 @@
 
 #[cfg(windows)]
 pub mod fish;
+#[cfg(windows)]
+mod history;
 pub mod host;
 pub mod interactive;
 #[cfg(windows)]
@@ -315,6 +317,7 @@ impl Engine {
             Language::Fish => {
                 let mut session = fish::Session::new()?;
                 session.set_mode(interactive, options.login);
+                session.private_history = options.private;
                 session.input_language = options.input_language.unwrap_or_default();
                 session.set_args(
                     options
@@ -491,14 +494,16 @@ fn execute(options: Options) -> Result<i32> {
     let mut status = engine.status();
     if !engine.exited() {
         if interactive {
-            let mut editor =
-                match interactive::Editor::new(options.language.name(), !options.private) {
-                    Ok(editor) => editor,
-                    Err(error) => {
-                        report(options.language, error);
-                        interactive::Editor::with_history_path(options.language.name(), None)?
-                    }
-                };
+            let mut editor = match interactive::Editor::new(
+                options.language.name(),
+                options.language == Language::Rash && !options.private,
+            ) {
+                Ok(editor) => editor,
+                Err(error) => {
+                    report(options.language, error);
+                    interactive::Editor::with_history_path(options.language.name(), None)?
+                }
+            };
             let mut source = Vec::new();
             #[cfg(windows)]
             let mut terminal =
@@ -511,12 +516,18 @@ fn execute(options: Options) -> Result<i32> {
                 let (commands, path, variables) = engine.completion_context();
                 editor.set_completion_context(commands, path, variables);
                 #[cfg(windows)]
-                if let Engine::Fish(session) = &engine {
+                if let Engine::Fish(session) = &mut engine {
                     editor.set_completion_environment(session.completion_environment());
                     editor.set_input_language(session.input_language);
                     editor.set_registrations(session.completions.clone());
                     editor.set_variables(&session.editor_variables());
                     editor.set_input_config(session.abbreviations.clone(), &session.bindings);
+                    match session.history_snapshot() {
+                        Ok(entries) => editor.replace_history(entries)?,
+                        Err(error) => {
+                            report(options.language, error);
+                        }
+                    }
                 }
                 let prompt = if source.is_empty() {
                     engine.prompt(options.language, &mut host)
@@ -562,16 +573,32 @@ fn execute(options: Options) -> Result<i32> {
                 if engine.incomplete(&source) {
                     continue;
                 }
-                if let Err(error) =
-                    editor.add_history(std::str::from_utf8(&source).unwrap_or_default())
-                {
-                    report(options.language, error);
+                if options.language == Language::Rash {
+                    if let Err(error) =
+                        editor.add_history(std::str::from_utf8(&source).unwrap_or_default())
+                    {
+                        report(options.language, error);
+                    }
+                }
+                #[cfg(windows)]
+                if let Engine::Fish(session) = &mut engine {
+                    if let Err(error) =
+                        session.begin_history(std::str::from_utf8(&source).unwrap_or_default())
+                    {
+                        report(options.language, error);
+                    }
                 }
                 #[cfg(windows)]
                 terminal.command_start(std::str::from_utf8(&source).unwrap_or_default())?;
                 status = engine
                     .evaluate_input(&source, &mut host)
                     .unwrap_or_else(|error| report(options.language, error));
+                #[cfg(windows)]
+                if let Engine::Fish(session) = &mut engine {
+                    if let Err(error) = session.finish_history() {
+                        report(options.language, error);
+                    }
+                }
                 #[cfg(windows)]
                 terminal.command_end(status)?;
                 source.clear();

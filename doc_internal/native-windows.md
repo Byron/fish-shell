@@ -316,13 +316,52 @@ is omitted for redirected output and `TERM=dumb`.
 Rash displays `rash>` and uses its separate Bash startup files with
 `--bash-startup`; `-N` also skips those files.
 
-History is stored under `fish/native_fish_history` or `fish/native_rash_history`
-in `XDG_DATA_HOME`, falling back to `%LOCALAPPDATA%`, then `~/.local/share`.
-The editor appends completed submissions with file locking so concurrent sessions
-preserve each other's entries. Leading-space commands and consecutive duplicates
-are omitted. These files use a separate format and do not overwrite or import
-the existing POSIX Fish histories. `--private`/`-P` prevents loading and saving
-history while retaining recall within the current session.
+Native Fish supports the `history` builtin, including search, append, exact
+deletion, save, merge, clear and clear-session:
+
+```fish
+history
+history search --prefix git --max 20
+history search --show-time='%Y-%m-%d %H:%M:%S ' --contains build
+history delete --exact --case-sensitive 'echo obsolete'
+history merge
+```
+
+Search is case-insensitive by default; `--case-sensitive` changes that.
+`--prefix` and `--contains` accept Fish wildcard patterns, while `--exact`
+matches complete commands. Results are newest first, deduplicated per search
+term. `--max` limits results before `--reverse` reverses them; `--null` separates
+multiline records with NUL. `--color=auto|always|never` controls syntax colors.
+The current command stays pending until it finishes, so a search does not show
+itself, and clearing history removes that pending command too. Changes appear
+in recall and autosuggestions at the next prompt. The native builtin provides
+exact case-sensitive deletion; the POSIX wrapper's interactive selection and
+pager are not loaded.
+
+Fish history is stored under `fish/native_fish_history.yaml` in `XDG_DATA_HOME`,
+falling back to `%LOCALAPPDATA%`, then `~/.local/share`. `fish_history` chooses a
+different name (`native_NAME_history.yaml`); an empty value keeps it in memory.
+The record format and search algorithms are shared with POSIX Fish, with native
+file locking and atomic replacement to preserve concurrent sessions' changes.
+`history merge` imports other sessions' saved entries. `clear-session` removes
+only the current session's contributions since startup or the last merge,
+including explicit appends.
+Leading-space submissions and consecutive duplicates are omitted. The store
+retains up to 10,000 records; POSIX history files remain separate.
+
+On first use, an existing `native_fish_history` editor file is imported into the
+new YAML file. The old file is left intact so older running shells can continue
+using it. Later additions made by those old shells are not imported again.
+Imported entries have no recorded timestamps and display the Unix epoch when
+using `--show-time`. Rash continues to use `fish/native_rash_history` in its
+existing format. `--private`/`-P` prevents loading and saving history while
+retaining recall and history commands within the current session.
+
+Run the isolated builtin/storage checks with:
+
+```powershell
+python tests/native_history_tmuxx.py .\target\x86_64-pc-windows-msvc\release\fish.exe C:/Apps/Rustty/tmuxx.exe
+```
 
 This is a separate native editor, not the full POSIX Fish reader.
 Dynamic completion scripts and full Fish keymap compatibility remain separate work. The

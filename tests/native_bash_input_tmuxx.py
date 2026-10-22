@@ -281,17 +281,35 @@ def main():
             keys("C-c")
             expect_input("")
             exit_shell()
-            history = root / "data" / "fish" / "native_fish_history"
+            history = root / "data" / "fish" / "native_fish_history.yaml"
             contents = history.read_text(encoding="utf-8")
+            assert contents.startswith("- cmd: "), contents
             assert history_source in contents, contents
             assert "builtin set -- DIA_history" not in contents
+            assert not (root / "data" / "fish" / "native_fish_history").exists()
             assert not (root / "data" / "fish" / "native_rash_history").exists()
+            saved = subprocess.run(
+                [str(fish), "-N", "-c", "history search --null"], env=env, cwd=root,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=10, check=True, creationflags=subprocess.CREATE_NO_WINDOW,
+            ).stdout
+            assert saved.endswith(b"\0"), saved
+            saved_commands = saved[:-1].decode("utf-8").split("\0")
+            assert history_source in saved_commands, saved_commands
+            assert ("for DIA_item in edited two; do\n"
+                    "    printf 'DIA_multi:%s\\n' \"$DIA_item\"\n    done") in saved_commands, saved_commands
+            assert ("DIA_pasted='a b'\nprintf 'DIA_paste:%s\\n' \"$DIA_pasted\"") in saved_commands, saved_commands
 
             # Configuration runs in Fish after the initial CLI mode selection.
             (config / "config.fish").write_text(
                 configuration + "fish_input_mode bash\n", encoding="utf-8"
             )
             pane = start("configured", "--interactive-language", "fish")
+            expect_input("")
+            literal("DIA_history=")
+            keys("Up")
+            expect_input(history_source)
+            keys("C-c")
             expect_input("")
             send("DIA_configured=bash; echo DIA_startup:$DIA_configured:$DIA_config")
             expect("DIA_startup:bash:Fish config Ω")

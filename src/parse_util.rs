@@ -565,31 +565,7 @@ pub fn get_offset(s: &wstr, line: i32, line_offset: isize) -> Option<usize> {
 /// Return the given string, unescaping wildcard characters but not performing any other character
 /// transformation.
 pub fn unescape_wildcards(s: &wstr) -> WString {
-    let mut result = WString::with_capacity(s.len());
-    let unesc_qmark = !feature_test(FeatureFlag::QuestionMarkNoGlob);
-
-    let mut i = 0;
-    while i < s.len() {
-        let c = s.char_at(i);
-        if c == '*' {
-            result.push(ANY_STRING);
-        } else if c == '?' && unesc_qmark {
-            result.push(ANY_CHAR);
-        } else if (c == '\\' && s.char_at(i + 1) == '*')
-            || (unesc_qmark && c == '\\' && s.char_at(i + 1) == '?')
-        {
-            result.push(s.char_at(i + 1));
-            i += 1;
-        } else if c == '\\' && s.char_at(i + 1) == '\\' {
-            // Not a wildcard, but ensure the next iteration doesn't see this escaped backslash.
-            result.push_utfstr(L!("\\\\"));
-            i += 1;
-        } else {
-            result.push(c);
-        }
-        i += 1;
-    }
-    result
+    fish_wcstringutil::unescape_wildcards(s, !feature_test(FeatureFlag::QuestionMarkNoGlob))
 }
 
 /// Return if the given string contains wildcard characters.

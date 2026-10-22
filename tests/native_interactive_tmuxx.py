@@ -196,6 +196,8 @@ def main():
             keys(restored, "C-d")
             wait_dead(restored)
 
+            history_path = root / "data/fish/native_fish_history.yaml"
+            history_before_private = history_path.read_bytes()
             private = new_session("private", "-i", "--private")
             expect_prompt(private)
             keys(private, "Up", "Enter")
@@ -204,9 +206,23 @@ def main():
             assert "EDITOR_history_last" not in capture(private).splitlines()
             keys(private, "C-d")
             wait_dead(private)
-            history = (root / "data/fish/native_fish_history").read_text(encoding="utf-8")
+            assert history_path.read_bytes() == history_before_private, "private mode rewrote Fish history"
+            history = history_path.read_text(encoding="utf-8")
+            assert history.startswith("- cmd: "), history
             assert "EDITOR_history_last" in history
             assert "EDITOR_private_not_saved" not in history
+            assert not (root / "data/fish/native_fish_history").exists()
+            saved = subprocess.run(
+                [fish, "-N", "-c", "history search --null"], env=env, cwd=root,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=10, check=True, creationflags=subprocess.CREATE_NO_WINDOW,
+            ).stdout
+            assert saved.endswith(b"\0"), saved
+            saved_commands = saved[:-1].decode("utf-8").split("\0")
+            assert "echo EDITOR_history_last" in saved_commands
+            assert "echo EDITOR_🦀é" in saved_commands
+            assert ("for item in EDITOR_multi_one EDITOR_multi_two\n    echo $item\n    end") in saved_commands, saved_commands
+            assert "echo EDITOR_private_not_saved" not in saved_commands
 
             skipped = new_session("no_config", "-N", "-c",
                                   "if set -q editor_config; echo CONFIG_BAD; else; echo CONFIG_SKIPPED; end")
@@ -263,6 +279,7 @@ def main():
             keys(rash_restored, "C-d")
             wait_dead(rash_restored)
             rash_history = (root / "data/fish/native_rash_history").read_text(encoding="utf-8")
+            assert rash_history.startswith("#V2\n"), rash_history
             assert "EDITOR_rash_history" in rash_history
             assert "EDITOR_history_last" not in rash_history
             assert "EDITOR_rash_history" not in history

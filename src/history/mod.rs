@@ -1,6 +1,6 @@
 mod file;
 #[allow(clippy::module_inception)]
 mod history;
-mod yaml_backend;
+pub(crate) use crate::history_core::yaml as yaml_backend;
 
 pub use history::*;

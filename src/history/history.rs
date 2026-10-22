@@ -30,17 +30,16 @@ use crate::{
     localization::wgettext_fmt,
     operation_context::{EXPANSION_LIMIT_BACKGROUND, OperationContext},
     parse_constants::{ParseTreeFlags, StatementDecoration},
-    parse_util::{detect_parse_errors, unescape_wildcards},
+    parse_util::detect_parse_errors,
     parser::Parser,
     path::{ValidatedPath, path_get_data, path_is_valid},
     prelude::*,
     threads::{ThreadPool, assert_is_background_thread},
-    wildcard::wildcard_match,
     wutil::{FileId, file_id_for_file, wrealpath, wstat},
 };
 use fish_common::{UnescapeStringStyle, unescape_string};
-use fish_wcstringutil::{subsequence_in_string, trim_in_place};
-use fish_widestring::{ANY_STRING, bytes2wcstring, cstr2wcstring, subslice_position};
+use fish_wcstringutil::trim_in_place;
+use fish_widestring::{bytes2wcstring, cstr2wcstring, subslice_position};
 use lru::LruCache;
 use rand::RngExt as _;
 use std::os::unix::ffi::OsStringExt;
@@ -57,34 +56,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum SearchType {
-    /// Search for commands exactly matching the given string.
-    Exact,
-    /// Search for commands containing the given string.
-    Contains,
-    /// Search for commands starting with the given string.
-    Prefix,
-    /// Search for commands where any line matches the given string.
-    LinePrefix,
-    /// Search for commands containing the given glob pattern.
-    ContainsGlob,
-    /// Search for commands starting with the given glob pattern.
-    PrefixGlob,
-    /// Search for commands containing the given string as a subsequence
-    ContainsSubsequence,
-}
-
-/// Ways that a history item may be written to disk (or omitted).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum PersistenceMode {
-    /// The history item is written to disk normally
-    Disk,
-    /// The history item is stored in-memory only, not written to disk
-    Memory,
-    /// The history item is stored in-memory and deleted when a new item is added
-    Ephemeral,
-}
+pub use crate::history_core::{HistoryItem, PathList, PersistenceMode, SearchType, Timestamps};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SearchDirection {
@@ -92,7 +64,7 @@ pub enum SearchDirection {
     Backward,
 }
 
-use super::file::time_to_seconds;
+use crate::history_core::time_to_seconds;
 
 /// This is the history session ID we use by default if the user has not set env var fish_history.
 const DFLT_FISH_HISTORY_SESSION_ID: &wstr = L!("fish");
@@ -151,145 +123,6 @@ impl LruCacheExt for LruCache<WString, HistoryItem> {
         } else {
             self.put(key.to_owned(), item);
         }
-    }
-}
-
-pub type PathList = Vec<WString>;
-
-#[derive(Clone, Debug)]
-pub struct HistoryItem {
-    /// The actual contents of the entry.
-    contents: WString,
-    /// Creation times of this history entry.
-    timestamps: Timestamps,
-    /// Paths that we require to be valid for this item to be autosuggested.
-    required_paths: Vec<WString>,
-    /// Whether to write this item to disk.
-    persist_mode: PersistenceMode,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(super) struct Timestamps {
-    /// Time of most recent re-creation.
-    pub(super) last_added: SystemTime,
-    /// Original creation time for the entry.
-    pub(super) first_added: SystemTime,
-}
-
-impl Timestamps {
-    fn update_last_added(&mut self, new: Timestamps) {
-        self.last_added = self.last_added.max(new.last_added);
-    }
-}
-
-impl HistoryItem {
-    /// Construct from a text, timestamp, and optional identifier.
-    /// If `persist_mode` is not [`PersistenceMode::Disk`], then do not write this item to disk.
-    pub(super) fn new(
-        s: WString,
-        timestamps: Timestamps,
-        persist_mode: PersistenceMode, /*=Disk*/
-    ) -> Self {
-        Self {
-            contents: s,
-            timestamps,
-            required_paths: vec![],
-            persist_mode,
-        }
-    }
-
-    /// Returns the text as a string.
-    pub fn str(&self) -> &wstr {
-        &self.contents
-    }
-
-    /// Returns whether the text is empty.
-    pub fn is_empty(&self) -> bool {
-        self.contents.is_empty()
-    }
-
-    /// Returns whether our contents matches a search term.
-    pub fn matches_search(&self, term: &wstr, typ: SearchType, case_sensitive: bool) -> bool {
-        // Note that 'term' has already been lowercased when constructing the
-        // search object if we're doing a case insensitive search.
-        let content_to_match = if case_sensitive {
-            Cow::Borrowed(&self.contents)
-        } else {
-            Cow::Owned(self.contents.to_lowercase())
-        };
-
-        match typ {
-            SearchType::Exact => term == *content_to_match,
-            SearchType::Contains => {
-                subslice_position(content_to_match.as_slice(), term.as_slice()).is_some()
-            }
-            SearchType::Prefix => content_to_match.as_slice().starts_with(term.as_slice()),
-            SearchType::LinePrefix => content_to_match
-                .as_char_slice()
-                .split(|&c| c == '\n')
-                .any(|line| line.starts_with(term.as_char_slice())),
-            SearchType::ContainsGlob => {
-                let mut pat = unescape_wildcards(term);
-                if !pat.starts_with(ANY_STRING) {
-                    pat.insert(0, ANY_STRING);
-                }
-                if !pat.ends_with(ANY_STRING) {
-                    pat.push(ANY_STRING);
-                }
-                wildcard_match(content_to_match.as_ref(), &pat, false)
-            }
-            SearchType::PrefixGlob => {
-                let mut pat = unescape_wildcards(term);
-                if !pat.ends_with(ANY_STRING) {
-                    pat.push(ANY_STRING);
-                }
-                wildcard_match(content_to_match.as_ref(), &pat, false)
-            }
-            SearchType::ContainsSubsequence => subsequence_in_string(term, &content_to_match),
-        }
-    }
-
-    /// Returns the timestamp of when this history item was last added.
-    pub fn last_added_timestamp(&self) -> SystemTime {
-        self.timestamps.last_added
-    }
-
-    /// Returns the timestamp for creating this history item.
-    pub fn first_added_timestamp(&self) -> SystemTime {
-        self.timestamps.first_added
-    }
-
-    /// Returns whether this item should be persisted (written to disk).
-    pub fn should_write_to_disk(&self) -> bool {
-        self.persist_mode == PersistenceMode::Disk
-    }
-
-    /// Get the list of arguments which referred to files.
-    /// This is used for autosuggestion hinting.
-    pub fn get_required_paths(&self) -> &[WString] {
-        &self.required_paths
-    }
-
-    /// Set the list of arguments which referred to files.
-    /// This is used for autosuggestion hinting.
-    pub fn set_required_paths(&mut self, paths: Vec<WString>) {
-        self.required_paths = paths;
-    }
-
-    /// We can merge two items if they are the same command. We use the more recent timestamp, more
-    /// recent identifier, and the longer list of required paths.
-    fn merge(&mut self, item: HistoryItem) -> Result<(), HistoryItem> {
-        // We can only merge items if they agree on their text and persistence mode.
-        if self.contents != item.contents || self.persist_mode != item.persist_mode {
-            return Err(item);
-        }
-
-        // Ok, merge this item.
-        self.timestamps.update_last_added(item.timestamps);
-        if self.required_paths.len() < item.required_paths.len() {
-            self.required_paths = item.required_paths;
-        }
-        Ok(())
     }
 }
 

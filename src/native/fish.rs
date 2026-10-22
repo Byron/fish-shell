@@ -14,6 +14,8 @@ use std::collections::BTreeMap;
 mod complete;
 #[path = "fish_expand.rs"]
 mod expand;
+#[path = "fish_history.rs"]
+mod history_builtin;
 pub(crate) use expand::unescape_literal;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -49,6 +51,10 @@ pub struct Session {
     pub(super) abbreviations: super::interactive_abbreviations::Abbreviations,
     #[serde(default)]
     pub(super) bindings: super::interactive_bindings::Bindings,
+    #[serde(default)]
+    history: Option<super::history::History>,
+    #[serde(default)]
+    pub(super) private_history: bool,
     status: i32,
     pipeline: Vec<i32>,
     last_pid: Option<u32>,
@@ -189,6 +195,8 @@ impl Session {
             completions: Vec::new(),
             abbreviations: Default::default(),
             bindings: Default::default(),
+            history: None,
+            private_history: false,
             status: 0,
             pipeline: vec![0],
             last_pid: None,

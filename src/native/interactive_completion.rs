@@ -59,6 +59,7 @@ impl CompletionEngine {
                 "cd",
                 "pwd",
                 "count",
+                "history",
                 "test",
                 "true",
                 "false",
@@ -376,6 +377,9 @@ impl CompletionEngine {
         // build/check/run/test family and should not appear as filenames.
         if command == "cargo" && options && positional > 0 {
             add_choices(matches, CARGO_BUILD_OPTIONS);
+        }
+        if command == "history" {
+            files = false;
         }
         for spec in self
             .registrations
@@ -955,6 +959,15 @@ fn add_choices(matches: &mut Candidates, choices: Choices) {
 
 fn subcommand_choices(command: &str) -> Option<Choices> {
     Some(match command {
+        "history" => &[
+            ("search", "Search command history"),
+            ("append", "Add commands to history"),
+            ("delete", "Remove exact commands"),
+            ("save", "Save command history"),
+            ("merge", "Read other sessions' history"),
+            ("clear", "Clear command history"),
+            ("clear-session", "Clear this session's history"),
+        ],
         "cargo" => &[
             ("build", "Compile the package"),
             ("check", "Check without building"),
@@ -1031,6 +1044,18 @@ fn subcommand_choices(command: &str) -> Option<Choices> {
 
 fn option_choices(command: &str) -> Option<Choices> {
     Some(match command {
+        "history" => &[
+            ("--prefix", "Match commands starting with a pattern"),
+            ("--contains", "Match a pattern anywhere"),
+            ("--exact", "Match complete commands"),
+            ("--case-sensitive", "Match letter case"),
+            ("--max", "Limit the number of results"),
+            ("--reverse", "Reverse selected results"),
+            ("--null", "Terminate records with NUL"),
+            ("--show-time", "Show command timestamps"),
+            ("--color", "Control syntax colors"),
+            ("--help", "Show help"),
+        ],
         "set" => &[
             ("--local", "Set a local variable"),
             ("--global", "Set a global variable"),

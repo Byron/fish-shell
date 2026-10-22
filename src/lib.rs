@@ -6,6 +6,8 @@
 
 pub const BUILD_VERSION: &str = env!("FISH_BUILD_VERSION");
 
+pub mod history_core;
+
 #[macro_use]
 #[cfg(not(windows))]
 pub mod common;

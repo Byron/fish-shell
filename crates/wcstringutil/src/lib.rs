@@ -1,7 +1,122 @@
 //! Helper functions for working with wcstring.
 
 use fish_fallback::{fish_wcwidth, lowercase, lowercase_rev, wcscasecmp, wcscasecmp_fuzzy};
-use fish_widestring::{ELLIPSIS_CHAR, prelude::*};
+use fish_widestring::{ANY_CHAR, ANY_STRING, ANY_STRING_RECURSIVE, ELLIPSIS_CHAR, prelude::*};
+
+/// Test whether the given wildcard matches the string. Does not perform any I/O.
+///
+/// \param str The string to test
+/// \param pattern The wildcard to test against
+/// \param leading_dots_fail_to_match if set, strings with leading dots are assumed to be hidden
+/// files and are not matched (default was false)
+///
+/// Return true if the wildcard matched
+#[must_use]
+pub fn wildcard_match(
+    name: impl AsRef<wstr>,
+    pattern: impl AsRef<wstr>,
+    leading_dots_fail_to_match: bool,
+) -> bool {
+    let name = name.as_ref();
+    let pattern = pattern.as_ref();
+    // Hackish fix for issue #270. Prevent wildcards from matching . or .., but we must still allow
+    // literal matches.
+    if leading_dots_fail_to_match && (name == "." || name == "..") {
+        // The string is '.' or '..' so the only possible match is an exact match.
+        return name == pattern;
+    }
+
+    // Near Linear implementation as proposed here https://research.swtch.com/glob.
+    let mut px = 0;
+    let mut nx = 0;
+    let mut next_px = 0;
+    let mut next_nx = 0;
+
+    while px < pattern.len() || nx < name.len() {
+        if px < pattern.len() {
+            match pattern.char_at(px) {
+                ANY_STRING | ANY_STRING_RECURSIVE => {
+                    // Ignore hidden file
+                    if leading_dots_fail_to_match && nx == 0 && name.char_at(0) == '.' {
+                        return false;
+                    }
+
+                    // Common case of * at the end. In that case we can early out since we know it will
+                    // match.
+                    if px == pattern.len() - 1 {
+                        return true;
+                    }
+
+                    // Try to match at nx.
+                    // If that doesn't work out, restart at nx+1 next.
+                    next_px = px;
+                    next_nx = nx + 1;
+                    px += 1;
+                    continue;
+                }
+                ANY_CHAR => {
+                    if nx < name.len() {
+                        if nx == 0 && name.char_at(nx) == '.' {
+                            return false;
+                        }
+
+                        px += 1;
+                        nx += 1;
+                        continue;
+                    }
+                }
+                c => {
+                    // ordinary char
+                    if nx < name.len() && name.char_at(nx) == c {
+                        px += 1;
+                        nx += 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Mismatch. Maybe restart.
+        if 0 < next_nx && next_nx <= name.len() {
+            px = next_px;
+            nx = next_nx;
+            continue;
+        }
+        return false;
+    }
+    // Matched all of pattern to all of name. Success.
+    true
+}
+
+/// Return the given string, unescaping wildcard characters but not performing any other character
+/// transformation.
+/// `unesc_qmark` selects whether an unescaped question mark is a wildcard.
+pub fn unescape_wildcards(s: &wstr, unesc_qmark: bool) -> WString {
+    let mut result = WString::with_capacity(s.len());
+
+    let mut i = 0;
+    while i < s.len() {
+        let c = s.char_at(i);
+        if c == '*' {
+            result.push(ANY_STRING);
+        } else if c == '?' && unesc_qmark {
+            result.push(ANY_CHAR);
+        } else if (c == '\\' && s.char_at(i + 1) == '*')
+            || (unesc_qmark && c == '\\' && s.char_at(i + 1) == '?')
+        {
+            result.push(s.char_at(i + 1));
+            i += 1;
+        } else if c == '\\' && s.char_at(i + 1) == '\\' {
+            // Not a wildcard, but ensure the next iteration doesn't see this escaped backslash.
+            result.push_utfstr(L!("\\\\"));
+            i += 1;
+        } else {
+            result.push(c);
+        }
+        i += 1;
+    }
+    result
+}
 
 /// Return the number of newlines in a string.
 pub fn count_newlines(s: &wstr) -> usize {
@@ -548,9 +663,32 @@ mod tests {
     use super::{
         CaseSensitivity, ContainType, LineIterator, count_newlines, ifind, join_strings,
         split_string_tok, string_fuzzy_match_string, string_prefixes_string_case_insensitive,
-        string_suffixes_string_case_insensitive, trim, trim_in_place,
+        string_suffixes_string_case_insensitive, trim, trim_in_place, unescape_wildcards,
+        wildcard_match,
     };
     use fish_widestring::prelude::*;
+
+    #[test]
+    fn shared_wildcard_matching_preserves_escaping_and_question_mark_mode() {
+        for (text, pattern, question_wild, expected) in [
+            (L!("Alpha\nBeta"), L!("A*a"), false, true),
+            (L!("literal*star"), L!("literal\\*star"), false, true),
+            (L!("literalXstar"), L!("literal\\*star"), false, false),
+            (L!("ab"), L!("a?"), false, false),
+            (L!("ab"), L!("a?"), true, true),
+            (L!("a?"), L!("a\\?"), true, true),
+            (L!("\\\\tail"), L!("\\\\*"), false, true),
+        ] {
+            assert_eq!(
+                wildcard_match(text, unescape_wildcards(pattern, question_wild), false),
+                expected,
+                "text={text:?}, pattern={pattern:?}"
+            );
+        }
+        let star = unescape_wildcards(L!("*"), false);
+        assert!(wildcard_match(L!(".hidden"), &star, false));
+        assert!(!wildcard_match(L!(".hidden"), &star, true));
+    }
 
     #[test]
     fn test_string_prefixes_string_case_insensitive() {

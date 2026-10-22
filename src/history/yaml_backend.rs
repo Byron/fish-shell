@@ -1,7 +1,7 @@
 //! Implementation of the YAML-like history file format.
 
-use super::{HistoryItem, PersistenceMode};
-use crate::{flog::flog, history::Timestamps};
+use super::{HistoryItem, PersistenceMode, Timestamps};
+use crate::flog::flog;
 use fish_widestring::{bytes2wcstring, subslice_position};
 use std::{
     borrow::Cow,
@@ -138,8 +138,8 @@ fn time_from_seconds(offset: i64) -> SystemTime {
     }
 }
 
-pub(super) const LAST_ADDED_TIMESTAMP_KEY: &str = "when";
-pub(super) const FIRST_ADDED_TIMESTAMP_KEY: &str = "added_when";
+pub(crate) const LAST_ADDED_TIMESTAMP_KEY: &str = "when";
+pub(crate) const FIRST_ADDED_TIMESTAMP_KEY: &str = "added_when";
 
 /// Decode an item via the fish 2.0 format.
 pub fn decode_item_fish_2_0(mut data: &[u8]) -> Option<HistoryItem> {

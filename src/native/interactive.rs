@@ -121,6 +121,13 @@ impl Editor {
             Ok(())
         }
     }
+
+    /// Native Fish owns history in its serializable evaluator session. The
+    /// editor receives a fresh view so builtin edits also affect recall/hints.
+    #[cfg(windows)]
+    pub(super) fn replace_history(&mut self, entries: Vec<String>) -> Result<()> {
+        self.inner.replace_history(entries)
+    }
 }
 
 /// Existing configuration is read by the caller; discovering it never creates
@@ -467,6 +474,20 @@ mod windows {
                 }
                 self.editor.append_history(path).map_err(readline_error)?;
             }
+            Ok(())
+        }
+
+        pub(super) fn replace_history(&mut self, entries: Vec<String>) -> Result<()> {
+            self.editor.history_mut().clear().map_err(readline_error)?;
+            // Explicit `history append` may include leading spaces, even though
+            // submitted commands with a leading space are not recorded.
+            self.editor.set_history_ignore_space(false);
+            for entry in entries {
+                self.editor
+                    .add_history_entry(entry)
+                    .map_err(readline_error)?;
+            }
+            self.editor.set_history_ignore_space(true);
             Ok(())
         }
     }

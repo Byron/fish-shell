@@ -162,9 +162,12 @@ xterm-color.workspace = true
 portable-atomic.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+fd-lock = "4.0"
 gix = { workspace = true, optional = true }
+jiff = "0.2.38"
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
+fish-wcstringutil.workspace = true
 fish-widestring.workspace = true
 fish-fallback.workspace = true
 fish-feature-flags.workspace = true
