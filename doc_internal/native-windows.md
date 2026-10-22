@@ -92,7 +92,9 @@ Native filesystem globbing expands unquoted `*` and recursive
 literal. Unmatched globs are empty lists for `set`, `count`, and `for`, and produce
 status 124 for ordinary command arguments. Command substitutions retain Fish's
 newline splitting and variable side effects; quoted substitutions preserve
-internal newlines. `switch` expands case arguments and selects the first matching
+internal newlines. Variables created with `set -l` inside a substitution disappear
+when it finishes; updates to existing caller variables and globals persist.
+`switch` expands case arguments and selects the first matching
 case; quote wildcard patterns, for example `case '*.txt'`. Blocks support standard
 redirections, with a shared file position across their commands: `while read line;
 echo $line; end < input.txt > output.txt` reads and writes each line in order.

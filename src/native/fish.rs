@@ -990,14 +990,11 @@ impl Session {
                     ..Default::default()
                 };
                 let input_mode_blocked = std::mem::replace(&mut self.input_mode_blocked, true);
-                let completion_scope = self.completion_depth > 0;
-                if completion_scope {
-                    self.scopes.push(BTreeMap::new());
-                }
+                // Substitutions share ordinary variable updates with the caller,
+                // but explicit local bindings belong only to this substitution.
+                self.scopes.push(BTreeMap::new());
                 let result = self.eval_source(source, host, &mut output);
-                if completion_scope {
-                    self.scopes.pop();
-                }
+                self.scopes.pop();
                 self.input_mode_blocked = input_mode_blocked;
                 if self.completion_depth == 0 || self.flow != Flow::Exit {
                     self.flow = saved_flow;
@@ -1336,6 +1333,23 @@ mod tests {
             ),
             "1\n1\n0\n1\nhello hello\nnew before new\n"
         );
+    }
+
+    #[test]
+    fn failed_command_substitutions_unwind_their_local_scope() {
+        let mut session = Session::new().unwrap();
+        let mut capture = Capture::default();
+        assert!(
+            session
+                .eval(
+                    "echo (set -l failed_substitution_local hidden; math 'invalid(')",
+                    &mut capture
+                )
+                .is_err()
+        );
+        assert!(session.variable("failed_substitution_local").is_none());
+        session.eval("echo recovered", &mut capture).unwrap();
+        assert_eq!(String::from_utf8(capture.0).unwrap(), "recovered\n");
     }
 
     #[test]

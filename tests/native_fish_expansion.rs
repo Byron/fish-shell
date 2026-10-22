@@ -33,6 +33,52 @@ fn substitutions_braces_and_slices_keep_fish_semantics() {
 }
 
 #[test]
+fn substitutions_isolate_local_bindings_while_preserving_ordinary_updates() {
+    // Expected behavior checked against the POSIX evaluator in an isolated home.
+    let source = r#"
+        set -l caller original
+        set -g changed before
+        echo (set -l temporary hidden; set caller updated; set -g changed after; echo inside)
+        set -q temporary
+        echo temporary=$status caller=$caller changed=$changed
+        echo (set -l nested outer; echo (set -l nested inner; echo $nested); echo $nested)
+        set -q nested
+        echo outside=$status
+        echo (set -l sibling hidden; echo first)(set -q sibling; echo $status)
+        echo (set fresh value; echo marker)
+        echo fresh=$fresh
+        function scope_probe
+            echo (set own value; echo marker)
+            echo own=$own
+        end
+        scope_probe
+        set -q own
+        echo outside=$status
+        echo (set -l pipeline_local hidden; echo ignored | echo value)
+        set -q pipeline_local
+        echo pipeline=$status
+    "#;
+    let output = Command::new(env!("CARGO_BIN_EXE_fish"))
+        .args(["-N", "-c", source])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "inside\ntemporary=1 caller=updated changed=after\ninner outer\noutside=1\nfirst1\nmarker\nfresh=value\nmarker\nown=value\noutside=1\nvalue\npipeline=1\n"
+    );
+}
+
+#[test]
 fn globs_use_native_paths_and_preserve_quoted_stars() {
     let root = std::env::temp_dir().join(format!("fish-native-glob-{}", std::process::id()));
     std::fs::create_dir_all(root.join("nested")).unwrap();
