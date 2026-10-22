@@ -15,7 +15,6 @@ use crate::{
     parser_keywords::parser_keywords_is_reserved,
     prelude::*,
     proc::Pid,
-    wutil::dir_iter::DirIter,
 };
 use fish_common::{FilenameRef, assert_sync, escape};
 use fish_widestring::wcs2bytes;
@@ -138,39 +137,6 @@ pub fn load(name: &wstr, parser: &mut Parser) -> bool {
             .mark_autoload_finished(name);
     }
     path_to_autoload.is_some()
-}
-
-/// Insert a list of all dynamically loaded functions into the specified list.
-fn autoload_names(names: &mut HashSet<WString>, vars: &dyn Environment, get_hidden: bool) {
-    let Some(path_var) = vars.get_unless_empty(L!("fish_function_path")) else {
-        return;
-    };
-    let path_list = path_var.as_list();
-    for ndir_str in path_list {
-        let Ok(mut dir) = DirIter::new(ndir_str) else {
-            continue;
-        };
-        while let Some(entry) = dir.next() {
-            let Ok(entry) = entry else {
-                continue;
-            };
-            let func: &WString = &entry.name;
-            if !get_hidden && func.char_at(0) == '_' {
-                continue;
-            }
-            let suffix: Option<usize> = func.chars().rposition(|x| x == '.');
-            // We need a ".fish" *suffix*, it can't be the entire name.
-            if let Some(suffix) = suffix {
-                if suffix > 0 && entry.name.slice_from(suffix) == ".fish" {
-                    // Also ignore directories.
-                    if !entry.is_dir() {
-                        let name = entry.name.slice_to(suffix).to_owned();
-                        names.insert(name);
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// Add a function. This may mutate `props` to set is_autoload.
@@ -322,28 +288,21 @@ pub fn copy(name: &wstr, new_name: WString, parser: &Parser) -> bool {
 ///
 /// \param get_hidden whether to include hidden functions, i.e. ones starting with an underscore.
 pub fn get_names(get_hidden: bool, vars: &dyn Environment) -> Vec<WString> {
-    let mut names = HashSet::<WString>::new();
+    let path_var = vars.get_unless_empty(L!("fish_function_path"));
+    let mut names = crate::autoload::function_names(
+        path_var
+            .as_ref()
+            .map(|var| var.as_list())
+            .unwrap_or_default(),
+        get_hidden,
+    );
     let funcset = FUNCTION_SET.lock().unwrap();
-    autoload_names(&mut names, vars, get_hidden);
     for name in funcset.funcs.keys() {
         // Maybe skip hidden.
         if !get_hidden && (name.is_empty() || name.char_at(0) == '_') {
             continue;
         }
         names.insert(name.clone());
-    }
-
-    for name in crate::autoload::Asset::iter() {
-        let Some(bname) = name.strip_prefix("functions/") else {
-            continue;
-        };
-        if !get_hidden && (bname.is_empty() || bname.starts_with('_')) {
-            continue;
-        }
-        let Some(fname) = bname.strip_suffix(".fish") else {
-            continue;
-        };
-        names.insert(fname.into());
     }
 
     names.into_iter().collect()

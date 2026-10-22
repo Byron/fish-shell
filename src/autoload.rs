@@ -1,5 +1,6 @@
 //! The classes responsible for autoloading functions and completions.
 
+#[cfg(not(windows))]
 use crate::{
     env::Environment,
     flogf,
@@ -7,6 +8,7 @@ use crate::{
     parser::Parser,
     wutil::{FileId, file_id_for_path},
 };
+#[cfg(not(windows))]
 use fish_common::{ScopeGuard, escape};
 use fish_widestring::{L, WExt as _, WString, wcs2bytes, wstr};
 use lru::LruCache;
@@ -15,6 +17,36 @@ use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::time;
 
+#[cfg(windows)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct FileId {
+    path: std::path::PathBuf,
+    size: u64,
+    modified: Option<time::SystemTime>,
+    created: Option<time::SystemTime>,
+}
+
+#[cfg(windows)]
+fn file_id_for_path(path: &wstr) -> std::io::Result<FileId> {
+    let path = std::path::PathBuf::from(fish_widestring::wcs2osstring(path));
+    let metadata = std::fs::metadata(&path)?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "autoload source is not a file",
+        ));
+    }
+    Ok(FileId {
+        // Unlike the POSIX identity, portable metadata has no device/inode pair.
+        // Include the path so changing search directories selects the new file
+        // even when its size and timestamps match the previously loaded file.
+        path: std::fs::canonicalize(&path).unwrap_or(path),
+        size: metadata.len(),
+        modified: metadata.modified().ok(),
+        created: metadata.created().ok(),
+    })
+}
+
 /// autoload_t is a class that knows how to autoload .fish files from a list of directories. This
 /// is used by autoloading functions and completions. It maintains a file cache, which is
 /// responsible for potentially cached accesses of files, and then a list of files that have
@@ -22,7 +54,7 @@ use std::time;
 /// be returned a path which it is expected to source.
 /// autoload_t does not have any internal locks; it is the responsibility of the caller to lock
 /// it.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Autoload {
     /// The environment variable whose paths we observe.
     env_var_name: &'static wstr,
@@ -37,6 +69,16 @@ pub struct Autoload {
     cache: AutoloadFileCache,
 }
 
+/// Serializable native worker bookkeeping, excluding transient lookup caches.
+/// Original file identities travel with evaluated definitions so deserialization
+/// cannot accidentally label a changed file as already loaded.
+#[cfg(windows)]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct AutoloadState {
+    loaded_files: Vec<(String, Option<FileId>)>,
+    in_progress: Vec<String>,
+}
+
 #[derive(RustEmbed)]
 #[folder = "share"]
 #[exclude = "__fish_build_paths.fish.in"]
@@ -46,19 +88,71 @@ pub fn has_asset(cmd: &str) -> bool {
     Asset::get(cmd).is_some()
 }
 
+/// List disk and embedded functions without executing their definitions.
+/// POSIX directory entries retain Fish's lossless representation of filename bytes.
+pub fn function_names(paths: &[WString], get_hidden: bool) -> HashSet<WString> {
+    fn insert(names: &mut HashSet<WString>, file: &wstr, get_hidden: bool) {
+        if file.len() <= ".fish".len()
+            || !file.ends_with(L!(".fish"))
+            || (!get_hidden && file.as_char_slice()[0] == '_')
+        {
+            return;
+        }
+        names.insert(file[..file.len() - ".fish".len()].to_owned());
+    }
+
+    let mut names = HashSet::new();
+    for path in paths {
+        #[cfg(not(windows))]
+        {
+            let Ok(mut directory) = crate::wutil::dir_iter::DirIter::new(path) else {
+                continue;
+            };
+            while let Some(entry) = directory.next() {
+                if let Ok(entry) = entry {
+                    if !entry.is_dir() {
+                        insert(&mut names, &entry.name, get_hidden);
+                    }
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            let Ok(directory) = std::fs::read_dir(fish_widestring::wcs2osstring(path)) else {
+                continue;
+            };
+            for entry in directory.flatten() {
+                if !entry.path().is_dir() {
+                    insert(
+                        &mut names,
+                        &fish_widestring::osstr2wcstring(&entry.file_name()),
+                        get_hidden,
+                    );
+                }
+            }
+        }
+    }
+    for asset in Asset::iter() {
+        if let Some(file) = asset.strip_prefix("functions/") {
+            insert(&mut names, &WString::from(file), get_hidden);
+        }
+    }
+    names
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum AssetDir {
     Functions,
     Completions,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum AutoloadPath {
     OnDisk(WString),
     Embedded(String),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum AutoloadResult {
     Path(AutoloadPath),
     Loaded,
@@ -66,7 +160,7 @@ pub enum AutoloadResult {
     None,
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 impl AutoloadResult {
     fn is_none(&self) -> bool {
         matches!(self, AutoloadResult::None)
@@ -85,6 +179,37 @@ impl Autoload {
         }
     }
 
+    /// Capture evaluated file identities and recursion guards for a native worker.
+    #[cfg(windows)]
+    pub fn snapshot(&self) -> AutoloadState {
+        AutoloadState {
+            loaded_files: self
+                .autoloaded_files
+                .iter()
+                .map(|(name, identity)| (name.to_string(), identity.clone()))
+                .collect(),
+            in_progress: self
+                .current_autoloading
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        }
+    }
+
+    /// Restore bookkeeping without probing files or evaluating any source.
+    /// The next lookup compares its freshly discovered file to the identity
+    /// that was actually evaluated before the snapshot was taken.
+    #[cfg(windows)]
+    pub fn restore(&mut self, state: AutoloadState) {
+        self.autoloaded_files = state
+            .loaded_files
+            .into_iter()
+            .map(|(name, identity)| (WString::from(name), identity))
+            .collect();
+        self.current_autoloading = state.in_progress.into_iter().map(WString::from).collect();
+        self.cache = AutoloadFileCache::default();
+    }
+
     /// Given a command, get a path to autoload.
     /// For example, if the environment variable is 'fish_function_path' and the command is 'foo',
     /// this will look for a file 'foo.fish' in one of the directories given by fish_function_path.
@@ -93,8 +218,9 @@ impl Autoload {
     /// After returning a path, the command is marked in-progress until the caller calls
     /// mark_autoload_finished() with the same command. Note this does not actually execute any
     /// code; it is the caller's responsibility to load the file.
+    #[cfg(not(windows))]
     pub fn resolve_command(&mut self, cmd: &wstr, env: &dyn Environment) -> AutoloadResult {
-        let result = self.resolve_command_impl(
+        let result = self.resolve_command_from_paths(
             cmd,
             env.get(self.env_var_name)
                 .as_ref()
@@ -122,6 +248,7 @@ impl Autoload {
     /// Helper to actually perform an autoload.
     /// This is a static function because it executes fish script, and so must be called without
     /// holding any particular locks.
+    #[cfg(not(windows))]
     pub fn perform_autoload(path: &AutoloadPath, parser: &mut Parser) {
         // We do the useful part of what exec_subshell does ourselves
         // - we source the file.
@@ -168,6 +295,23 @@ impl Autoload {
             .is_some()
     }
 
+    /// Check the current search paths without executing or marking a file loaded.
+    /// Callers whose environment is not the POSIX EnvStack can supply its snapshot.
+    pub fn can_autoload_from_paths(&mut self, cmd: &wstr, paths: &[WString]) -> bool {
+        self.can_autoload_from_paths_with_embedded(cmd, paths, true)
+    }
+
+    /// Like `can_autoload_from_paths`, optionally excluding bundled script shims.
+    pub fn can_autoload_from_paths_with_embedded(
+        &mut self,
+        cmd: &wstr,
+        paths: &[WString],
+        include_embedded: bool,
+    ) -> bool {
+        self.set_paths(paths, include_embedded);
+        self.can_autoload(cmd)
+    }
+
     /// Return whether autoloading has been attempted for a command.
     pub fn has_attempted_autoload(&self, cmd: &wstr) -> bool {
         self.cache.is_cached(cmd)
@@ -195,23 +339,39 @@ impl Autoload {
     /// Invalidate any underlying cache.
     #[cfg(test)]
     fn invalidate_cache(&mut self) {
-        self.cache = AutoloadFileCache::with_dirs(self.cache.dirs().to_owned());
+        self.cache =
+            AutoloadFileCache::with_dirs(self.cache.dirs().to_owned(), self.cache.include_embedded);
     }
 
-    /// Like resolve_autoload(), but accepts the paths directly.
-    /// This is exposed for testing.
-    fn resolve_command_impl(&mut self, cmd: &wstr, paths: &[WString]) -> AutoloadResult {
+    fn set_paths(&mut self, paths: &[WString], include_embedded: bool) {
+        // A path change invalidates lookups, but loaded file identities still let
+        // us recognize an unchanged source reached through the new path list.
+        if paths != self.cache.dirs() || include_embedded != self.cache.include_embedded {
+            self.cache = AutoloadFileCache::with_dirs(paths.to_owned(), include_embedded);
+        }
+    }
+
+    /// Resolve a function or completion using an ordered environment snapshot.
+    /// A returned path is marked in progress until `mark_autoload_finished()`;
+    /// the caller owns source evaluation and preservation of shell status.
+    pub fn resolve_command_from_paths(&mut self, cmd: &wstr, paths: &[WString]) -> AutoloadResult {
+        self.resolve_command_from_paths_with_embedded(cmd, paths, true)
+    }
+
+    /// Resolve with an explicit policy for bundled scripts. Native builtins can
+    /// permit user files to override them without loading a POSIX script shim.
+    pub fn resolve_command_from_paths_with_embedded(
+        &mut self,
+        cmd: &wstr,
+        paths: &[WString],
+        include_embedded: bool,
+    ) -> AutoloadResult {
         // Are we currently in the process of autoloading this?
         if self.current_autoloading.contains(cmd) {
             return AutoloadResult::Pending;
         }
 
-        // Check to see if our paths have changed. If so, replace our cache.
-        // Note we don't have to modify autoloadable_files_. We'll naturally detect if those have
-        // changed when we query the cache.
-        if paths != self.cache.dirs() {
-            self.cache = AutoloadFileCache::with_dirs(paths.to_owned());
-        }
+        self.set_paths(paths, include_embedded);
 
         // Do we have an entry to load?
         let Some(file) = self.cache.check(self.env_var_name, cmd, false) else {
@@ -258,6 +418,7 @@ enum AutoloadableFileInfo {
 type Timestamp = time::Instant;
 type MissesLruCache = LruCache<WString, Timestamp>;
 
+#[derive(Clone)]
 struct KnownFile {
     file: AutoloadableFileInfo,
     last_checked: Timestamp,
@@ -265,9 +426,13 @@ struct KnownFile {
 
 /// Class representing a cache of files that may be autoloaded.
 /// This is responsible for performing cached accesses to a set of paths.
+#[derive(Clone)]
 struct AutoloadFileCache {
     /// The directories from which to load.
     dirs: Vec<WString>,
+
+    /// Whether embedded scripts may be selected after user files.
+    include_embedded: bool,
 
     /// Our LRU cache of checks that were misses.
     /// The key is the command, the  value is the time of the check.
@@ -286,9 +451,10 @@ impl Default for AutoloadFileCache {
 
 impl AutoloadFileCache {
     /// Initialize with a set of directories.
-    fn with_dirs(dirs: Vec<WString>) -> Self {
+    fn with_dirs(dirs: Vec<WString>, include_embedded: bool) -> Self {
         Self {
             dirs,
+            include_embedded,
             misses_cache: MissesLruCache::new(NonZeroUsize::new(1024).unwrap()),
             known_files: HashMap::new(),
         }
@@ -296,7 +462,7 @@ impl AutoloadFileCache {
 
     /// Initialize with empty directories.
     fn new() -> Self {
-        Self::with_dirs(vec![])
+        Self::with_dirs(vec![], true)
     }
 
     /// Return the directories.
@@ -346,7 +512,11 @@ impl AutoloadFileCache {
         // We couldn't satisfy this request from the cache. Hit the disk.
         let file = self
             .locate_file(cmd, asset_dir, false)
-            .or_else(|| self.locate_asset(cmd, asset_dir?))
+            .or_else(|| {
+                self.include_embedded
+                    .then(|| self.locate_asset(cmd, asset_dir?))
+                    .flatten()
+            })
             .or_else(|| self.locate_file(cmd, asset_dir, true));
         if let Some(file) = file.as_ref() {
             let old_value = self.known_files.insert(
@@ -429,9 +599,10 @@ impl AutoloadFileCache {
     }
 
     fn locate_asset(&self, cmd: &wstr, asset_dir: AssetDir) -> Option<AutoloadableFileInfo> {
-        // HACK: In cargo tests, this used to never load functions
-        // It will hang for reasons unrelated to this.
-        if cfg!(test) {
+        // POSIX cargo tests historically skip embedded functions because loading
+        // them there can hang for reasons unrelated to the resolver. Native tests
+        // need the same embedded definitions used by their evaluator.
+        if cfg!(all(test, not(windows))) {
             return None;
         }
         let narrow = wcs2bytes(cmd);
@@ -445,6 +616,262 @@ impl AutoloadFileCache {
 }
 
 #[cfg(test)]
+mod portable_tests {
+    use super::{Asset, Autoload, AutoloadPath, AutoloadResult, function_names};
+    use fish_widestring::{L, WString, osstr2wcstring, wcs2osstring};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Directory(PathBuf);
+
+    impl Directory {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            loop {
+                let path = std::env::temp_dir().join(format!(
+                    "fish-shared-autoload-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
+                    Err(error) => panic!("cannot create autoload fixture: {error}"),
+                }
+            }
+        }
+
+        fn paths(&self) -> Vec<WString> {
+            vec![osstr2wcstring(self.0.as_os_str())]
+        }
+    }
+
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            // Each fixture only creates files directly in its own unique directory.
+            if let Ok(entries) = std::fs::read_dir(&self.0) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        let _ = std::fs::remove_dir(entry.path());
+                    } else {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+            let _ = std::fs::remove_dir(&self.0);
+        }
+    }
+
+    fn assert_disk(result: AutoloadResult, expected: &Path) {
+        match result {
+            AutoloadResult::Path(AutoloadPath::OnDisk(path)) => {
+                assert_eq!(PathBuf::from(wcs2osstring(&path)), expected);
+            }
+            other => panic!("expected source {}, got {other:?}", expected.display()),
+        }
+    }
+
+    #[test]
+    fn paths_preserve_precedence_recursion_and_file_reload() {
+        let first = Directory::new();
+        let second = Directory::new();
+        let first_source = first.0.join("greet.fish");
+        let second_source = second.0.join("greet.fish");
+        std::fs::write(&first_source, "first").unwrap();
+        std::fs::write(&second_source, "other").unwrap();
+        let mut paths = first.paths();
+        paths.extend(second.paths());
+        let mut autoload = Autoload::new(L!("test_paths"));
+
+        // Introspection uses the same path cache without initiating evaluation.
+        assert!(autoload.can_autoload_from_paths(L!("greet"), &paths));
+        assert!(!autoload.autoload_in_progress(L!("greet")));
+        assert_disk(
+            autoload.resolve_command_from_paths(L!("greet"), &paths),
+            &first_source,
+        );
+        assert!(matches!(
+            autoload.resolve_command_from_paths(L!("greet"), &paths),
+            AutoloadResult::Pending
+        ));
+        autoload.mark_autoload_finished(L!("greet"));
+        assert!(matches!(
+            autoload.resolve_command_from_paths(L!("greet"), &paths),
+            AutoloadResult::Loaded
+        ));
+
+        // A different path must reload even with identically sized files.
+        paths.reverse();
+        assert_disk(
+            autoload.resolve_command_from_paths(L!("greet"), &paths),
+            &second_source,
+        );
+        autoload.mark_autoload_finished(L!("greet"));
+        std::fs::write(&second_source, "changed definition").unwrap();
+        autoload.invalidate_cache();
+        assert_disk(
+            autoload.resolve_command_from_paths(L!("greet"), &paths),
+            &second_source,
+        );
+        autoload.mark_autoload_finished(L!("greet"));
+
+        let mut cloned = autoload.clone();
+        assert!(matches!(
+            cloned.resolve_command_from_paths(L!("greet"), &paths),
+            AutoloadResult::Loaded
+        ));
+        cloned.clear();
+        assert_disk(
+            cloned.resolve_command_from_paths(L!("greet"), &paths),
+            &second_source,
+        );
+        assert!(matches!(
+            autoload.resolve_command_from_paths(L!("greet"), &paths),
+            AutoloadResult::Loaded
+        ));
+    }
+
+    #[test]
+    fn path_changes_invalidate_misses_and_empty_names_are_ignored() {
+        let first = Directory::new();
+        let second = Directory::new();
+        let source = second.0.join("later.fish");
+        std::fs::write(&source, "function later; end").unwrap();
+        let mut autoload = Autoload::new(L!("test_paths"));
+        assert!(!autoload.can_autoload_from_paths(L!("later"), &first.paths()));
+        assert!(autoload.has_attempted_autoload(L!("later")));
+        assert!(autoload.can_autoload_from_paths(L!("later"), &second.paths()));
+        assert_disk(
+            autoload.resolve_command_from_paths(L!("later"), &second.paths()),
+            &source,
+        );
+        assert!(matches!(
+            autoload.resolve_command_from_paths(L!(""), &second.paths()),
+            AutoloadResult::None
+        ));
+    }
+
+    #[test]
+    fn embedded_assets_are_shared_with_both_evaluators() {
+        let alias = Asset::get("functions/alias.fish").unwrap();
+        assert!(String::from_utf8_lossy(&alias.data).contains("function alias"));
+    }
+
+    #[test]
+    fn enumeration_filters_names_without_evaluating_sources() {
+        let directory = Directory::new();
+        for name in [
+            "shared_test_東京.fish",
+            "_shared_test_hidden.fish",
+            ".fish",
+            "wrong.txt",
+        ] {
+            std::fs::write(directory.0.join(name), "this is deliberately invalid Fish").unwrap();
+        }
+        std::fs::create_dir(directory.0.join("shared_test_directory.fish")).unwrap();
+        let visible = function_names(&directory.paths(), false);
+        assert!(visible.contains(L!("shared_test_東京")));
+        assert!(visible.contains(L!("alias")));
+        assert!(!visible.contains(L!("_shared_test_hidden")));
+        assert!(!visible.contains(L!("shared_test_directory")));
+        assert!(!visible.contains(L!("")));
+        assert!(!visible.contains(L!("wrong")));
+        assert!(function_names(&directory.paths(), true).contains(L!("_shared_test_hidden")));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn enumeration_preserves_non_unicode_posix_filenames() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let directory = Directory::new();
+        let filename = std::ffi::OsString::from_vec(b"shared_test_\xff.fish".to_vec());
+        std::fs::write(directory.0.join(filename), "function name; end").unwrap();
+        let expected = fish_widestring::bytes2wcstring(b"shared_test_\xff");
+        assert!(function_names(&directory.paths(), false).contains(&expected));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn disk_functions_override_embedded_assets() {
+        let directory = Directory::new();
+        let source = directory.0.join("alias.fish");
+        std::fs::write(&source, "function alias; echo override; end").unwrap();
+        let mut autoload = Autoload::new(L!("fish_function_path"));
+        assert_disk(
+            autoload.resolve_command_from_paths(L!("alias"), &directory.paths()),
+            &source,
+        );
+        autoload.mark_autoload_finished(L!("alias"));
+        assert!(matches!(
+            autoload.resolve_command_from_paths(L!("alias"), &[]),
+            AutoloadResult::Path(AutoloadPath::Embedded(path))
+                if path == "functions/alias.fish"
+        ));
+        autoload.mark_autoload_finished(L!("alias"));
+        // A disk-only request must not reuse an embedded cache entry.
+        assert!(matches!(
+            autoload.resolve_command_from_paths_with_embedded(L!("alias"), &[], false),
+            AutoloadResult::None
+        ));
+        assert_disk(
+            autoload.resolve_command_from_paths_with_embedded(
+                L!("alias"),
+                &directory.paths(),
+                false,
+            ),
+            &source,
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn worker_snapshots_keep_original_file_identity_and_recursion_state() {
+        let directory = Directory::new();
+        let source = directory.0.join("worker_function.fish");
+        let paths = directory.paths();
+        std::fs::write(&source, "first definition").unwrap();
+        let mut parent = Autoload::new(L!("fish_function_path"));
+        assert_disk(
+            parent.resolve_command_from_paths(L!("worker_function"), &paths),
+            &source,
+        );
+
+        // A pipeline created while sourcing a file must retain its recursion guard.
+        let encoded = bincode::serialize(&parent.snapshot()).unwrap();
+        let mut pending = Autoload::new(L!("fish_function_path"));
+        pending.restore(bincode::deserialize(&encoded).unwrap());
+        assert!(matches!(
+            pending.resolve_command_from_paths(L!("worker_function"), &paths),
+            AutoloadResult::Pending
+        ));
+        pending.mark_autoload_finished(L!("worker_function"));
+        assert!(matches!(
+            pending.resolve_command_from_paths(L!("worker_function"), &paths),
+            AutoloadResult::Loaded
+        ));
+
+        parent.mark_autoload_finished(L!("worker_function"));
+        let encoded = bincode::serialize(&parent.snapshot()).unwrap();
+        let mut unchanged = Autoload::new(L!("fish_function_path"));
+        unchanged.restore(bincode::deserialize(&encoded).unwrap());
+        assert!(matches!(
+            unchanged.resolve_command_from_paths(L!("worker_function"), &paths),
+            AutoloadResult::Loaded
+        ));
+
+        // A file changed after the parent loaded it must still be evaluated by
+        // the worker; restore must not associate the old body with this identity.
+        std::fs::write(&source, "a changed definition with a different length").unwrap();
+        let mut changed = Autoload::new(L!("fish_function_path"));
+        changed.restore(bincode::deserialize(&encoded).unwrap());
+        assert_disk(
+            changed.resolve_command_from_paths(L!("worker_function"), &paths),
+            &source,
+        );
+    }
+}
+
+#[cfg(all(test, not(windows)))]
 mod tests {
     use super::{Autoload, AutoloadResult};
     use crate::prelude::*;
@@ -487,10 +914,14 @@ mod tests {
 
         let paths = &[p1.clone(), p2.clone()];
         let mut autoload = Autoload::new(L!("test_var"));
-        assert!(autoload.resolve_command_impl(L!("file1"), paths).is_none());
         assert!(
             autoload
-                .resolve_command_impl(L!("nothing"), paths)
+                .resolve_command_from_paths(L!("file1"), paths)
+                .is_none()
+        );
+        assert!(
+            autoload
+                .resolve_command_from_paths(L!("nothing"), paths)
                 .is_none()
         );
         assert!(autoload.get_autoloaded_commands().is_empty());
@@ -501,11 +932,11 @@ mod tests {
 
         assert!(!autoload.autoload_in_progress(L!("file1")));
         assert_matches!(
-            autoload.resolve_command_impl(L!("file1"), paths),
+            autoload.resolve_command_from_paths(L!("file1"), paths),
             AutoloadResult::Path(_)
         );
         assert_matches!(
-            autoload.resolve_command_impl(L!("file1"), paths),
+            autoload.resolve_command_from_paths(L!("file1"), paths),
             AutoloadResult::Pending
         );
         assert!(autoload.autoload_in_progress(L!("file1")));
@@ -515,22 +946,26 @@ mod tests {
         assert_eq!(autoload.get_autoloaded_commands(), vec![L!("file1")]);
 
         assert_matches!(
-            autoload.resolve_command_impl(L!("file1"), paths),
+            autoload.resolve_command_from_paths(L!("file1"), paths),
             AutoloadResult::Loaded
         );
         assert!(
             autoload
-                .resolve_command_impl(L!("nothing"), paths)
+                .resolve_command_from_paths(L!("nothing"), paths)
                 .is_none()
         );
-        assert!(autoload.resolve_command_impl(L!("file2"), paths).is_some());
+        assert!(
+            autoload
+                .resolve_command_from_paths(L!("file2"), paths)
+                .is_some()
+        );
         assert_matches!(
-            autoload.resolve_command_impl(L!("file2"), paths),
+            autoload.resolve_command_from_paths(L!("file2"), paths),
             AutoloadResult::Pending
         );
         autoload.mark_autoload_finished(L!("file2"));
         assert_matches!(
-            autoload.resolve_command_impl(L!("file2"), paths),
+            autoload.resolve_command_from_paths(L!("file2"), paths),
             AutoloadResult::Loaded
         );
         assert_eq!(
@@ -539,31 +974,43 @@ mod tests {
         );
 
         autoload.clear();
-        assert!(autoload.resolve_command_impl(L!("file1"), paths).is_some());
+        assert!(
+            autoload
+                .resolve_command_from_paths(L!("file1"), paths)
+                .is_some()
+        );
         autoload.mark_autoload_finished(L!("file1"));
         assert_matches!(
-            autoload.resolve_command_impl(L!("file1"), paths),
+            autoload.resolve_command_from_paths(L!("file1"), paths),
             AutoloadResult::Loaded
         );
         assert!(
             autoload
-                .resolve_command_impl(L!("nothing"), paths)
+                .resolve_command_from_paths(L!("nothing"), paths)
                 .is_none()
         );
-        assert!(autoload.resolve_command_impl(L!("file2"), paths).is_some());
+        assert!(
+            autoload
+                .resolve_command_from_paths(L!("file2"), paths)
+                .is_some()
+        );
         assert_matches!(
-            autoload.resolve_command_impl(L!("file2"), paths),
+            autoload.resolve_command_from_paths(L!("file2"), paths),
             AutoloadResult::Pending
         );
         autoload.mark_autoload_finished(L!("file2"));
 
         assert_matches!(
-            autoload.resolve_command_impl(L!("file1"), paths),
+            autoload.resolve_command_from_paths(L!("file1"), paths),
             AutoloadResult::Loaded
         );
         touch_file(&sprintf!("%s/file1.fish", p1));
         autoload.invalidate_cache();
-        assert!(autoload.resolve_command_impl(L!("file1"), paths).is_some());
+        assert!(
+            autoload
+                .resolve_command_from_paths(L!("file1"), paths)
+                .is_some()
+        );
         autoload.mark_autoload_finished(L!("file1"));
     }
 }

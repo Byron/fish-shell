@@ -29,6 +29,8 @@ mod interactive_pager;
 #[cfg(windows)]
 mod interactive_terminal;
 #[cfg(windows)]
+mod startup;
+#[cfg(windows)]
 pub mod syntax;
 pub mod worker;
 
@@ -477,9 +479,15 @@ fn execute(options: Options) -> Result<i32> {
     if !options.no_config && !options.syntax_only {
         #[cfg(windows)]
         if let Engine::Fish(session) = &mut engine {
-            if let Some(path) = interactive::startup_file("fish") {
+            for path in startup::files() {
                 if let Err(error) = session.load_config(&path, &mut host) {
-                    report(options.language, error);
+                    report(
+                        options.language,
+                        Error::new(format!("{}: {}", path.display(), error.message)),
+                    );
+                }
+                if session.exit_requested() {
+                    break;
                 }
             }
         }
@@ -518,6 +526,7 @@ fn execute(options: Options) -> Result<i32> {
                     editor.set_completion_environment(session.completion_environment());
                     editor.set_input_language(session.input_language);
                     editor.set_registrations(session.completions.clone());
+                    editor.set_wrappers(session.completion_wrappers());
                     editor.set_variables(&session.editor_variables());
                     editor.set_input_config(session.abbreviations.clone(), &session.bindings);
                     match session.history_snapshot() {

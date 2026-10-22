@@ -47,6 +47,7 @@ impl Session {
             "read" => self.read(args, host, output)?,
             "type" | "command" | "builtin" => self.describe_command(name, args, host, output)?,
             "functions" => {
+                self.refresh_function_paths();
                 let mut args = args;
                 let query = args
                     .first()
@@ -54,7 +55,10 @@ impl Session {
                 let erase = args
                     .first()
                     .is_some_and(|arg| matches!(arg.as_str(), "-e" | "--erase"));
-                if query || erase {
+                let names_only = args
+                    .first()
+                    .is_some_and(|arg| matches!(arg.as_str(), "-n" | "--names"));
+                if query || erase || names_only {
                     args = &args[1..];
                 }
                 if args.first().is_some_and(|arg| arg == "--") {
@@ -64,24 +68,36 @@ impl Session {
                     return Err(unsupported("these functions options"));
                 }
                 let names: Vec<_> = if args.is_empty() {
-                    self.functions.keys().cloned().collect()
+                    if names_only {
+                        self.function_names()
+                    } else {
+                        self.functions.keys().cloned().collect()
+                    }
                 } else {
                     args.to_vec()
                 };
                 self.status = 0;
                 for name in names {
+                    if names_only {
+                        self.write(format!("{name}\n").as_bytes(), host, output)?;
+                        continue;
+                    }
                     if erase {
+                        self.autoload_tombstones.insert(name.clone());
+                        self.autoloaded_functions.remove(&name);
                         self.status |= i32::from(self.functions.remove(&name).is_none());
-                    } else if let Some(body) = self.functions.get(&name) {
-                        if !query {
-                            self.write(
-                                format!("function {name}\n{body}\nend\n").as_bytes(),
-                                host,
-                                output,
-                            )?;
-                        }
                     } else {
-                        self.status = 1;
+                        self.ensure_function(&name, host, output)?;
+                        if self.flow == Flow::Exit {
+                            return Ok(true);
+                        }
+                        if let Some(function) = self.functions.get(&name) {
+                            if !query {
+                                self.write(function.definition(&name).as_bytes(), host, output)?;
+                            }
+                        } else {
+                            self.status = 1;
+                        }
                     }
                 }
             }
@@ -174,6 +190,12 @@ impl Session {
         self.status = 0;
         for name in &args[index..] {
             let mut found = Vec::new();
+            if !paths_only && mode != "builtin" {
+                self.ensure_function(name, host, output)?;
+                if self.flow == Flow::Exit {
+                    return Ok(());
+                }
+            }
             if !paths_only && self.functions.contains_key(name) && mode != "builtin" {
                 found.push(("function", name.clone()));
             }

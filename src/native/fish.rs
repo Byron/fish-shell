@@ -10,10 +10,14 @@ use rash::host::{Command, Host, OpenMode, RedirectAction, Redirection};
 use rash::{Error, Result};
 use std::collections::BTreeMap;
 
+#[path = "fish_autoload.rs"]
+mod autoload;
 #[path = "fish_complete.rs"]
 mod complete;
 #[path = "fish_expand.rs"]
 mod expand;
+#[path = "fish_functions.rs"]
+mod functions;
 #[path = "fish_history.rs"]
 mod history_builtin;
 pub(crate) use expand::unescape_literal;
@@ -44,7 +48,15 @@ struct Output {
 pub struct Session {
     variables: BTreeMap<String, Variable>,
     scopes: Vec<BTreeMap<String, Variable>>,
-    functions: BTreeMap<String, String>,
+    functions: BTreeMap<String, functions::Function>,
+    #[serde(with = "autoload::serialization")]
+    function_autoload: crate::autoload::Autoload,
+    #[serde(default)]
+    autoloaded_functions: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    autoload_tombstones: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    autoload_paths: Vec<String>,
     #[serde(default)]
     pub(super) completions: Vec<super::interactive_completion::CompletionSpec>,
     #[serde(default)]
@@ -70,7 +82,7 @@ pub struct Session {
     depth: usize,
     loops: usize,
     function_depth: usize,
-    function_frames: Vec<usize>,
+    function_frames: Vec<functions::FunctionFrame>,
     source_depth: usize,
 }
 
@@ -188,10 +200,14 @@ impl Session {
                 exported: true,
             },
         );
-        Ok(Self {
+        let mut session = Self {
             variables,
             scopes: vec![BTreeMap::new()],
             functions: BTreeMap::new(),
+            function_autoload: autoload::resolver(),
+            autoloaded_functions: Default::default(),
+            autoload_tombstones: Default::default(),
+            autoload_paths: Vec::new(),
             completions: Vec::new(),
             abbreviations: Default::default(),
             bindings: Default::default(),
@@ -211,7 +227,9 @@ impl Session {
             function_depth: 0,
             function_frames: vec![],
             source_depth: 0,
-        })
+        };
+        session.initialize_function_paths();
+        Ok(session)
     }
 
     pub(crate) fn run_worker(
@@ -266,7 +284,7 @@ impl Session {
 
     pub fn completion_context(&self) -> (Vec<String>, Option<std::ffi::OsString>, Vec<String>) {
         (
-            self.functions.keys().cloned().collect(),
+            self.function_names(),
             Some(self.values("PATH").join(";").into()),
             self.variable_names(),
         )
@@ -296,9 +314,17 @@ impl Session {
 
     pub fn load_config(&mut self, path: &std::path::Path, host: &mut impl Host) -> Result<()> {
         let source = std::fs::read_to_string(path)?;
+        self.scopes.push(BTreeMap::from([(
+            "argv".into(),
+            Variable {
+                values: Vec::new(),
+                exported: false,
+            },
+        )]));
         self.source_depth += 1;
         let result = self.eval_source(&source, host, &mut Output::default());
         self.source_depth -= 1;
+        self.scopes.pop();
         if self.flow == Flow::Return {
             self.flow = Flow::Normal;
         }
@@ -317,7 +343,7 @@ impl Session {
     }
 
     pub fn prompt(&mut self, host: &mut impl Host) -> Result<Option<String>> {
-        if !self.functions.contains_key("fish_prompt") {
+        if !self.ensure_function("fish_prompt", host, &mut Output::default())? {
             return Ok(None);
         }
         let status = self.status;
@@ -420,9 +446,6 @@ impl Session {
                     if let Some(range) = ast::Token::as_leaf(token).range() {
                         expand::validate(&source[range.as_usize()].to_string())?;
                     }
-                }
-                ast::Kind::FunctionHeader(node) if !node.args.is_empty() => {
-                    return Err(unsupported("function options"));
                 }
                 _ => (),
             }
@@ -691,13 +714,7 @@ impl Session {
         output: &mut Output,
     ) -> Result<()> {
         if let ast::BlockStatementHeader::Function(header) = &node.header {
-            let name = self.expand_one(&text(source, &header.first_arg), host)?;
-            if name.is_empty() || name.starts_with('-') {
-                return Err(Error::new("function: invalid name"));
-            }
-            self.functions.insert(name, text(source, &node.jobs));
-            self.status = 0;
-            return Ok(());
+            return self.define_function(header, text(source, &node.jobs), source, host, output);
         }
         self.scopes.push(BTreeMap::new());
         let result = (|| match &node.header {
@@ -826,7 +843,9 @@ impl Session {
             .or_else(|| self.variables.get(name))
     }
     fn scope_start(&self) -> usize {
-        self.function_frames.last().copied().unwrap_or(0)
+        self.function_frames
+            .last()
+            .map_or(0, |frame| frame.visibility_start)
     }
     fn values(&self, name: &str) -> Vec<String> {
         match name {

@@ -66,36 +66,12 @@ impl Session {
         output: &mut Output,
     ) -> Result<()> {
         if decoration == StatementDecoration::None {
-            if let Some(body) = self.functions.get(name).cloned() {
-                // Exported caller locals become inherited variables, while ordinary
-                // caller locals remain hidden across the function boundary.
-                let mut scope = BTreeMap::new();
-                for locals in &self.scopes[self.scope_start()..] {
-                    scope.extend(locals.clone());
-                }
-                scope.retain(|_, variable| variable.exported);
-                scope.insert(
-                    "argv".into(),
-                    Variable {
-                        values: args.to_vec(),
-                        exported: false,
-                    },
-                );
-                self.function_frames.push(self.scopes.len());
-                self.scopes.push(scope);
-                self.function_depth += 1;
-                let saved_loops = std::mem::replace(&mut self.loops, 0);
-                let saved_sources = std::mem::replace(&mut self.source_depth, 0);
-                let result = self.eval_source(&body, host, output);
-                self.source_depth = saved_sources;
-                self.loops = saved_loops;
-                self.function_depth -= 1;
-                self.scopes.pop();
-                self.function_frames.pop();
-                if self.flow == Flow::Return {
-                    self.flow = Flow::Normal;
-                }
-                return result;
+            self.ensure_function(name, host, output)?;
+            if self.flow == Flow::Exit {
+                return Ok(());
+            }
+            if let Some(function) = self.functions.get(name).cloned() {
+                return self.invoke_function(function, args, host, output);
             }
         }
         if decoration == StatementDecoration::Command {
@@ -482,7 +458,7 @@ impl Session {
             .iter()
             .rposition(|scope| scope.contains_key(name))
             .map(|index| index + self.scope_start());
-        let function_scope = self.function_frames.last().copied();
+        let function_scope = self.function_frames.last().map(|frame| frame.local_scope);
         let scope = if global {
             &mut self.variables
         } else if local && erase {
@@ -517,6 +493,9 @@ impl Session {
                 },
             );
             // Fish assignment preserves the preceding command's status.
+        }
+        if name == "fish_function_path" {
+            self.refresh_function_paths();
         }
         Ok(())
     }

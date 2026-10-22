@@ -38,6 +38,7 @@ pub(super) struct CompletionEngine {
     executables: BTreeSet<String>,
     variables: Vec<String>,
     registrations: Vec<CompletionSpec>,
+    wrappers: BTreeMap<String, Vec<Vec<String>>>,
     #[cfg(feature = "git")]
     git: GitRefs,
 }
@@ -118,6 +119,7 @@ impl CompletionEngine {
             executables: BTreeSet::new(),
             variables: Vec::new(),
             registrations: Vec::new(),
+            wrappers: BTreeMap::new(),
             #[cfg(feature = "git")]
             git: GitRefs::new(),
         };
@@ -165,6 +167,22 @@ impl CompletionEngine {
 
     pub(super) fn set_registrations(&mut self, registrations: Vec<CompletionSpec>) {
         self.registrations = registrations;
+    }
+
+    pub(super) fn set_wrappers(&mut self, wrappers: Vec<(String, Vec<String>)>) {
+        self.wrappers = wrappers
+            .into_iter()
+            .map(|(name, targets)| {
+                (
+                    name,
+                    targets
+                        .iter()
+                        .take(MAX_WRAPPER_CONTEXTS)
+                        .filter_map(|target| literal_wrapper(target))
+                        .collect(),
+                )
+            })
+            .collect();
     }
 
     pub(super) fn set_environment(&mut self, environment: Vec<(OsString, OsString)>) {
@@ -255,9 +273,9 @@ impl CompletionEngine {
         let mut matches = Candidates::new(prefix);
         let mut files = true;
         if !word.redirect {
-            if let Some(command) = command {
+            if command.is_some() {
                 if self.fish {
-                    files = self.contextual(command, &word, cwd, &mut matches);
+                    files = self.contextual_with_wrappers(&word, cwd, &mut matches);
                 }
             } else if !prefix.contains(['/', '\\']) {
                 for name in &self.builtins {
@@ -304,6 +322,47 @@ impl CompletionEngine {
         }
         preserve_suffix(&mut result, &tail);
         (word.start, result)
+    }
+
+    fn contextual_with_wrappers(&self, word: &Word, cwd: &Path, matches: &mut Candidates) -> bool {
+        let mut pending = vec![(word.clone(), BTreeSet::new())];
+        let mut files = true;
+        for _ in 0..MAX_WRAPPER_CONTEXTS {
+            let Some((word, mut visited)) = pending.pop() else {
+                break;
+            };
+            let Some(index) = word.command_index() else {
+                continue;
+            };
+            let command = &word.words[index];
+            files &= self.contextual(command, &word, cwd, matches);
+            if !visited.insert(command.clone()) {
+                continue;
+            }
+            // An explicit command/builtin invocation bypasses function dispatch.
+            if word.words[..index]
+                .iter()
+                .any(|word| matches!(word.as_str(), "command" | "builtin" | "exec"))
+            {
+                continue;
+            }
+            let Some(targets) = self.wrappers.get(command) else {
+                continue;
+            };
+            for target in targets.iter().rev() {
+                if pending.len() >= MAX_WRAPPER_CONTEXTS
+                    || word.words.len() + target.len() > MAX_WRAPPER_WORDS
+                {
+                    break;
+                }
+                let mut wrapped = word.clone();
+                // Keep preceding syntax and already-typed arguments intact while
+                // supplying the wrapped command's fixed arguments before them.
+                wrapped.words.splice(index..=index, target.iter().cloned());
+                pending.push((wrapped, visited.clone()));
+            }
+        }
+        files
     }
 
     fn contextual(&self, command: &str, word: &Word, cwd: &Path, matches: &mut Candidates) -> bool {
@@ -492,6 +551,39 @@ fn fish_only_keyword(name: &str) -> bool {
         name,
         "begin" | "end" | "switch" | "case" | "and" | "or" | "not"
     )
+}
+
+const MAX_WRAPPER_CONTEXTS: usize = 64;
+const MAX_WRAPPER_WORDS: usize = 256;
+
+fn literal_wrapper(target: &str) -> Option<Vec<String>> {
+    use crate::tokenizer::{TokFlags, TokenType, Tokenizer};
+    use fish_widestring::WString;
+
+    if target.len() > 32 * 1024 || target.contains('\0') {
+        return None;
+    }
+    let complete = format!("{target} ");
+    let context = completion_word(&complete, complete.len(), true);
+    if !context.literal_command() || context.quote.is_some() || context.comment {
+        return None;
+    }
+    let source = WString::from(target);
+    let mut words = Vec::new();
+    for token in Tokenizer::new(
+        &source,
+        TokFlags {
+            show_comments: true,
+            ..Default::default()
+        },
+    ) {
+        if token.type_ != TokenType::String || words.len() >= MAX_WRAPPER_WORDS {
+            return None;
+        }
+        let raw = source[token.offset as usize..(token.offset + token.length) as usize].to_string();
+        words.push(super::fish::unescape_literal(&raw).ok()?);
+    }
+    (!words.is_empty()).then_some(words)
 }
 
 #[cfg(feature = "git")]
@@ -715,7 +807,7 @@ fn quote_completion(value: &str) -> String {
     result
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Word {
     start: usize,
     value: String,
@@ -732,7 +824,6 @@ struct Word {
 }
 
 impl Word {
-    #[cfg(any(feature = "git", test))]
     fn literal_command(&self) -> bool {
         !self.expanded_words
             && self
@@ -1149,6 +1240,148 @@ mod tests {
             vec!["HOME".into(), "PATH".into(), "fish_private".into()],
         );
         engine
+    }
+
+    #[test]
+    fn wrappers_reuse_registrations_and_preserve_fixed_arguments() {
+        let directory = Directory::new();
+        let mut engine = engine();
+        engine.set_registrations(vec![CompletionSpec {
+            command: "target".into(),
+            long_option: Some("mode".into()),
+            arguments: vec!["fast".into(), "slow".into()],
+            no_files: true,
+            requires_argument: true,
+            ..Default::default()
+        }]);
+        engine.set_wrappers(vec![
+            ("alias".into(), vec!["target --mode".into()]),
+            ("outer".into(), vec!["inner build".into()]),
+            ("inner".into(), vec!["cargo".into()]),
+        ]);
+        assert_eq!(replacements(&engine, "alias f", &directory.0), ["fast "]);
+        assert_eq!(
+            replacements(&engine, "outer --rel", &directory.0),
+            ["--release "]
+        );
+        assert!(replacements(&engine, "command alias f", &directory.0).is_empty());
+        assert!(replacements(&engine, "builtin alias f", &directory.0).is_empty());
+        // A wrapper may add fixed arguments to an external command with the
+        // same name, without recursively inheriting its own wrapper again.
+        engine.set_wrappers(vec![("cargo".into(), vec!["cargo build".into()])]);
+        assert_eq!(
+            replacements(&engine, "cargo --rel", &directory.0),
+            ["--release "]
+        );
+    }
+
+    #[test]
+    fn multiple_wrappers_and_cycles_keep_all_reachable_choices() {
+        let directory = Directory::new();
+        let mut engine = engine();
+        engine.set_registrations(
+            [("alias", "own"), ("first", "alpha"), ("second", "beta")]
+                .into_iter()
+                .map(|(command, choice)| CompletionSpec {
+                    command: command.into(),
+                    arguments: vec![choice.into()],
+                    no_files: true,
+                    ..Default::default()
+                })
+                .collect(),
+        );
+        engine.set_wrappers(vec![
+            ("alias".into(), vec!["cycle".into(), "second".into()]),
+            ("cycle".into(), vec!["alias extra".into(), "first".into()]),
+        ]);
+        assert_eq!(
+            replacements(&engine, "alias ", &directory.0),
+            ["alpha ", "beta ", "own "]
+        );
+        engine.set_wrappers(Vec::new());
+        assert_eq!(replacements(&engine, "alias ", &directory.0), ["own "]);
+    }
+
+    #[test]
+    fn wrapper_targets_are_literal_single_commands() {
+        assert_eq!(
+            literal_wrapper("git -C 'two words 文' checkout"),
+            Some(vec![
+                "git".into(),
+                "-C".into(),
+                "two words 文".into(),
+                "checkout".into(),
+            ])
+        );
+        assert_eq!(
+            literal_wrapper("git -C 'literal$repo' checkout"),
+            Some(vec![
+                "git".into(),
+                "-C".into(),
+                "literal$repo".into(),
+                "checkout".into(),
+            ])
+        );
+        for target in [
+            "",
+            "git -C (echo repo) checkout",
+            "git -C $REPO checkout",
+            "git -C ~/repo checkout",
+            "git -C repo* checkout",
+            "git -C {one,two} checkout",
+            "GIT_DIR=elsewhere git checkout",
+            "git; cargo",
+            "git | cargo",
+            "git > output",
+            "git # comment",
+            "git 'unfinished",
+        ] {
+            assert!(literal_wrapper(target).is_none(), "{target}");
+        }
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn git_wrappers_route_prefilled_commands_to_shared_reference_queries() {
+        let directory = Directory::new();
+        let mut repository = gix::ThreadSafeRepository::init_opts(
+            directory.0.join("repo with 文"),
+            gix::create::Kind::WithWorktree,
+            Default::default(),
+            gix::open::Options::isolated(),
+        )
+        .unwrap()
+        .to_thread_local();
+        repository.refs.write_reflog = gix::refs::store::WriteReflog::Disable;
+        repository
+            .reference(
+                "refs/heads/topic",
+                gix::ObjectId::from_hex(b"0123456789012345678901234567890123456789").unwrap(),
+                gix::refs::transaction::PreviousValue::Any,
+                "fixture",
+            )
+            .unwrap();
+        let mut engine = engine();
+        engine.set_environment(vec![("PATH".into(), "".into())]);
+        engine.set_wrappers(vec![(
+            "gco".into(),
+            vec!["git -C 'repo with 文' checkout".into()],
+        )]);
+        for line in ["gco top", "not gco top"] {
+            assert_eq!(
+                replacements(&engine, line, &directory.0),
+                ["topic "],
+                "{line}"
+            );
+        }
+        assert!(replacements(&engine, "gco -- top", &directory.0).is_empty());
+        assert!(replacements(&engine, "GIT_DIR=elsewhere gco top", &directory.0).is_empty());
+        let (start, candidates) = engine.complete("gco tpic", 5, &directory.0);
+        assert_eq!(start, 4);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].replacement, "to");
+        engine.set_input_language(InputLanguage::Bash);
+        assert_eq!(replacements(&engine, "gco top", &directory.0), ["topic "]);
     }
 
     fn replacements(engine: &CompletionEngine, line: &str, cwd: &Path) -> Vec<String> {

@@ -76,7 +76,7 @@ produce diagnostics.
 
 The current Fish subset includes simple commands and standard redirects on
 descriptors 0, 1 and 2; list variables, quoting and simple integer indices;
-`if`/`else`, `begin`, `for`, `while`, `switch`, functions without options, `not`, and logical
+`if`/`else`, `begin`, `for`, `while`, `switch`, functions, `not`, and logical
 chains. Initial builtins include `echo`, `set`, `cd`, `pwd`, `count`, `test`, `[`,
 `true`, `false`, `source`, `eval`, `exit`, `return`, `break` and `continue`.
 Native Fish also provides `printf`, `math`, `contains`, `read`, `type`, command
@@ -95,9 +95,17 @@ case; quote wildcard patterns, for example `case '*.txt'`. Blocks support standa
 redirections, with a shared file position across their commands: `while read line;
 echo $line; end < input.txt > output.txt` reads and writes each line in order.
 Nested redirections are restored when a block finishes, including `return` and
-`break`. Function options and the full builtin set are not implemented. Regular-expression
+`break`. The full builtin set is not implemented. Regular-expression
 string operations, advanced read options and locale-specific numeric formatting
 remain unavailable; unsupported options produce diagnostics.
+
+Function declarations use the same option parser as POSIX Fish. Native functions
+support `--description`/`-d`, `--wraps`/`-w`, `--argument-names`/`-a`,
+`--inherit-variable`/`-V`, and `--no-scope-shadowing`/`-S`. Captured values are
+snapshots; named arguments and scope boundaries follow Fish semantics. Printed
+definitions preserve these properties. Event-handler options still report an
+unsupported-feature error when the declaration executes. An untaken branch can
+therefore guard a POSIX-only declaration with `status is-native-windows`.
 
 Use `rash`, `fish --rash-shell`, or `fish --script-language=bash` for Bash syntax:
 
@@ -282,7 +290,11 @@ Native `complete` supports `-c`, `-s`, `-l`, `-o`, `-a`, `-d`, `-f`, `-r`, `-x`,
 and `-e` (erase), with their long forms. `complete` lists registrations as Fish
 source; `complete -C 'mytool --m'` prints the editor's annotated choices.
 Registrations belong to the current session and can be recreated by configuration.
-Conditions, wrapper definitions, command-substitution generators, automatic
+Functions defined with `--wraps` inherit literal target completion, including
+fixed arguments such as `--wraps='git checkout'`. Multiple targets and nested
+wrappers are supported with bounded, cycle-safe traversal. Wrapper targets never
+execute shell code. A saved wrapper's metadata becomes available when its function
+is loaded. Conditions, `complete --wraps` registrations, command-substitution generators, automatic
 completion-script loading, and path completion through `$VARIABLE/` are not yet
 supported. Dynamic registrations report a diagnostic instead of silently
 running as static choices.
@@ -304,7 +316,8 @@ contents changed. Shortening input or dismissing a menu erases leftover text
 without first blanking the prompt and the rest of the menu. Resizing, scrolling,
 or prompt controls the renderer cannot safely compare can require a full redraw.
 
-Native Fish reads `fish/config.fish` under `FISH_NATIVE_CONFIG_HOME` when it is
+Native Fish reads `fish/conf.d/*.fish` followed by `fish/config.fish` under
+`FISH_NATIVE_CONFIG_HOME` when it is
 an absolute Windows path. This optional override is only used by the native
 frontend: a launcher can select its Windows configuration without changing
 `XDG_CONFIG_HOME` for MSYS Fish or other child programs. For example, set it to
@@ -314,14 +327,33 @@ its wildcard startup scanning does not support Windows drive paths.
 
 Without the native override, Fish uses `XDG_CONFIG_HOME`, or `%APPDATA%`
 when that variable is not set. Without either location it uses
-`~/.config/fish/config.fish`. `-N`/`--no-config` skips this file. The configuration
+`~/.config/fish/config.fish`. User snippets run in filename order, each with its
+own source-local variables. Errors identify the file and do not prevent later
+startup files from running. `-N`/`--no-config` skips both snippets and config.
+The configuration
 runs in the native evaluator and must use its supported Fish syntax and builtins.
 Native Fish calls a defined `fish_prompt` function before each new command and
 uses its output as the prompt, preserving the previous command's `$status` and
 `$pipestatus`. ANSI colors in multiline prompts, including native Starship output,
 do not contribute to cursor columns or wrapped rows, so editing preserves output
-above the prompt. Without that function it displays `fish>`. Function autoloading
-and vendor configuration are not provided. Native Fish reports cwd with OSC 7
+above the prompt. A user `fish_prompt.fish` can also be autoloaded; without a user
+prompt it displays `fish>`.
+
+Function lookup, `functions -q`, and `type` load requested `.fish` files from
+`$fish_function_path`, which defaults to the selected configuration's `functions`
+directory. Discovery, cached file identities, embedded sources and function-name
+enumeration are shared with POSIX Fish. Unused files are not evaluated; explicit
+definitions take precedence, erased functions stay erased, and changing the path
+invalidates autoloaded definitions. `functions -n` and command completion list
+available names without loading their files. Autoloading remains available with
+`-N`. Saved alias functions in either `conf.d` or `functions` keep their descriptions,
+wrapped commands and argument forwarding. Native builtin implementations take
+precedence over bundled POSIX helper shims, while user function files can override
+them. Other bundled functions still require the native evaluator to support their
+bodies; loading the standard `alias` helper does not provide full builtin parity.
+
+POSIX system initialization, system/vendor snippets, and vendor configuration are
+not run by the native frontend. Native Fish reports cwd with OSC 7
 and accepted-command lifecycle/status with OSC 133. Rustty/tmuxx can track cwd,
 command text and exit status without an MSYS wrapper or injected startup script.
 Suggestions and canceled edits are not reported as executed commands. Metadata

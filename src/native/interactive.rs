@@ -51,6 +51,10 @@ impl Editor {
     ) {
         self.inner.set_registrations(registrations);
     }
+    #[cfg(windows)]
+    pub(super) fn set_wrappers(&mut self, wrappers: Vec<(String, Vec<String>)>) {
+        self.inner.set_wrappers(wrappers);
+    }
     pub fn new(language: &str, persistent: bool) -> Result<Self> {
         Self::with_history_path(
             language,
@@ -132,7 +136,7 @@ impl Editor {
 
 /// Existing configuration is read by the caller; discovering it never creates
 /// or rewrites a configuration file. Bash startup belongs to Rash's Session.
-pub fn startup_file(language: &str) -> Option<PathBuf> {
+pub(super) fn config_directory(language: &str) -> Option<PathBuf> {
     if language != "fish" {
         return None;
     }
@@ -144,7 +148,11 @@ pub fn startup_file(language: &str) -> Option<PathBuf> {
         .or_else(|| absolute_env("XDG_CONFIG_HOME"))
         .or_else(|| absolute_env("APPDATA"))
         .or_else(|| home_dir().map(|home| home.join(".config")))?;
-    let path = directory.join("fish/config.fish");
+    Some(directory.join("fish"))
+}
+
+pub fn startup_file(language: &str) -> Option<PathBuf> {
+    let path = config_directory(language)?.join("config.fish");
     path.is_file().then_some(path)
 }
 
@@ -283,6 +291,15 @@ mod windows {
                 .lock()
                 .unwrap()
                 .set_registrations(registrations);
+        }
+        pub(super) fn set_wrappers(&mut self, wrappers: Vec<(String, Vec<String>)>) {
+            self.editor
+                .helper_mut()
+                .unwrap()
+                .engine
+                .lock()
+                .unwrap()
+                .set_wrappers(wrappers);
         }
         pub(super) fn new(language: &str, history: Option<PathBuf>) -> Result<Self> {
             let config = Config::builder()

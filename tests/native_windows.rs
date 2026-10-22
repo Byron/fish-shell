@@ -364,6 +364,7 @@ fn native_fish_startup_and_mode_queries_use_invocation_state() {
     let config = scratch.join("fish/config.fish");
     std::fs::write(&config, "set -g configured yes; return; echo unreachable").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_fish"))
+        .env_remove("FISH_NATIVE_CONFIG_HOME")
         .env("XDG_CONFIG_HOME", &scratch.0)
         .args([
             "--login",
@@ -383,6 +384,7 @@ fn native_fish_startup_and_mode_queries_use_invocation_state() {
     assert_eq!(stdout(&output), "1\n");
     std::fs::write(&config, "exit 7").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_fish"))
+        .env_remove("FISH_NATIVE_CONFIG_HOME")
         .env("XDG_CONFIG_HOME", &scratch.0)
         .args(["-c", "echo unreachable"])
         .output()
@@ -467,6 +469,7 @@ fn bash_interactive_language_keeps_fish_configuration_and_skips_bash_startup() {
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_fish"))
         .current_dir(&scratch.0)
+        .env_remove("FISH_NATIVE_CONFIG_HOME")
         .env("HOME", &scratch.0)
         .env("USERPROFILE", &scratch.0)
         .env("XDG_CONFIG_HOME", &scratch.0)

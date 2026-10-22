@@ -10,6 +10,7 @@ pub const BUILD_VERSION: &str = env!("FISH_BUILD_VERSION");
 #[cfg_attr(not(windows), allow(dead_code))] // The native reference cache shares POSIX routing.
 mod git;
 
+pub(crate) mod function_options;
 pub mod history_core;
 
 #[macro_use]
@@ -24,7 +25,6 @@ pub mod wutil;
 pub mod abbrs;
 #[cfg(not(windows))]
 pub mod ast;
-#[cfg(not(windows))]
 pub mod autoload;
 #[cfg(not(windows))]
 pub mod bash_script;

@@ -120,6 +120,8 @@ rash = { path = "crates/rash" }
 bincode = "1.3.3"
 serde = { version = "1.0.228", features = ["derive"] }
 gix = { workspace = true, optional = true, features = ["revision", "status"] }
+lru.workspace = true
+rust-embed.workspace = true
 
 # The POSIX backend is also used by the MSYS2/Cygwin Rust target. Native
 # Windows builds must not pull in its Unix-only libraries or build scripts.
@@ -149,7 +151,6 @@ fish-widestring.workspace = true
 fluent.workspace = true
 itertools.workspace = true
 libc.workspace = true
-lru.workspace = true
 macro_rules_attribute = "0.2.2"
 nix.workspace = true
 num-traits.workspace = true
@@ -172,6 +173,7 @@ fish-widestring.workspace = true
 fish-fallback.workspace = true
 fish-feature-flags.workspace = true
 fish-printf.workspace = true
+fish-wgetopt.workspace = true
 macro_rules_attribute = "0.2.2"
 
 [target.'cfg(windows)'.dependencies.windows-sys]
@@ -192,14 +194,6 @@ version = "14.0.0"
 path = "vendor/rustyline"
 default-features = false
 features = ["custom-bindings", "with-file-history"]
-
-[target.'cfg(not(windows))'.dependencies.rust-embed]
-workspace = true
-features = [
-  "deterministic-timestamps",
-  "include-exclude",
-  "interpolate-folder-path",
-]
 
 [target.'cfg(not(windows))'.dev-dependencies]
 serial_test.workspace = true

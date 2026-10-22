@@ -76,6 +76,7 @@ impl Session {
             engine.set_environment(self.completion_environment());
             engine.set_input_language(self.input_language);
             engine.set_registrations(self.completions.clone());
+            engine.set_wrappers(self.completion_wrappers());
             for candidate in engine
                 .complete(&line, line.len(), &std::env::current_dir()?)
                 .1
