@@ -308,12 +308,12 @@ impl Session {
     ) -> Result<()> {
         self.status = status;
         self.pipeline = vec![status];
-        output.bytes.extend(host.write(
+        output.append(host.write(
             2,
             format!("functions: {message}\n").as_bytes(),
             &output.redirects,
             output.capture,
-        )?);
+        )?)?;
         Ok(())
     }
 

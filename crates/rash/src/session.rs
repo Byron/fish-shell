@@ -382,6 +382,7 @@ impl Session {
         }
         let result = RunResult {
             status: runner.session.status,
+            stopped: false,
             pipeline: runner.session.pipeline.clone(),
             stdout: std::mem::take(&mut runner.stdout),
             last_pid: runner.session.last_pid,
@@ -819,6 +820,7 @@ impl<'a> Runner<'a> {
             argv,
             env,
             redirects,
+            pipe_fd: 1,
             builtin: false,
         })
     }
@@ -1312,6 +1314,7 @@ impl<'a> Runner<'a> {
                 argv,
                 env: self.session.exports(),
                 redirects: self.redirects.clone(),
+                pipe_fd: 1,
                 builtin: false,
             }],
             false,
@@ -1508,6 +1511,7 @@ impl<'a> Runner<'a> {
                         argv: argv.to_vec(),
                         env: self.session.exports(),
                         redirects: self.redirects.clone(),
+                        pipe_fd: 1,
                         builtin: true,
                     }],
                     false,
@@ -1611,6 +1615,7 @@ impl<'a> Runner<'a> {
                         argv: args[index..].to_vec(),
                         env: self.session.exports(),
                         redirects: self.redirects.clone(),
+                        pipe_fd: 1,
                         builtin: false,
                     }],
                     false,
@@ -1752,6 +1757,7 @@ impl<'a> Runner<'a> {
                         argv: argv.to_vec(),
                         env: self.session.exports(),
                         redirects: self.redirects.clone(),
+                        pipe_fd: 1,
                         builtin: true,
                     }],
                     false,

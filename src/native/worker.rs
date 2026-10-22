@@ -96,6 +96,7 @@ pub(crate) fn prepare(
             env,
             display: Some(display),
             redirects: vec![],
+            pipe_fd: 1,
             builtin: false,
         },
         payload,

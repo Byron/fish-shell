@@ -78,10 +78,10 @@ impl<H: Host> Context for NativeContext<'_, H> {
             &self.output.redirects,
             self.output.capture,
         ) {
-            Ok(bytes) => {
-                self.output.bytes.extend(bytes);
-                Failure::Status(status)
-            }
+            Ok(bytes) => match self.output.append(bytes) {
+                Ok(()) => Failure::Status(status),
+                Err(error) => Failure::Host(error),
+            },
             Err(error) => Failure::Host(error),
         }
     }
@@ -149,7 +149,9 @@ impl<H: Host> Context for NativeContext<'_, H> {
         self.session.flow = flow;
         self.session.input_mode_blocked = blocked;
         result.map_err(Failure::Host)?;
-        for line in expand::split_substitution(&output.bytes, false).map_err(Failure::Host)? {
+        for line in
+            expand::split_separated_substitution(&output.bytes, false).map_err(Failure::Host)?
+        {
             let bytes = self
                 .host
                 .write(
@@ -159,7 +161,7 @@ impl<H: Host> Context for NativeContext<'_, H> {
                     self.output.capture,
                 )
                 .map_err(Failure::Host)?;
-            self.output.bytes.extend(bytes);
+            self.output.append(bytes).map_err(Failure::Host)?;
         }
         if validation_status == 0 {
             Ok(())

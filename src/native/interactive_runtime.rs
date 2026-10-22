@@ -246,6 +246,7 @@ impl CompletionIo {
         input: bool,
         output: bool,
         buffer_output: bool,
+        pipe: Option<i32>,
     ) -> Vec<Redirection> {
         let mut defaults = Vec::with_capacity(redirects.len() + 3);
         if input {
@@ -254,13 +255,13 @@ impl CompletionIo {
                 action: RedirectAction::Opened(Arc::clone(&self.input)),
             });
         }
-        if output && buffer_output {
+        if output && buffer_output && pipe != Some(1) {
             defaults.push(Redirection {
                 fd: 1,
                 action: RedirectAction::Opened(Arc::clone(&self.output)),
             });
         }
-        if buffer_output {
+        if buffer_output && pipe != Some(2) {
             defaults.push(Redirection {
                 fd: 2,
                 action: RedirectAction::Opened(Arc::clone(&self.output)),
@@ -300,6 +301,14 @@ impl<'a> CompletionHost<'a> {
 impl Host for CompletionHost<'_> {
     fn supports_workers(&self) -> bool {
         self.host.supports_workers()
+    }
+
+    fn inherited_capture(&self, fd: i32) -> Option<std::path::PathBuf> {
+        if self.buffer_output {
+            None
+        } else {
+            self.host.inherited_capture(fd)
+        }
     }
 
     fn prepare_worker(
@@ -345,8 +354,9 @@ impl Host for CompletionHost<'_> {
                 redirects: self.io.redirects(
                     &stage.redirects,
                     index == 0,
-                    index + 1 == stages.len() && !capture,
+                    !capture,
                     self.buffer_output,
+                    (index + 1 < stages.len()).then_some(stage.pipe_fd),
                 ),
                 ..stage.clone()
             })
@@ -370,15 +380,36 @@ impl Host for CompletionHost<'_> {
             bytes,
             &self
                 .io
-                .redirects(redirects, true, !capture, self.buffer_output),
+                .redirects(redirects, true, !capture, self.buffer_output, None),
             capture,
         )
     }
 
     fn read_line(&mut self, redirects: &[Redirection], interrupt: bool) -> Result<ReadResult> {
         self.host.read_line(
-            &self.io.redirects(redirects, true, true, self.buffer_output),
+            &self
+                .io
+                .redirects(redirects, true, true, self.buffer_output, None),
             interrupt,
+        )
+    }
+
+    fn write_separated(
+        &mut self,
+        fd: i32,
+        bytes: &[u8],
+        want_newline: bool,
+        redirects: &[Redirection],
+        capture: bool,
+    ) -> Result<Option<Vec<u8>>> {
+        self.host.write_separated(
+            fd,
+            bytes,
+            want_newline,
+            &self
+                .io
+                .redirects(redirects, true, !capture, self.buffer_output, None),
+            capture,
         )
     }
 
@@ -390,7 +421,9 @@ impl Host for CompletionHost<'_> {
         interrupt: bool,
     ) -> Result<ReadResult> {
         self.host.read_record(
-            &self.io.redirects(redirects, true, true, self.buffer_output),
+            &self
+                .io
+                .redirects(redirects, true, true, self.buffer_output, None),
             delimiter,
             max_chars,
             interrupt,
@@ -407,7 +440,7 @@ impl Host for CompletionHost<'_> {
             fd,
             &self
                 .io
-                .redirects(redirects, true, !capture, self.buffer_output),
+                .redirects(redirects, true, !capture, self.buffer_output, None),
             capture,
         )
     }
@@ -482,7 +515,12 @@ mod tests {
         assert_eq!(bytes, b"event\ndiagnostic\n");
         // Reading diagnostics must not move the writer's cursor backwards.
         native
-            .write(2, b"later\n", &io.redirects(&[], true, true, true), false)
+            .write(
+                2,
+                b"later\n",
+                &io.redirects(&[], true, true, true, None),
+                false,
+            )
             .unwrap();
         bytes.clear();
         io.collect(&mut bytes).unwrap();

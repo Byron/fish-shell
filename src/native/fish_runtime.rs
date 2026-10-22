@@ -258,6 +258,7 @@ mod tests {
                 self.cancelled = true;
                 Ok(RunResult {
                     status: 130,
+                    stopped: false,
                     pipeline: self.pipeline.clone(),
                     stdout: vec![],
                     last_pid: None,

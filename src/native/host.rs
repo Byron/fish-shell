@@ -13,6 +13,8 @@ use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub(super) const CAPTURE_BYTE_LIMIT: usize = 16 * 1024 * 1024;
+
 #[path = "jobs.rs"]
 mod jobs;
 pub(crate) use jobs::JobView;
@@ -131,7 +133,7 @@ fn temporary_path() -> PathBuf {
 
 /// Shared seekable input/capture, removed when the last handle closes. Captures
 /// use a file so a child writing both stdout and stderr cannot fill an unread pipe.
-fn temporary_file(bytes: &[u8], read_only: bool) -> Result<Arc<File>> {
+pub(super) fn temporary_file(bytes: &[u8], read_only: bool) -> Result<Arc<File>> {
     Ok(temporary_stream(bytes, read_only, false)?.0)
 }
 
@@ -399,7 +401,10 @@ impl Host for NativeHost {
                         break;
                     }
                     if line.len() > 16 * 1024 * 1024 {
-                        return Err(Error { message: "input record limit exceeded".into(), status: 122 });
+                        return Err(Error {
+                            message: "input record limit exceeded".into(),
+                            status: 122,
+                        });
                     }
                     if continuation > 0 && byte[0] & 0xc0 == 0x80 {
                         continuation -= 1;
@@ -645,6 +650,7 @@ mod tests {
                 fd: 2,
                 action: RedirectAction::Dup(1),
             }],
+            pipe_fd: 1,
             builtin: false,
         };
         // MSYS2 Rust test executables load runtime DLLs through PATH. Preserve
@@ -758,6 +764,7 @@ mod tests {
                 fd: 2,
                 action: RedirectAction::Dup(1),
             }],
+            pipe_fd: 1,
             builtin: false,
         };
         let result = host.run_pipeline(&[command], false, true).unwrap();

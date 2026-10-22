@@ -62,6 +62,9 @@ impl Session {
             ) {
                 Ok(result) => {
                     self.write(&result.bytes, host, output)?;
+                    for (field, want_newline) in result.fields {
+                        self.write_separated(&field, want_newline, host, output)?;
+                    }
                     for (name, values) in result.captures {
                         // Regex captures do not fire variable events in Fish.
                         let mut assignment = vec!["--no-event".into(), name];
@@ -70,22 +73,22 @@ impl Session {
                     }
                     self.status = result.status;
                     if let Some(diagnostic) = result.diagnostic {
-                        output.bytes.extend(host.write(
+                        output.append(host.write(
                             2,
                             format!("{diagnostic}\n").as_bytes(),
                             &output.redirects,
                             output.capture,
-                        )?);
+                        )?)?;
                     }
                 }
                 Err(error) => {
                     self.status = error.status;
-                    output.bytes.extend(host.write(
+                    output.append(host.write(
                         2,
                         format!("{}\n", error.message).as_bytes(),
                         &output.redirects,
                         output.capture,
-                    )?);
+                    )?)?;
                 }
             },
             "contains" => {
@@ -177,6 +180,7 @@ impl Session {
             env: BTreeMap::new(),
             redirects: output.redirects.clone(),
             display: None,
+            pipe_fd: 1,
             builtin: true,
         };
         let result = host.run_pipeline(&[command], false, output.capture)?;
@@ -184,7 +188,7 @@ impl Session {
             self.cancelled_pipeline = Some(result.pipeline.clone());
         }
         self.status = result.status;
-        output.bytes.extend(result.stdout);
+        output.append(result.stdout)?;
         Ok(())
     }
 
@@ -319,7 +323,8 @@ impl Session {
                 for path in paths {
                     found.push(("file", path));
                 }
-                if !has_path && (!paths_only || quiet) && crate::native::utilities::available(name) {
+                if !has_path && (!paths_only || quiet) && crate::native::utilities::available(name)
+                {
                     found.push(("utility", name.clone()));
                 }
             }
@@ -371,6 +376,4 @@ impl Session {
             .map(|path| path.to_string_lossy().into_owned())
             .collect())
     }
-
-
 }

@@ -4,6 +4,7 @@
 use crate::ast::{self, Keyword as _, Token as _};
 use crate::parse_constants::{ParseErrorCode, ParseKeyword, ParseTokenType, StatementDecoration};
 use crate::redirection::RedirectionMode;
+use crate::separated_buffer::{SeparatedBuffer, SeparationType};
 use crate::tokenizer::PipeOrRedir;
 use fish_widestring::{WString, wstr};
 use rash::host::{Command, Host, OpenMode, RedirectAction, Redirection};
@@ -14,6 +15,8 @@ use std::collections::BTreeMap;
 mod argparse_builtin;
 #[path = "fish_autoload.rs"]
 mod autoload;
+#[path = "fish_capture.rs"]
+mod capture;
 #[path = "fish_complete.rs"]
 mod complete;
 #[path = "fish_completion_autoload.rs"]
@@ -65,13 +68,49 @@ enum Flow {
     Exit,
 }
 
-#[derive(Default)]
 struct Output {
     pipeline_input: bool,
     stdin_is_directly_redirected: bool,
     redirects: Vec<Redirection>,
     capture: bool,
-    bytes: Vec<u8>,
+    bytes: SeparatedBuffer,
+}
+
+impl Default for Output {
+    fn default() -> Self {
+        Self {
+            pipeline_input: false,
+            stdin_is_directly_redirected: false,
+            redirects: Vec::new(),
+            capture: false,
+            bytes: SeparatedBuffer::new(capture::LIMIT),
+        }
+    }
+}
+
+impl Output {
+    fn append(&mut self, bytes: impl AsRef<[u8]>) -> Result<()> {
+        let bytes = bytes.as_ref();
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        self.append_element(bytes, SeparationType::Inferred)
+    }
+
+    fn append_element(&mut self, bytes: &[u8], separation: SeparationType) -> Result<()> {
+        let merge = separation == SeparationType::Inferred
+            && self
+                .bytes
+                .elements()
+                .last()
+                .is_some_and(|element| !element.is_explicitly_separated());
+        if (!merge && self.bytes.elements().len() >= capture::ELEMENT_LIMIT)
+            || !self.bytes.append(bytes, separation)
+        {
+            return Err(Error::new("command substitution output limit exceeded"));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -299,12 +338,18 @@ impl Session {
     }
 
     pub(crate) fn run_worker(
-        (mut session, source, result_path): (Self, String, Option<std::path::PathBuf>),
+        (mut session, source, result_path, captures): (
+            Self,
+            String,
+            Option<std::path::PathBuf>,
+            [Option<std::path::PathBuf>; 3],
+        ),
         host: &mut impl Host,
     ) -> Result<i32> {
+        let mut host = capture::CapturingHost::new(host, captures);
         session.flow = Flow::Normal;
         session.input_mode_blocked = true;
-        let result = session.eval(&source, host);
+        let result = session.eval(&source, &mut host);
         if let Some(path) = result_path {
             // The parent removes the reservation if the pipeline is stopped or
             // cancelled. Do not recreate a stale result after it resumes.
@@ -317,7 +362,18 @@ impl Session {
                 file.write_all(&super::worker::encode(&session)?)?;
             }
         }
-        result
+        match result {
+            Ok(status) => Ok(status),
+            Err(error) => {
+                host.write(
+                    2,
+                    format!("fish: {}\n", error.message).as_bytes(),
+                    &[],
+                    false,
+                )?;
+                Ok(error.status)
+            }
+        }
     }
 
     fn exports(&self) -> BTreeMap<Vec<u8>, Vec<u8>> {
@@ -447,7 +503,9 @@ impl Session {
         self.input_mode_blocked = input_mode_blocked;
         self.status = status;
         self.pipeline = pipeline;
-        result.map(|()| Some(String::from_utf8_lossy(&output.bytes).into_owned()))
+        result.map(|()| {
+            Some(String::from_utf8_lossy(&output.bytes.newline_serialized()).into_owned())
+        })
     }
 
     pub fn set_args(&mut self, args: Vec<String>) {
@@ -647,6 +705,7 @@ impl Session {
             return Err(unsupported("isolated pipeline processes on this host"));
         }
         let background = node.bg.is_some();
+        let captured = output.capture.then(capture::CaptureFile::new).transpose()?;
         let result_file = if background {
             None
         } else {
@@ -679,31 +738,43 @@ impl Session {
                 .flatten();
             let mut worker = self.clone();
             worker.worker_pipeline_input = index > 0;
-            let state = super::worker::encode(&(worker, &stage_source, return_path))?;
-            let mut stage =
-                host.prepare_worker("fish", state, self.exports(), stage_source.into_bytes())?;
-            stage.redirects.clone_from(&output.redirects);
+            let mut redirects = output.redirects.clone();
+            let mut pipe_fd = None;
             if let Some(continuation) = node.continuation.get(index) {
                 let raw = WString::from(text(source, &continuation.pipe));
                 let pipe = PipeOrRedir::try_from(raw.as_utfstr())
                     .map_err(|_| Error::new("invalid pipe"))?;
-                if pipe.fd != 1 {
-                    return Err(unsupported("piping descriptors other than stdout"));
+                if !matches!(pipe.fd, 1 | 2) {
+                    return Err(unsupported(
+                        "piping descriptors other than stdout or stderr",
+                    ));
                 }
+                pipe_fd = Some(pipe.fd);
                 if pipe.stderr_merge {
-                    stage.redirects.push(Redirection {
+                    redirects.push(Redirection {
                         fd: 2,
                         action: RedirectAction::Dup(1),
                     });
                 }
             }
+            let captures = capture::worker_captures(
+                host,
+                &redirects,
+                captured.as_ref().map(capture::CaptureFile::path),
+                pipe_fd,
+            )?;
+            let state = super::worker::encode(&(worker, &stage_source, return_path, captures))?;
+            let mut stage =
+                host.prepare_worker("fish", state, self.exports(), stage_source.into_bytes())?;
+            stage.redirects = redirects;
+            stage.pipe_fd = pipe_fd.unwrap_or(1);
             stages.push(stage);
         }
         let result = host.run_pipeline(&stages, background, output.capture)?;
         if host.cancelled() {
             self.cancelled_pipeline = Some(result.pipeline.clone());
         }
-        if let Some(file) = result_file.filter(|_| !host.cancelled()) {
+        if let Some(file) = result_file.filter(|_| !host.cancelled() && !result.stopped) {
             let bytes = std::fs::read(file.path())?;
             if !bytes.is_empty() {
                 let mut updated: Self = super::worker::decode(&bytes)?;
@@ -731,7 +802,14 @@ impl Session {
         if background {
             self.last_pid = result.last_pid;
         }
-        output.bytes.extend(result.stdout);
+        if let Some(captured) = captured.filter(|_| !host.cancelled() && !result.stopped) {
+            for element in captured.read()?.elements() {
+                output.append_element(&element.contents, element.separation)?;
+            }
+        }
+        if !host.cancelled() && !result.stopped {
+            output.append(result.stdout)?;
+        }
         self.refresh_universals(host)
     }
 
@@ -996,9 +1074,21 @@ impl Session {
     }
 
     fn write(&self, bytes: &[u8], host: &mut impl Host, output: &mut Output) -> Result<()> {
-        output
-            .bytes
-            .extend(host.write(1, bytes, &output.redirects, output.capture)?);
+        output.append(host.write(1, bytes, &output.redirects, output.capture)?)
+    }
+
+    fn write_separated(
+        &self,
+        bytes: &[u8],
+        want_newline: bool,
+        host: &mut impl Host,
+        output: &mut Output,
+    ) -> Result<()> {
+        if let Some(bytes) =
+            host.write_separated(1, bytes, want_newline, &output.redirects, output.capture)?
+        {
+            output.append_element(&bytes, SeparationType::Explicitly)?;
+        }
         Ok(())
     }
 
@@ -1063,7 +1153,7 @@ impl Session {
                     self.flow = saved_flow;
                 }
                 result?;
-                expand::split_substitution(&output.bytes, quoted)
+                expand::split_separated_substitution(&output.bytes, quoted)
             }
         })
     }
@@ -1097,6 +1187,93 @@ pub(super) fn builtin_names() -> &'static [&'static str] {
 mod tests {
     use super::*;
     use rash::host::{ReadResult, RunResult};
+
+    #[test]
+    fn capture_limit_aborts_an_interpreter_loop_at_the_failing_write() {
+        let mut session = Session::new().unwrap();
+        let mut host = Capture::default();
+        let mut output = Output {
+            capture: true,
+            bytes: SeparatedBuffer::new(3),
+            ..Default::default()
+        };
+        let error = session
+            .eval_source("while true; printf xxxx; end", &mut host, &mut output)
+            .unwrap_err();
+        assert!(error.message.contains("output limit exceeded"));
+        assert!(output.bytes.discarded());
+    }
+
+    #[test]
+    fn stopped_capture_ignores_unfinished_frames_and_session_snapshot() {
+        struct StoppedHost;
+        impl Host for StoppedHost {
+            fn supports_workers(&self) -> bool {
+                true
+            }
+            fn prepare_worker(
+                &mut self,
+                _: &str,
+                state: Vec<u8>,
+                env: BTreeMap<Vec<u8>, Vec<u8>>,
+                display: Vec<u8>,
+            ) -> Result<Command> {
+                let (_, _, snapshot, captures): (
+                    Session,
+                    String,
+                    Option<std::path::PathBuf>,
+                    [Option<std::path::PathBuf>; 3],
+                ) = crate::native::worker::decode(&state)?;
+                if let Some(path) = snapshot {
+                    std::fs::write(path, b"unfinished session")?;
+                }
+                for path in captures.into_iter().flatten() {
+                    std::fs::write(path, b"unfinished capture")?;
+                }
+                Ok(Command {
+                    argv: vec![b"worker".to_vec()],
+                    env,
+                    display: Some(display),
+                    redirects: Vec::new(),
+                    builtin: false,
+                    pipe_fd: 1,
+                })
+            }
+            fn run_pipeline(&mut self, _: &[Command], _: bool, _: bool) -> Result<RunResult> {
+                Ok(RunResult {
+                    status: 148,
+                    stopped: true,
+                    pipeline: vec![0, 148],
+                    stdout: b"discarded partial output".to_vec(),
+                    last_pid: None,
+                })
+            }
+            fn change_dir(&mut self, _: &[u8]) -> Result<Vec<u8>> {
+                unreachable!()
+            }
+            fn read_line(&mut self, _: &[Redirection], _: bool) -> Result<ReadResult> {
+                unreachable!()
+            }
+            fn write(&mut self, _: i32, _: &[u8], _: &[Redirection], _: bool) -> Result<Vec<u8>> {
+                unreachable!()
+            }
+            fn cancelled(&self) -> bool {
+                false
+            }
+            fn jobs(&self) -> Vec<Vec<u8>> {
+                Vec::new()
+            }
+        }
+        let mut session = Session::new().unwrap();
+        assert_eq!(
+            session
+                .eval("set v (echo ignored | true)", &mut StoppedHost)
+                .unwrap(),
+            148
+        );
+        assert_eq!(session.pipeline, [0, 148]);
+        assert!(session.values("v").is_empty());
+    }
 
     #[derive(Default)]
     struct Capture(Vec<u8>);

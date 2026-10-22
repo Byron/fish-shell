@@ -18,12 +18,12 @@ impl Session {
             Ok(request) => request,
             Err(error) => {
                 self.status = error.status();
-                output.bytes.extend(host.write(
+                output.append(host.write(
                     2,
                     format!("random: {error}\n").as_bytes(),
                     &output.redirects,
                     output.capture,
-                )?);
+                )?)?;
                 return Ok(());
             }
         };

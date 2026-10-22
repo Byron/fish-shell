@@ -271,12 +271,12 @@ impl Session {
         host: &mut impl Host,
         output: &mut Output,
     ) -> Result<()> {
-        output.bytes.extend(host.write(
+        output.append(host.write(
             2,
             format!("{name}: {message}\n").as_bytes(),
             &output.redirects,
             output.capture,
-        )?);
+        )?)?;
         Ok(())
     }
 

@@ -42,6 +42,9 @@ pub struct Command {
     pub display: Option<Vec<u8>>,
     pub env: BTreeMap<Vec<u8>, Vec<u8>>,
     pub redirects: Vec<Redirection>,
+    /// The descriptor attached to the next stage's stdin, normally stdout.
+    /// Ignored on the final stage. Native hosts also support stderr (fd 2).
+    pub pipe_fd: i32,
     /// Only explicitly selected job-control services use a host builtin.
     pub builtin: bool,
 }
@@ -49,6 +52,8 @@ pub struct Command {
 #[derive(Clone, Debug, Default)]
 pub struct RunResult {
     pub status: i32,
+    /// A suspended foreground pipeline has not finished producing output.
+    pub stopped: bool,
     pub pipeline: Vec<i32>,
     pub stdout: Vec<u8>,
     pub last_pid: Option<u32>,
@@ -125,6 +130,50 @@ pub trait Host {
         redirects: &[Redirection],
         capture: bool,
     ) -> Result<Vec<u8>>;
+
+    /// Write one explicitly separated field. Captures retain even an empty field;
+    /// ordinary streams honor the requested physical trailing newline.
+    fn write_separated(
+        &mut self,
+        fd: i32,
+        bytes: &[u8],
+        want_newline: bool,
+        redirects: &[Redirection],
+        capture: bool,
+    ) -> Result<Option<Vec<u8>>> {
+        let mut captured = [false, capture, false];
+        for redirect in redirects {
+            let destination = usize::try_from(redirect.fd)
+                .ok()
+                .filter(|index| *index < captured.len())
+                .ok_or_else(|| crate::Error::new("invalid output descriptor"))?;
+            captured[destination] = match redirect.action {
+                RedirectAction::Dup(source) => *captured
+                    .get(source as usize)
+                    .ok_or_else(|| crate::Error::new("invalid output descriptor"))?,
+                _ => false,
+            };
+        }
+        let captured = *captured
+            .get(fd as usize)
+            .ok_or_else(|| crate::Error::new("invalid output descriptor"))?;
+        if captured {
+            self.write(fd, bytes, redirects, capture).map(Some)
+        } else {
+            let mut rendered = bytes.to_vec();
+            if want_newline {
+                rendered.push(b'\n');
+            }
+            self.write(fd, &rendered, redirects, capture)?;
+            Ok(None)
+        }
+    }
+
+    /// A native worker may inherit an explicitly separated capture stream.
+    /// Its private framing file is propagated to descendant interpreter workers.
+    fn inherited_capture(&self, _fd: i32) -> Option<std::path::PathBuf> {
+        None
+    }
 
     fn read_line(
         &mut self,

@@ -235,6 +235,36 @@ pub(super) fn split_substitution(bytes: &[u8], quoted: bool) -> Result<Vec<Strin
     }
 }
 
+pub(super) fn split_separated_substitution(
+    buffer: &crate::separated_buffer::SeparatedBuffer,
+    quoted: bool,
+) -> Result<Vec<String>> {
+    if buffer.discarded() || buffer.len() > 16 * 1024 * 1024 {
+        return Err(Error::new("command substitution output limit exceeded"));
+    }
+    let mut fields = Vec::new();
+    for element in buffer.elements() {
+        if element.is_explicitly_separated() {
+            fields.push(
+                std::str::from_utf8(&element.contents)
+                    .map_err(|_| Error::new("command substitution output is not UTF-8"))?
+                    .to_owned(),
+            );
+        } else if quoted {
+            let contents = std::str::from_utf8(&element.contents)
+                .map_err(|_| Error::new("command substitution output is not UTF-8"))?;
+            fields.extend(contents.split_terminator('\n').map(str::to_owned));
+        } else {
+            fields.extend(split_substitution(&element.contents, false)?);
+        }
+    }
+    if quoted {
+        Ok(vec![fields.join("\n").trim_end_matches('\n').to_owned()])
+    } else {
+        Ok(fields)
+    }
+}
+
 pub(super) fn word(
     input: &str,
     mut variable: impl FnMut(&str) -> Result<Vec<String>>,

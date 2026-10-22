@@ -27,12 +27,12 @@ impl Session {
     ) -> Result<()> {
         if let Err(error) = self.read_impl(args, host, output) {
             self.status = error.status;
-            output.bytes.extend(host.write(
+            output.append(host.write(
                 2,
                 format!("{}\n", error.message).as_bytes(),
                 &output.redirects,
                 output.capture,
-            )?);
+            )?)?;
         }
         Ok(())
     }

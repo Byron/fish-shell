@@ -154,12 +154,12 @@ impl Session {
             "history" => {
                 if let Err(error) = self.history_builtin(args, host, output) {
                     self.status = error.status;
-                    output.bytes.extend(host.write(
+                    output.append(host.write(
                         2,
                         format!("{}\n", error.message).as_bytes(),
                         &output.redirects,
                         output.capture,
-                    )?);
+                    )?)?;
                 }
             }
             "true" | ":" => self.status = 0,
@@ -199,24 +199,24 @@ impl Session {
                     self.status = error.status;
                     self.pipeline = vec![self.status];
                     if !error.message.is_empty() {
-                        output.bytes.extend(host.write(
+                        output.append(host.write(
                             2,
                             format!("{}\n", error.message).as_bytes(),
                             &output.redirects,
                             output.capture,
-                        )?);
+                        )?)?;
                     }
                 }
             },
             "emit" => {
                 if let Err(error) = self.emit(args, host, output) {
                     self.status = error.status;
-                    output.bytes.extend(host.write(
+                    output.append(host.write(
                         2,
                         format!("{}\n", error.message).as_bytes(),
                         &output.redirects,
                         output.capture,
-                    )?);
+                    )?)?;
                 }
             }
             "pwd" => {
@@ -354,12 +354,12 @@ impl Session {
                     } else {
                         126
                     };
-                    output.bytes.extend(host.write(
+                    output.append(host.write(
                         2,
                         format!("{name}: {error}\n").as_bytes(),
                         &output.redirects,
                         output.capture,
-                    )?);
+                    )?)?;
                     return Ok(());
                 }
             }
@@ -374,6 +374,7 @@ impl Session {
             display: None,
             env,
             redirects: output.redirects.clone(),
+            pipe_fd: 1,
             builtin: false,
         };
         let result = host.run_pipeline(&[command], false, output.capture)?;
@@ -381,7 +382,7 @@ impl Session {
             self.cancelled_pipeline = Some(result.pipeline.clone());
         }
         self.status = result.status;
-        output.bytes.extend(result.stdout);
+        output.append(result.stdout)?;
         Ok(())
     }
 

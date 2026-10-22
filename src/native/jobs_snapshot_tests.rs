@@ -33,6 +33,7 @@ fn builtin(host: &mut NativeHost, args: &[&str]) -> Result<RunResult> {
                 fd: 2,
                 action: RedirectAction::Dup(1),
             }],
+            pipe_fd: 1,
             builtin: true,
         }],
         false,

@@ -93,6 +93,15 @@ def main():
                 time.sleep(0.03)
             raise AssertionError(f"no native editor prompt:\n{text}")
 
+        def await_last_line(pane, line):
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                lines = [value.rstrip() for value in capture(pane).splitlines() if value.strip()]
+                if lines and lines[-1] == line:
+                    return
+                time.sleep(0.03)
+            raise AssertionError(f"missing final line {line!r}:\n{capture(pane)}")
+
         def keys(pane, *names):
             call("send-keys", "-t", pane, *names)
 
@@ -189,13 +198,17 @@ def main():
             expect(pane, "EDITOR_multi_two")
 
             literal(pane, "echo EDITOR_must_not_execute")
+            await_last_line(pane, "fish> echo EDITOR_must_not_execute")
             keys(pane, "C-c")
+            await_last_line(pane, "fish>")
             send(pane, "echo EDITOR_after_interrupt")
             expect(pane, "EDITOR_after_interrupt")
             assert "EDITOR_must_not_execute" not in capture(pane).splitlines()
 
             literal(pane, "echo EDITOR_suspend_must_not_execute")
+            await_last_line(pane, "fish> echo EDITOR_suspend_must_not_execute")
             keys(pane, "C-z")
+            await_last_line(pane, "fish>")
             send(pane, "echo EDITOR_after_suspend_key")
             expect(pane, "EDITOR_after_suspend_key")
             assert "EDITOR_suspend_must_not_execute" not in capture(pane).splitlines()
@@ -378,6 +391,19 @@ end
             keys(lifecycle, "C-c")
             events = await_events(before + 3, lifecycle)
             assert events[-2]["status"] == 130 and events[-2]["pipeline"] == [130], events
+
+            # Cancelling a substitution must discard its private worker capture
+            # and leave the next submission's output usable.
+            before = len(events)
+            send(lifecycle, "set captured (echo ignored | begin; read ignored; string split , a,b; "
+                            "echo LIFECYCLE_capture_running >&2; while true; end; end)")
+            expect(lifecycle, "LIFECYCLE_capture_running")
+            keys(lifecycle, "C-c")
+            events = await_events(before + 3, lifecycle)
+            assert events[-2]["status"] == 130, events
+            send(lifecycle, "echo LIFECYCLE_capture_recovered")
+            expect(lifecycle, "LIFECYCLE_capture_recovered")
+            events = await_events(before + 6, lifecycle)
 
             call("resize-window", "-t", "lifecycle", "-x", "92", "-y", "34")
             dimensions = tuple(int(value) for value in call(

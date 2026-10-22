@@ -17,6 +17,7 @@ pub mod history_core;
 pub(crate) mod path_lexical;
 pub(crate) mod random_core;
 pub(crate) mod read_fields;
+pub mod separated_buffer;
 pub(crate) mod string_fields;
 pub(crate) mod string_regex;
 pub(crate) mod test_expression;

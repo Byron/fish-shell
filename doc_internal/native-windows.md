@@ -104,6 +104,13 @@ are supported. Comments inside substitutions can contain quotes and parentheses;
 nested quoted substitutions use the same boundaries as POSIX Fish. Unquoted
 native command substitutions split Windows CRLF output
 into lines; quoted substitutions retain their internal line endings.
+`string split` preserves empty fields and embedded newlines inside command
+substitutions, including when it runs as the final pipeline stage. Captured
+fields use the same separated-output buffer as POSIX Fish; ordinary redirected
+output still renders the usual line separators. Native captures are bounded to
+16 MiB and 100,000 fields or worker output records. Cancelled or stopped captures
+are discarded; resuming a stopped pipeline does not restore its original
+substitution result.
 Native filesystem globbing expands unquoted `*` and recursive
 `**` directory components. Quoted stars and stars from variable values stay
 literal. Unmatched globs are empty lists for `set`, `count`, and `for`, and produce
@@ -737,7 +744,9 @@ python tests/native_bash_input_tmuxx.py .\target\x86_64-pc-windows-msvc\release\
 ## Pipelines and Windows job control
 
 Both native shells run concurrent pipelines, including builtins, functions and
-compound commands. `&` starts a background job; `jobs`, `wait`, `fg`, `bg`,
+compound commands. Native Fish also supports `2>|` to pipe only stderr, leaving
+stdout at its existing destination; explicit redirects take precedence over the
+pipe. `&` starts a background job; `jobs`, `wait`, `fg`, `bg`,
 `disown`, and `kill` operate on jobs created by this shell. Use `%1`, `%+`, `%-`
 or an owned process ID to select a job. Fish exposes `$last_pid` and `$pipestatus`;
 Rash exposes `$!` and `PIPESTATUS`, including `set -o pipefail`.

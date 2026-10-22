@@ -223,12 +223,7 @@ impl Session {
         output: &mut Output,
     ) -> Result<()> {
         self.status = status;
-        output.bytes.extend(host.write(
-            2,
-            message.as_bytes(),
-            &output.redirects,
-            output.capture,
-        )?);
+        output.append(host.write(2, message.as_bytes(), &output.redirects, output.capture)?)?;
         Ok(())
     }
 }

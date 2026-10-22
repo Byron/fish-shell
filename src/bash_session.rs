@@ -862,6 +862,7 @@ impl rash::host::Host for FishHost<'_> {
             .unwrap_or_default();
         Ok(RunResult {
             status: statuses.status,
+            stopped: false,
             pipeline: statuses.pipestatus,
             stdout,
             last_pid,

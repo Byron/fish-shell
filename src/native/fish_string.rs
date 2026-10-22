@@ -11,9 +11,28 @@ mod matching;
 #[derive(Default)]
 pub(super) struct StringOutput {
     pub bytes: Vec<u8>,
+    pub fields: Vec<(Vec<u8>, bool)>,
+    field_size: usize,
     pub status: i32,
     pub captures: std::collections::HashMap<String, Vec<String>>,
     pub diagnostic: Option<String>,
+}
+
+impl StringOutput {
+    fn append_field(&mut self, value: &wstr, want_newline: bool) -> Result<()> {
+        let value = value.to_string().into_bytes();
+        self.field_size = self
+            .field_size
+            .saturating_add(value.len())
+            .saturating_add(1);
+        if self.field_size > 16 * 1024 * 1024
+            || self.fields.len() >= super::super::capture::ELEMENT_LIMIT
+        {
+            return Err(Error::new("string: output limit exceeded"));
+        }
+        self.fields.push((value, want_newline));
+        Ok(())
+    }
 }
 
 pub(super) fn run(
@@ -312,11 +331,11 @@ fn run_basic(
                             Box::new(lines.iter())
                         };
                         for line in selected {
-                            append(
-                                &mut output.bytes,
-                                line,
-                                newline || matches!(command.as_str(), "length" | "split"),
-                            )?;
+                            if command == "split" {
+                                output.append_field(line, true)?;
+                            } else {
+                                append(&mut output.bytes, line, newline || command == "length")?;
+                            }
                         }
                     }
                 }

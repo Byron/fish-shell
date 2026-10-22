@@ -34,6 +34,7 @@ fn builtin(host: &mut NativeHost, args: &[&str]) -> RunResult {
             action: RedirectAction::Dup(1),
         }],
         display: None,
+        pipe_fd: 1,
         builtin: true,
     };
     host.run_pipeline(&[command], false, true).unwrap()
@@ -58,6 +59,31 @@ fn pipelines_stream_more_than_pipe_capacity_and_keep_stage_statuses() {
         .unwrap();
     assert_eq!(output.pipeline, [3, 5]);
     assert_eq!(output.status, 5);
+    let start = output
+        .stdout
+        .windows(11)
+        .position(|bytes| bytes == b"DATA_START:")
+        .unwrap()
+        + 11;
+    let end = output
+        .stdout
+        .windows(9)
+        .position(|bytes| bytes == b":DATA_END")
+        .unwrap();
+    assert_eq!(end - start, 2 * 1024 * 1024);
+    assert!(output.stdout[start..end].iter().all(|byte| *byte == b'x'));
+}
+
+#[test]
+fn stderr_pipelines_stream_more_than_pipe_capacity() {
+    let mut host = NativeHost::new().unwrap();
+    let mut first = action("produce_stderr");
+    first.redirects.clear();
+    first.pipe_fd = 2;
+    let output = host
+        .run_pipeline(&[first, action("copy")], false, true)
+        .unwrap();
+    assert_eq!(output.pipeline, [3, 5]);
     let start = output
         .stdout
         .windows(11)
@@ -245,8 +271,12 @@ pub(super) fn child_action() {
         return;
     };
     match action.as_str() {
-        "produce" => {
-            let mut out = io::stdout().lock();
+        "produce" | "produce_stderr" => {
+            let mut out: Box<dyn io::Write> = if action == "produce_stderr" {
+                Box::new(io::stderr().lock())
+            } else {
+                Box::new(io::stdout().lock())
+            };
             out.write_all(b"DATA_START:").unwrap();
             out.write_all(&vec![b'x'; 2 * 1024 * 1024]).unwrap();
             out.write_all(b":DATA_END").unwrap();

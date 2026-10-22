@@ -118,12 +118,12 @@ impl Session {
                             // Fish reports a failed case expansion and proceeds
                             // to subsequent cases, allowing a default to match.
                             self.status = error.status;
-                            output.bytes.extend(host.write(
+                            output.append(host.write(
                                 2,
                                 format!("fish: {}\n", error.message).as_bytes(),
                                 &output.redirects,
                                 output.capture,
-                            )?);
+                            )?)?;
                             continue 'cases;
                         }
                     }

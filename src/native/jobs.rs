@@ -202,15 +202,21 @@ impl Job {
                 State::Running => 0,
             })
             .collect::<Vec<_>>();
+        let stopped = matches!(self.state(), State::Stopped(_));
         let mut stdout = std::mem::take(&mut self.diagnostics);
-        if let Some(file) = &self.output {
+        if let Some(file) = self.output.as_ref().filter(|_| !stopped) {
             let mut file = &**file;
             file.seek(io::SeekFrom::Start(self.output_offset))?;
-            file.read_to_end(&mut stdout)?;
+            file.take(CAPTURE_BYTE_LIMIT.saturating_sub(stdout.len()) as u64 + 1)
+                .read_to_end(&mut stdout)?;
+            if stdout.len() > CAPTURE_BYTE_LIMIT {
+                return Err(Error::new("command substitution output limit exceeded"));
+            }
             self.output_offset = file.stream_position()?;
         }
         Ok(RunResult {
             status: pipeline.last().copied().unwrap_or(0),
+            stopped,
             pipeline,
             stdout,
             last_pid: None,
@@ -389,7 +395,7 @@ impl NativeHost {
                 }
                 command.env(checked_os(name)?, checked_os(value)?);
             }
-            let defaults = [
+            let mut defaults = [
                 if index > 0 {
                     Target::File(pipes[index - 1].0.clone())
                 } else if background {
@@ -397,15 +403,19 @@ impl NativeHost {
                 } else {
                     Target::Inherited(0)
                 },
-                if index + 1 < stages.len() {
-                    Target::File(pipes[index].1.clone())
-                } else if capture {
+                if capture {
                     Target::Capture
                 } else {
                     Target::Inherited(1)
                 },
                 Target::Inherited(2),
             ];
+            if index + 1 < stages.len() {
+                if !matches!(stage.pipe_fd, 1 | 2) {
+                    return Err(Error::new("only stdout or stderr may be piped"));
+                }
+                defaults[stage.pipe_fd as usize] = Target::File(pipes[index].1.clone());
+            }
             let targets = apply_redirects(&stage.redirects, defaults)?;
             command.stdin(child_stdio(&targets[0], 0, job.output.as_deref())?);
             command.stdout(child_stdio(&targets[1], 1, job.output.as_deref())?);
@@ -467,6 +477,7 @@ impl NativeHost {
             ));
             Ok(RunResult {
                 status: 0,
+                stopped: false,
                 pipeline: vec![0],
                 stdout: Vec::new(),
                 last_pid,
@@ -760,6 +771,7 @@ impl NativeHost {
                     )?;
                     return Ok(RunResult {
                         status: 0,
+                        stopped: false,
                         pipeline: vec![0],
                         stdout,
                         last_pid: None,
@@ -841,6 +853,7 @@ impl NativeHost {
         }
         Ok(RunResult {
             status,
+            stopped: false,
             pipeline: vec![status],
             stdout,
             last_pid: None,
