@@ -40,63 +40,13 @@ impl Deref for Fields {
     }
 }
 
-enum FieldParseError {
-    /// Unable to parse as integer
-    Number,
-    /// One of the ends in a range is either too big or small
-    Range,
-    /// The field is a valid number but outside of the allowed range
-    Field,
-}
+use crate::string_fields::FieldError as FieldParseError;
 
-impl From<crate::wutil::wcstoi::Error> for FieldParseError {
-    fn from(_: crate::wutil::wcstoi::Error) -> Self {
-        FieldParseError::Number
-    }
-}
-
-impl<'args> TryFrom<&'args wstr> for Fields {
+impl TryFrom<&wstr> for Fields {
     type Error = FieldParseError;
 
-    /// FIELDS is a comma-separated string of field numbers and/or spans.
-    /// Each field is one-indexed.
     fn try_from(value: &wstr) -> Result<Self, Self::Error> {
-        fn parse_field(f: &wstr) -> Result<Vec<usize>, FieldParseError> {
-            use FieldParseError::*;
-            let range: Vec<&wstr> = f.split('-').collect();
-            let range: Vec<usize> = match range[..] {
-                [s, e] => {
-                    let start = fish_wcstoi(s)? as usize;
-                    let end = fish_wcstoi(e)? as usize;
-
-                    if start == 0 || end == 0 {
-                        return Err(Range);
-                    }
-
-                    if start <= end {
-                        // we store as 0-indexed, but the range is 1-indexed
-                        (start - 1..end).collect()
-                    } else {
-                        // this is allowed
-                        (end - 1..start).rev().collect()
-                    }
-                }
-                _ => match fish_wcstoi(f)? as usize {
-                    n @ 1.. => vec![n - 1],
-                    _ => return Err(Field),
-                },
-            };
-            Ok(range)
-        }
-
-        let fields = value.split(',').map(parse_field);
-
-        let mut indices = Vec::new();
-        for field in fields {
-            indices.extend(field?);
-        }
-
-        Ok(Self(indices))
+        crate::string_fields::parse_fields(&value.to_string(), usize::MAX).map(Self)
     }
 }
 
@@ -129,6 +79,7 @@ impl<'args> StringSubCommand<'args> for Split<'args> {
                     FieldParseError::Range => {
                         err_fmt!("Invalid range value for field '%s'", arg)
                     }
+                    FieldParseError::Limit => unreachable!("unbounded field selection"),
                     FieldParseError::Field => {
                         err_fmt!("Invalid fields value '%s'", arg)
                     }

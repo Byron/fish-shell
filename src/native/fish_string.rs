@@ -59,8 +59,11 @@ struct Options {
     count: Option<usize>,
     max: Option<usize>,
     start: Option<i64>,
+    end: Option<i64>,
     length: Option<usize>,
     chars: Option<WString>,
+    fields: Vec<usize>,
+    allow_empty: bool,
 }
 
 const QUIET_OPTIONS: &[WOption] = &[wopt(L!("quiet"), NoArgument, 'q')];
@@ -73,6 +76,8 @@ const SPLIT_OPTIONS: &[WOption] = &[
     wopt(L!("right"), NoArgument, 'r'),
     wopt(L!("max"), RequiredArgument, 'm'),
     wopt(L!("no-empty"), NoArgument, 'n'),
+    wopt(L!("fields"), RequiredArgument, 'f'),
+    wopt(L!("allow-empty"), NoArgument, 'a'),
 ];
 const REPEAT_OPTIONS: &[WOption] = &[
     wopt(L!("count"), RequiredArgument, 'n'),
@@ -89,6 +94,7 @@ const TRIM_OPTIONS: &[WOption] = &[
 const SUB_OPTIONS: &[WOption] = &[
     wopt(L!("length"), RequiredArgument, 'l'),
     wopt(L!("start"), RequiredArgument, 's'),
+    wopt(L!("end"), RequiredArgument, 'e'),
     wopt(L!("quiet"), NoArgument, 'q'),
 ];
 
@@ -96,10 +102,10 @@ fn option_spec(command: &str) -> Result<(&'static wstr, &'static [WOption<'stati
     Ok(match command {
         "length" | "lower" | "upper" => (L!("q"), QUIET_OPTIONS),
         "join" => (L!("qn"), JOIN_OPTIONS),
-        "split" => (L!("qrm:n"), SPLIT_OPTIONS),
+        "split" => (L!("qrm:nf:a"), SPLIT_OPTIONS),
         "repeat" => (L!("n:m:qN"), REPEAT_OPTIONS),
         "trim" => (L!("c:lrq"), TRIM_OPTIONS),
-        "sub" => (L!("l:qs:"), SUB_OPTIONS),
+        "sub" => (L!("l:qs:e:"), SUB_OPTIONS),
         _ => {
             return Err(Error::new(format!(
                 "native string: unsupported subcommand {command}"
@@ -140,14 +146,33 @@ fn parse_options(command: &str, args: &mut [&wstr]) -> Result<(Options, usize)> 
             'c' => options.chars = Some(parser.woptarg.unwrap().to_owned()),
             'm' => options.max = Some(nonnegative(command, parser.woptarg.unwrap(), "maximum")?),
             'l' => options.length = Some(nonnegative(command, parser.woptarg.unwrap(), "length")?),
-            's' => {
+            's' | 'e' => {
                 let value = parser.woptarg.unwrap();
-                let start = integer(command, value, "start index")?;
-                if start == 0 {
+                let position = integer(command, value, "character index")?;
+                if position == 0 {
                     return Err(Error::new("string sub: indexes start at one"));
                 }
-                options.start = Some(start);
+                if option == 's' {
+                    options.start = Some(position);
+                } else {
+                    options.end = Some(position);
+                }
             }
+            'f' => {
+                let value = parser.woptarg.unwrap().to_string();
+                options.fields =
+                    crate::string_fields::parse_fields(&value, 100_000).map_err(|problem| {
+                        use crate::string_fields::FieldError;
+                        let detail = match problem {
+                            FieldError::Number => "invalid integer",
+                            FieldError::Range => "invalid field range",
+                            FieldError::Field => "invalid field number",
+                            FieldError::Limit => "field selection limit exceeded",
+                        };
+                        Error::new(format!("string split: {value}: {detail}"))
+                    })?;
+            }
+            'a' => options.allow_empty = true,
             error @ (':' | ';' | '?') => {
                 let argument = original_args[parser.wopt_index - 1];
                 let detail = match error {
@@ -189,6 +214,16 @@ fn run_basic(
     let args: Vec<WString> = args.iter().map(|arg| WString::from(arg.as_str())).collect();
     let mut args: Vec<&wstr> = args.iter().map(WString::as_utfstr).collect();
     let (mut options, mut index) = parse_options(command, &mut args)?;
+    if options.length.is_some() && options.end.is_some() {
+        return Err(Error::new(
+            "string sub: --end and --length are mutually exclusive",
+        ));
+    }
+    if options.allow_empty && options.fields.is_empty() {
+        return Err(Error::new(
+            "string split: --allow-empty is only valid with --fields",
+        ));
+    }
     let parameter_count = match command.as_str() {
         "join" | "split" => 1,
         "repeat" if options.count.is_none() && options.max.is_none() => 1,
@@ -217,6 +252,7 @@ fn run_basic(
     let mut emitted = 0;
     let mut split_inputs = 0;
     let mut split_fields = 0;
+    let mut missing_field = false;
     let mut final_newline = true;
     for_each_input(
         inputs,
@@ -262,10 +298,23 @@ fn run_basic(
                     }
                     success |= changed;
                     if !options.quiet {
-                        for line in lines {
+                        let selected: Box<dyn Iterator<Item = &WString>> = if command == "split"
+                            && !options.fields.is_empty()
+                        {
+                            if !options.allow_empty
+                                && options.fields.iter().any(|&field| field >= lines.len())
+                            {
+                                missing_field = true;
+                                return Ok(true);
+                            }
+                            Box::new(options.fields.iter().filter_map(|&field| lines.get(field)))
+                        } else {
+                            Box::new(lines.iter())
+                        };
+                        for line in selected {
                             append(
                                 &mut output.bytes,
-                                &line,
+                                line,
                                 newline || matches!(command.as_str(), "length" | "split"),
                             )?;
                         }
@@ -279,7 +328,7 @@ fn run_basic(
         append(&mut output.bytes, L!(""), true)?;
     }
     if command == "split" && !options.quiet {
-        success = split_fields > split_inputs;
+        success = !missing_field && split_fields > split_inputs;
     }
     output.status = i32::from(!success);
     Ok(())
@@ -365,18 +414,13 @@ fn transform(
             (values, changed)
         }
         "sub" => {
-            let start = options.start.unwrap_or(1);
-            let start = if start < 0 {
-                input
-                    .len()
-                    .saturating_sub(start.unsigned_abs().min(usize::MAX as u64) as usize)
-            } else {
-                ((start - 1) as usize).min(input.len())
-            };
-            let end = start
-                .saturating_add(options.length.unwrap_or(usize::MAX))
-                .min(input.len());
-            (vec![input[start..end].to_owned()], true)
+            let range = crate::string_fields::substring_range(
+                input.len(),
+                options.start,
+                options.end,
+                options.length,
+            );
+            (vec![input[range].to_owned()], true)
         }
         _ => unreachable!("invalid basic string operation"),
     };

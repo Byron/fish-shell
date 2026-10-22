@@ -72,36 +72,15 @@ impl StringSubCommand<'_> for Sub {
 
         let mut nsub = 0;
         for InputValue { arg, want_newline } in arguments(args, optind, streams) {
-            let start: usize = match self.start.map(i64::from).unwrap_or_default() {
-                n @ 1.. => n as usize - 1,
-                0 => 0,
-                n => {
-                    let n = u64::min(n.unsigned_abs(), usize::MAX as u64) as usize;
-                    arg.len().saturating_sub(n)
-                }
-            }
-            .clamp(0, arg.len());
-
-            let count = {
-                let n = self
-                    .end
-                    .map(|e| match i64::from(e) {
-                        // end can never be 0
-                        n @ 1.. => n as usize,
-                        n => {
-                            let n = u64::min(n.unsigned_abs(), usize::MAX as u64) as usize;
-                            arg.len().saturating_sub(n)
-                        }
-                    })
-                    .map(|n| n.saturating_sub(start));
-
-                self.length.or(n).unwrap_or(arg.len())
-            };
+            let range = crate::string_fields::substring_range(
+                arg.len(),
+                self.start.map(i64::from),
+                self.end.map(i64::from),
+                self.length,
+            );
 
             if !self.quiet {
-                streams
-                    .out
-                    .append(&arg[start..usize::min(start + count, arg.len())]);
+                streams.out.append(&arg[range]);
                 if want_newline {
                     streams.out.append('\n');
                 }

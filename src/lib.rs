@@ -16,6 +16,7 @@ pub(crate) mod function_options;
 pub mod history_core;
 pub(crate) mod path_lexical;
 pub(crate) mod random_core;
+pub(crate) mod string_fields;
 pub(crate) mod string_regex;
 pub(crate) mod test_expression;
 pub(crate) mod universal_variables;

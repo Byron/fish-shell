@@ -57,6 +57,75 @@ fn validate_case(args: &[&str], status: i32, expected: &str) {
 }
 
 #[test]
+fn split_fields_support_ranges_repetition_and_missing_fields() {
+    for (args, status, expected) in [
+        (
+            vec!["string", "split", "-f3,2,2", "", "abc"],
+            0,
+            "c\nb\nb\n",
+        ),
+        (
+            vec!["string", "split", "--fields=1-3,5,9-7", "", "123456789"],
+            0,
+            "1\n2\n3\n5\n9\n8\n7\n",
+        ),
+        (vec!["string", "split", "-f2,9", "", "abc"], 1, ""),
+        (vec!["string", "split", "-af2,9", "", "abc"], 0, "b\n"),
+        (vec!["string", "split", "-qf9", "", "abc"], 0, ""),
+        (
+            vec!["string", "split", "-f1", " ", "a b", "c d"],
+            0,
+            "a\nc\n",
+        ),
+        (vec!["string", "split", "-f1", ":", "abc"], 1, "abc\n"),
+        (vec!["string", "split", "-rm1", "-f1", ":", "a:b:c"], 0, "a:b\n"),
+        (vec!["string", "split", "-nf2", ":", "a::b"], 0, "b\n"),
+    ] {
+        validate_case(&args, status, expected);
+    }
+    assert_eq!(
+        stdout("printf '%s\\n' a:b c:d | string split -f2 :"),
+        "b\nd\n"
+    );
+}
+
+#[test]
+fn split_field_errors_are_bounded_and_do_not_stop_following_commands() {
+    for fields in ["0", "1-0", "-1", "1--2", "1a", "1-2147483647", "1-100000,1"] {
+        let output = run(&format!(
+            "string split --fields='{fields}' : a:b; echo status:$status"
+        ));
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "status:2\n",
+            "{fields}"
+        );
+        assert!(!output.stderr.is_empty());
+    }
+    validate_case(&["string", "split", "--allow-empty", ":", "a:b"], 2, "");
+}
+
+#[test]
+fn substring_end_uses_shared_unicode_character_ranges() {
+    for (args, expected) in [
+        (vec!["string", "sub", "--end=3", "abcde"], "abc\n"),
+        (vec!["string", "sub", "-e-4", "abcde"], "a\n"),
+        (vec!["string", "sub", "-s2", "-e-2", "abcde"], "bc\n"),
+        (vec!["string", "sub", "-s4", "-e2", "abcde"], "\n"),
+        (vec!["string", "sub", "-s2", "-e3", "a文😀z"], "文😀\n"),
+        (
+            vec!["string", "sub", "-s-9223372036854775808", "-e99", "abc"],
+            "abc\n",
+        ),
+    ] {
+        validate_case(&args, 0, expected);
+    }
+    validate_case(&["string", "sub", "-e0", "abc"], 2, "");
+    validate_case(&["string", "sub", "-e2", "-l1", "abc"], 2, "");
+    assert_eq!(stdout("printf abcd | string sub -s2 -e3"), "bc");
+}
+
+#[test]
 fn established_posix_match_cases() {
     string_cases::match_cases(validate_case);
 }

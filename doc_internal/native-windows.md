@@ -94,6 +94,11 @@ grouped flags, and `--option=value`. String operations read stdin only when it
 is directly piped or redirected to the builtin; an empty argument list does not
 consume input inherited by a function or block. Use `<&0` for an explicit read
 inside such a block.
+`string split --fields` selects fields, including repeated fields and forward or
+reverse ranges; `--allow-empty` skips missing fields. Native selections are
+bounded to 100,000 fields. `string sub --end` accepts positive or negative Unicode
+character positions. Both operations share their field/range rules with POSIX
+Fish, and `--end` is mutually exclusive with `--length`.
 Command substitutions, brace lists, indirect variables, and list index ranges
 are supported. Comments inside substitutions can contain quotes and parentheses;
 nested quoted substitutions use the same boundaries as POSIX Fish. Unquoted
