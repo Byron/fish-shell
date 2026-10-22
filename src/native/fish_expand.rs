@@ -89,43 +89,16 @@ pub(super) fn syntax(input: &str, depth: usize) -> Result<()> {
 }
 
 fn substitution(chars: &[char], start: usize, depth: usize) -> Result<usize> {
-    let mut quote = Quote::None;
-    let mut nesting = 1;
-    let mut index = start;
-    while index < chars.len() {
-        let c = chars[index];
-        index += 1;
-        match c {
-            '\'' if quote != Quote::Double => {
-                quote = if quote == Quote::Single {
-                    Quote::None
-                } else {
-                    Quote::Single
-                }
-            }
-            '"' if quote != Quote::Single => {
-                quote = if quote == Quote::Double {
-                    Quote::None
-                } else {
-                    Quote::Double
-                }
-            }
-            '\\' => {
-                index += usize::from(index < chars.len());
-            }
-            '(' if quote == Quote::None => nesting += 1,
-            ')' if quote == Quote::None => {
-                nesting -= 1;
-                if nesting == 0 {
-                    let source: String = chars[start..index - 1].iter().collect();
-                    super::check_syntax_depth(&source, depth + 1)?;
-                    return Ok(index);
-                }
-            }
-            _ => (),
-        }
-    }
-    Err(Error::new("unterminated command substitution"))
+    // Start at the already recognized opening parenthesis. Its body has its
+    // own quote context, including comments and nested quoted substitutions.
+    let input: &fish_widestring::wstr = chars.into();
+    let mut cursor = start - 1;
+    let substitution =
+        crate::commandline_extent::locate_cmdsubst_range(input, &mut cursor, false, None, None)
+            .map_err(|()| Error::new("unterminated command substitution"))?
+            .ok_or_else(|| Error::new("unterminated command substitution"))?;
+    super::check_syntax_depth(&input[substitution.command_range()].to_string(), depth + 1)?;
+    Ok(substitution.end())
 }
 
 /// Called by the shared parser after checking that a token can contain a keyword.

@@ -95,7 +95,9 @@ is directly piped or redirected to the builtin; an empty argument list does not
 consume input inherited by a function or block. Use `<&0` for an explicit read
 inside such a block.
 Command substitutions, brace lists, indirect variables, and list index ranges
-are supported. Unquoted native command substitutions split Windows CRLF output
+are supported. Comments inside substitutions can contain quotes and parentheses;
+nested quoted substitutions use the same boundaries as POSIX Fish. Unquoted
+native command substitutions split Windows CRLF output
 into lines; quoted substitutions retain their internal line endings.
 Native filesystem globbing expands unquoted `*` and recursive
 `**` directory components. Quoted stars and stars from variable values stay
