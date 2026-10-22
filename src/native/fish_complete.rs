@@ -3,6 +3,9 @@ use super::*;
 use crate::native::interactive_completion::{CompletionContext, CompletionEngine, CompletionSpec};
 use crate::tokenizer::{TokFlags, TokenType, Tokenizer};
 use fish_wcstringutil::escape::{UnescapeFlags, UnescapeStringStyle, unescape_string};
+use fish_wgetopt::{ArgType, WGetopter, WOption, wopt};
+use fish_widestring::L;
+use std::io::IsTerminal;
 
 impl Session {
     pub(super) fn complete_builtin(
@@ -11,135 +14,292 @@ impl Session {
         host: &mut impl Host,
         output: &mut Output,
     ) -> Result<()> {
-        let parsed_args = completion_options(args)?;
-        let args = &parsed_args;
+        const OPTIONS: &[WOption] = &[
+            wopt(L!("exclusive"), ArgType::NoArgument, 'x'),
+            wopt(L!("no-files"), ArgType::NoArgument, 'f'),
+            wopt(L!("force-files"), ArgType::NoArgument, 'F'),
+            wopt(L!("require-parameter"), ArgType::NoArgument, 'r'),
+            wopt(L!("path"), ArgType::RequiredArgument, 'p'),
+            wopt(L!("command"), ArgType::RequiredArgument, 'c'),
+            wopt(L!("short-option"), ArgType::RequiredArgument, 's'),
+            wopt(L!("long-option"), ArgType::RequiredArgument, 'l'),
+            wopt(L!("old-option"), ArgType::RequiredArgument, 'o'),
+            wopt(L!("description"), ArgType::RequiredArgument, 'd'),
+            wopt(L!("arguments"), ArgType::RequiredArgument, 'a'),
+            wopt(L!("erase"), ArgType::NoArgument, 'e'),
+            wopt(L!("unauthoritative"), ArgType::NoArgument, 'u'),
+            wopt(L!("authoritative"), ArgType::NoArgument, 'A'),
+            wopt(L!("condition"), ArgType::RequiredArgument, 'n'),
+            wopt(L!("wraps"), ArgType::RequiredArgument, 'w'),
+            wopt(L!("do-complete"), ArgType::OptionalArgument, 'C'),
+            wopt(L!("help"), ArgType::NoArgument, 'h'),
+            wopt(L!("keep-order"), ArgType::NoArgument, 'k'),
+            wopt(L!("escape"), ArgType::NoArgument, '\x01'),
+            wopt(L!("color"), ArgType::RequiredArgument, '\x02'),
+        ];
+        let words: Vec<WString> = std::iter::once("complete")
+            .chain(args.iter().map(String::as_str))
+            .map(WString::from)
+            .collect();
+        let mut argv: Vec<&wstr> = words.iter().map(WString::as_utfstr).collect();
+        let original = argv.clone();
+        let mut parser = WGetopter::new(L!("a:c:p:s:l:o:d:fFrxeuAn:C::w:hk"), OPTIONS, &mut argv);
         let mut spec = CompletionSpec::default();
         let mut commands = Vec::new();
+        let mut aliases = Vec::new();
+        let mut wraps = Vec::new();
         let mut erase = false;
-        let mut query = None;
-        let mut index = 0;
-        while index < args.len() {
-            let option = &args[index];
-            index += 1;
-            let mut value = || -> Result<String> {
-                let value = args
-                    .get(index)
-                    .ok_or_else(|| Error::new(format!("complete: {option} requires an argument")))?
-                    .clone();
-                index += 1;
-                Ok(value)
-            };
-            match option.as_str() {
-                "-c" | "--command" => commands.push(value()?),
-                "-s" | "--short-option" => {
-                    let value = value()?;
-                    let mut chars = value.chars();
-                    spec.short_option = chars.next();
-                    if spec.short_option.is_none() || chars.next().is_some() {
-                        return Err(Error::new("complete: short option must be one character"));
+        let mut query = false;
+        let mut query_line = None;
+        let mut escape = false;
+        let mut color = None;
+        while let Some(option) = parser.next_opt() {
+            let value = || parser.woptarg.unwrap().to_string();
+            match option {
+                'c' | 'p' => commands.push((value(), option == 'p')),
+                's' | 'l' | 'o' => {
+                    let value = value();
+                    if value.is_empty() {
+                        return Err(completion_usage(format!(
+                            "-{option} requires a non-empty argument"
+                        )));
+                    }
+                    if option == 's' {
+                        aliases.extend(value.chars().map(|c| ('s', c.to_string())));
+                    } else {
+                        aliases.push((option, value));
                     }
                 }
-                "-l" | "--long-option" => spec.long_option = Some(value()?),
-                "-o" | "--old-option" => spec.old_option = Some(value()?),
-                "-d" | "--description" => spec.description = value()?,
-                "-a" | "--arguments" => spec.argument_sources = vec![value()?],
-                "-n" | "--condition" => spec.conditions.push(value()?),
-                "-C" | "--do-complete" => query = Some(value()?),
-                "-e" | "--erase" => erase = true,
-                "-f" | "--no-files" => spec.no_files = true,
-                "-r" | "--require-parameter" => spec.requires_argument = true,
-                "-x" | "--exclusive" => {
+                'd' => spec.description = value(),
+                'a' => spec.argument_sources = vec![value()],
+                'n' => spec.conditions.push(value()),
+                'w' => wraps.push(value()),
+                'C' => {
+                    query = true;
+                    if parser.woptarg.is_some() {
+                        query_line = Some(value());
+                    }
+                }
+                'e' => erase = true,
+                'f' => spec.no_files = true,
+                'F' => spec.force_files = true,
+                'r' => spec.requires_argument = true,
+                'x' => {
                     spec.no_files = true;
                     spec.requires_argument = true;
                 }
-                "--" if index == args.len() => (),
-                _ => {
-                    return Err(unsupported(&format!("complete option {option}")));
+                'k' => spec.keep_order = true,
+                'u' | 'A' => (),
+                '\x01' => escape = true,
+                '\x02' => {
+                    color = match value().as_str() {
+                        "always" => Some(true),
+                        "never" => Some(false),
+                        "auto" => None,
+                        _ => {
+                            return Err(completion_usage("--color expects always, never, or auto"));
+                        }
+                    };
                 }
+                'h' => {
+                    self.write(
+                        b"complete: see https://fishshell.com/docs/current/cmds/complete.html\n",
+                        host,
+                        output,
+                    )?;
+                    self.status = 0;
+                    return Ok(());
+                }
+                error @ (':' | ';' | '?') => {
+                    let detail = match error {
+                        ':' => "requires an argument",
+                        ';' => "does not take an argument",
+                        _ => "unknown option",
+                    };
+                    return Err(completion_usage(format!(
+                        "{}: {detail}",
+                        original[parser.wopt_index - 1]
+                    )));
+                }
+                _ => unreachable!("complete option"),
             }
         }
-        if let Some(line) = query {
-            if !commands.is_empty() || erase {
-                return Err(Error::new(
-                    "complete: -C cannot be combined with a registration",
-                ));
+        let index = parser.wopt_index;
+        let positional = &argv[index..];
+        if positional.len() == 1 && query && query_line.is_none() {
+            query_line = Some(positional[0].to_string());
+        } else if positional.len() == 1 && !query && !commands.iter().any(|(_, path)| !path) {
+            commands.push((positional[0].to_string(), false));
+        } else if !positional.is_empty() {
+            return Err(completion_usage("too many arguments"));
+        }
+        if spec.no_files && spec.force_files {
+            return Err(completion_usage(
+                "--force-files cannot be combined with --no-files or --exclusive",
+            ));
+        }
+        for condition in &spec.conditions {
+            check_syntax(condition).map_err(completion_syntax_error)?;
+        }
+        for source in &spec.argument_sources {
+            for word in argument_words(source).map_err(completion_syntax_error)? {
+                expand::validate(&word).map_err(completion_syntax_error)?;
             }
+        }
+        if query {
+            if query_line.is_none() && !self.interactive {
+                return Err(completion_syntax_error(Error::new(
+                    "complete: no commandline is available in non-interactive mode",
+                )));
+            }
+            // An implicit query inside a callback must not re-enter itself.
+            if query_line.is_none() && self.completion_depth > 0 {
+                self.status = 0;
+                return Ok(());
+            }
+            let context = query_line
+                .map(|line| CompletionContext {
+                    cursor: line.len(),
+                    line,
+                })
+                .or_else(|| self.completion_line.clone())
+                .ok_or_else(|| {
+                    completion_syntax_error(Error::new("complete: no commandline is available"))
+                })?;
             let mut engine = CompletionEngine::new("fish");
             let io = crate::native::interactive_runtime::CompletionIo::new()?;
-            let result = self.completion_query_style(
-                &line,
-                line.len(),
+            let (_, candidates) = self.completion_query_style(
+                &context.line,
+                context.cursor,
                 &std::env::current_dir()?,
                 &mut crate::native::interactive_runtime::CompletionHost::input_only(host, &io),
                 &mut engine,
                 true,
-            );
-            let (_, candidates) = result?;
+            )?;
             for candidate in candidates {
-                self.write(format!("{}\n", candidate.display).as_bytes(), host, output)?;
+                let display = if escape {
+                    let description = candidate.display.split_once('\t').map(|(_, text)| text);
+                    let value = candidate
+                        .replacement
+                        .strip_suffix(' ')
+                        .unwrap_or(&candidate.replacement);
+                    description.map_or_else(|| value.to_owned(), |text| format!("{value}\t{text}"))
+                } else {
+                    candidate.display
+                };
+                self.write(format!("{display}\n").as_bytes(), host, output)?;
             }
-        } else if commands.is_empty() {
-            if !args.is_empty() {
-                return Err(Error::new("complete: a registration requires -c COMMAND"));
-            }
+        } else if !erase
+            && aliases.is_empty()
+            && wraps.is_empty()
+            && !commands.iter().any(|(_, path)| *path)
+            && spec.argument_sources.iter().all(String::is_empty)
+            && spec.description.is_empty()
+            && spec.conditions.is_empty()
+            && !spec.no_files
+            && !spec.force_files
+            && !spec.requires_argument
+        {
+            let color = color.unwrap_or_else(|| {
+                !output.capture && output.redirects.is_empty() && std::io::stdout().is_terminal()
+            });
+            let palette = crate::native::interactive_colors::Palette::from_variables(
+                &self.editor_variables(),
+            );
+            let resolver = color.then(|| {
+                let mut resolver = CompletionEngine::new("fish");
+                let (commands, path, variables) = self.completion_context();
+                resolver.set_context(commands, path, variables);
+                resolver
+            });
+            let cwd = std::env::current_dir()?;
             for registration in self.completions.clone() {
-                let mut words = vec!["complete".into(), "-c".into(), quote(&registration.command)];
-                for (flag, value) in [
-                    ("-s", registration.short_option.map(|c| c.to_string())),
-                    ("-l", registration.long_option),
-                    ("-o", registration.old_option),
-                ] {
-                    if let Some(value) = value {
-                        words.extend([flag.into(), quote(&value)]);
-                    }
+                if registration.erased
+                    || (!commands.is_empty()
+                        && !commands
+                            .iter()
+                            .any(|(command, _)| *command == registration.command))
+                {
+                    continue;
                 }
-                if registration.no_files {
-                    words.push("-f".into());
-                }
-                if registration.requires_argument {
-                    words.push("-r".into());
-                }
-                if !registration.description.is_empty() {
-                    words.extend(["-d".into(), quote(&registration.description)]);
-                }
-                if !registration.arguments.is_empty() {
-                    words.extend([
-                        "-a".into(),
-                        quote(
-                            &registration
-                                .arguments
-                                .iter()
-                                .map(|word| quote(word))
-                                .collect::<Vec<_>>()
-                                .join(" "),
-                        ),
-                    ]);
-                }
-                for source in registration.argument_sources {
-                    words.extend(["-a".into(), quote(&source)]);
-                }
-                for condition in registration.conditions {
-                    words.extend(["-n".into(), quote(&condition)]);
-                }
-                self.write(format!("{}\n", words.join(" ")).as_bytes(), host, output)?;
+                let definition = completion_definition(&registration);
+                let definition = if color {
+                    crate::native::interactive_highlight::highlight_with_palette(
+                        &definition,
+                        definition.len(),
+                        |name| resolver.as_ref().unwrap().command_exists(name, &cwd),
+                        &palette,
+                    )
+                } else {
+                    definition
+                };
+                self.write(format!("{definition}\n").as_bytes(), host, output)?;
             }
         } else {
-            for command in commands {
-                if command.is_empty() {
-                    return Err(Error::new("complete: command must not be empty"));
-                }
+            for (command, is_path) in commands {
+                let matches_target = |existing: &CompletionSpec| {
+                    existing.command == command && existing.is_path == is_path
+                };
                 if erase {
+                    let all = aliases.is_empty() && wraps.is_empty();
                     self.completions.retain(|existing| {
-                        existing.command != command
-                            || (spec.short_option.is_some()
-                                && existing.short_option != spec.short_option)
-                            || (spec.long_option.is_some()
-                                && existing.long_option != spec.long_option)
-                            || (spec.old_option.is_some() && existing.old_option != spec.old_option)
+                        !matches_target(existing)
+                            || if let Some(target) = &existing.wrap_target {
+                                !all && !wraps.contains(target)
+                            } else {
+                                !all && !aliases.iter().any(|(kind, value)| match kind {
+                                    's' => existing.short_option == value.chars().next(),
+                                    'l' => existing.long_option.as_ref() == Some(value),
+                                    'o' => existing.old_option.as_ref() == Some(value),
+                                    _ => unreachable!(),
+                                })
+                            }
                     });
+                    // Preserve explicit ownership even when the last entry was
+                    // erased, so built-in fallback guesses stay erased too.
+                    if !self
+                        .completions
+                        .iter()
+                        .any(|entry| matches_target(entry) && entry.erased)
+                    {
+                        self.completions.push(CompletionSpec {
+                            command,
+                            is_path,
+                            erased: true,
+                            ..Default::default()
+                        });
+                    }
                 } else {
                     spec.command = command;
-                    self.completions.push(spec.clone());
+                    spec.is_path = is_path;
+                    if aliases.is_empty() {
+                        self.completions.push(spec.clone());
+                    } else {
+                        for (kind, value) in &aliases {
+                            let mut entry = spec.clone();
+                            match kind {
+                                's' => entry.short_option = value.chars().next(),
+                                'l' => entry.long_option = Some(value.clone()),
+                                'o' => entry.old_option = Some(value.clone()),
+                                _ => unreachable!(),
+                            }
+                            self.completions.push(entry);
+                        }
+                    }
+                    if !is_path {
+                        for target in &wraps {
+                            if !self.completions.iter().any(|entry| {
+                                entry.command == spec.command
+                                    && entry.wrap_target.as_ref() == Some(target)
+                            }) {
+                                self.completions.push(CompletionSpec {
+                                    command: spec.command.clone(),
+                                    wrap_target: Some(target.clone()),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -198,6 +358,9 @@ impl Session {
                 }
                 self.completion_line = Some(context.clone());
                 for condition in &spec.conditions {
+                    if condition.is_empty() {
+                        continue;
+                    }
                     let key = (context.clone(), condition.clone());
                     let enabled = if let Some(enabled) = conditions.get(&key) {
                         *enabled
@@ -450,69 +613,88 @@ fn quote(value: &str) -> String {
 
 fn argument_words(source: &str) -> Result<Vec<String>> {
     let source = WString::from(source);
-    let mut values = Vec::new();
-    for token in Tokenizer::new(
-        &source,
-        TokFlags {
-            argument_list: true,
-            ..Default::default()
-        },
-    ) {
-        if token.type_ == TokenType::End {
-            continue;
-        }
-        if token.type_ != TokenType::String {
-            return Err(Error::new("complete: invalid argument source"));
-        }
-        let word =
-            source[token.offset as usize..(token.offset + token.length) as usize].to_string();
-        values.push(word);
+    let mut errors = Vec::new();
+    let tree = ast::parse_argument_list(&source, Default::default(), Some(&mut errors));
+    if let Some(error) = errors.first() {
+        return Err(completion_syntax_error(Error::new(
+            error.describe(&source, false).to_string(),
+        )));
     }
-    Ok(values)
+    let arguments: &ast::FreestandingArgumentList = tree.top();
+    Ok(arguments
+        .arguments
+        .iter()
+        .map(|argument| text(&source, argument))
+        .collect())
 }
 
-/// Expand grouped short options without evaluating their attached arguments.
-fn completion_options(args: &[String]) -> Result<Vec<String>> {
-    let mut parsed = Vec::new();
-    let mut expects_value = false;
-    for argument in args {
-        if expects_value {
-            parsed.push(argument.clone());
-            expects_value = false;
-        } else if let Some((name, value)) = argument
-            .strip_prefix("--")
-            .and_then(|arg| arg.split_once('='))
-        {
-            parsed.extend([format!("--{name}"), value.into()]);
-        } else if argument.starts_with("--") || !argument.starts_with('-') || argument == "-" {
-            expects_value = matches!(
-                argument.as_str(),
-                "--command"
-                    | "--short-option"
-                    | "--long-option"
-                    | "--old-option"
-                    | "--description"
-                    | "--arguments"
-                    | "--condition"
-                    | "--do-complete"
-            );
-            parsed.push(argument.clone());
+fn completion_usage(message: impl Into<String>) -> Error {
+    Error {
+        message: format!("complete: {}", message.into()),
+        status: 2,
+    }
+}
+
+fn completion_syntax_error(error: Error) -> Error {
+    Error { status: 1, ..error }
+}
+
+fn completion_definition(registration: &CompletionSpec) -> String {
+    let mut words = vec![
+        "complete".into(),
+        if registration.is_path {
+            "-p".into()
         } else {
-            let mut options = argument[1..].char_indices().peekable();
-            while let Some((_, option)) = options.next() {
-                parsed.push(format!("-{option}"));
-                if "cslodanC".contains(option) {
-                    if let Some((offset, _)) = options.peek() {
-                        parsed.push(argument[1 + offset..].into());
-                    } else {
-                        expects_value = true;
-                    }
-                    break;
-                }
-            }
+            "-c".into()
+        },
+        quote(&registration.command),
+    ];
+    if let Some(target) = &registration.wrap_target {
+        words.extend(["-w".into(), quote(target)]);
+        return words.join(" ");
+    }
+    for (flag, value) in [
+        ("-s", registration.short_option.map(|c| c.to_string())),
+        ("-l", registration.long_option.clone()),
+        ("-o", registration.old_option.clone()),
+    ] {
+        if let Some(value) = value {
+            words.extend([flag.into(), quote(&value)]);
         }
     }
-    Ok(parsed)
+    for (enabled, flag) in [
+        (registration.no_files, "-f"),
+        (registration.force_files, "-F"),
+        (registration.requires_argument, "-r"),
+        (registration.keep_order, "-k"),
+    ] {
+        if enabled {
+            words.push(flag.into());
+        }
+    }
+    if !registration.description.is_empty() {
+        words.extend(["-d".into(), quote(&registration.description)]);
+    }
+    if !registration.arguments.is_empty() {
+        words.extend([
+            "-a".into(),
+            quote(
+                &registration
+                    .arguments
+                    .iter()
+                    .map(|word| quote(word))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+        ]);
+    }
+    for source in &registration.argument_sources {
+        words.extend(["-a".into(), quote(source)]);
+    }
+    for condition in &registration.conditions {
+        words.extend(["-n".into(), quote(condition)]);
+    }
+    words.join(" ")
 }
 
 /// Preserve substitutions as literal input while allowing safe variable/glob

@@ -21,6 +21,8 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct CompletionSpec {
     pub command: String,
+    #[serde(default)]
+    pub is_path: bool,
     pub short_option: Option<char>,
     pub long_option: Option<String>,
     pub old_option: Option<String>,
@@ -31,7 +33,17 @@ pub(super) struct CompletionSpec {
     pub conditions: Vec<String>,
     pub description: String,
     pub no_files: bool,
+    #[serde(default)]
+    pub force_files: bool,
     pub requires_argument: bool,
+    #[serde(default)]
+    pub keep_order: bool,
+    /// Wrapping and explicit erasure are stored in the same session snapshot as
+    /// registrations, but do not contribute option or argument candidates.
+    #[serde(default)]
+    pub wrap_target: Option<String>,
+    #[serde(default)]
+    pub erased: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
@@ -51,6 +63,7 @@ pub(super) struct CompletionEngine {
     commands: BTreeSet<String>,
     functions: BTreeSet<String>,
     executables: BTreeSet<String>,
+    executable_paths: BTreeMap<String, PathBuf>,
     variables: Vec<String>,
     registrations: Vec<CompletionSpec>,
     wrappers: BTreeMap<String, Vec<Vec<String>>>,
@@ -83,6 +96,7 @@ impl CompletionEngine {
             commands: BTreeSet::new(),
             functions: BTreeSet::new(),
             executables: BTreeSet::new(),
+            executable_paths: BTreeMap::new(),
             variables: Vec::new(),
             registrations: Vec::new(),
             wrappers: BTreeMap::new(),
@@ -110,6 +124,7 @@ impl CompletionEngine {
         self.functions = commands.into_iter().collect();
         self.commands = self.functions.clone();
         self.executables.clear();
+        self.executable_paths.clear();
         self.variables = variables;
         let directories = std::env::current_dir().ok().into_iter().chain(
             path.as_ref()
@@ -126,6 +141,9 @@ impl CompletionEngine {
                 if executable_name(name) && entry.file_type().is_ok_and(|kind| kind.is_file()) {
                     self.commands.insert(command_name(name).into());
                     self.executables.insert(name.into());
+                    self.executable_paths
+                        .entry(command_name(name).to_ascii_lowercase())
+                        .or_insert_with(|| entry.path());
                 }
             }
         }
@@ -299,7 +317,18 @@ impl CompletionEngine {
         }
 
         if files {
-            self.complete_paths(&word, cwd, &mut matches);
+            if let Some(prefix) = matches.file_prefix.clone() {
+                let mut argument = word.clone();
+                argument.value = word.value[prefix.len()..].into();
+                let mut paths = Candidates::new(&argument.value);
+                self.complete_paths(&argument, cwd, &mut paths);
+                for entry in paths.entries.into_values() {
+                    let value = format!("{prefix}{}", entry.value);
+                    matches.add_ranked(&value, &value, &entry.description, entry.space, entry.rank);
+                }
+            } else {
+                self.complete_paths(&word, cwd, &mut matches);
+            }
         }
         // A following token or closing quote already provides separation. For
         // an interior cursor, only offer candidates that preserve its suffix.
@@ -326,7 +355,7 @@ impl CompletionEngine {
         evaluate: &mut Evaluator<'_>,
     ) -> rash::Result<bool> {
         let mut pending = vec![(word.clone(), context, BTreeSet::new())];
-        let mut files = true;
+        let mut files = FilePolicy::Inherit;
         for _ in 0..MAX_WRAPPER_CONTEXTS {
             let Some((word, context, mut visited)) = pending.pop() else {
                 break;
@@ -335,20 +364,27 @@ impl CompletionEngine {
                 continue;
             };
             let command = &word.words[index];
-            files &= self.contextual(command, &word, &context, cwd, matches, evaluate)?;
+            let policy = self.contextual(command, &word, &context, cwd, matches, evaluate)?;
+            if files == FilePolicy::Inherit {
+                files = policy;
+            }
             if !visited.insert(command.clone()) {
                 continue;
             }
-            // An explicit command/builtin invocation bypasses function dispatch.
-            if word.words[..index]
+            // Completion wrappers also apply to explicit external commands;
+            // function metadata follows normal function dispatch rules.
+            let mut targets: Vec<_> = self
+                .registrations
+                .iter()
+                .filter(|spec| !spec.is_path && spec.command == *command)
+                .filter_map(|spec| spec.wrap_target.as_deref().and_then(literal_wrapper))
+                .collect();
+            if !word.words[..index]
                 .iter()
                 .any(|word| matches!(word.as_str(), "command" | "builtin" | "exec"))
             {
-                continue;
+                targets.extend(self.wrappers.get(command).into_iter().flatten().cloned());
             }
-            let Some(targets) = self.wrappers.get(command) else {
-                continue;
-            };
             for target in targets.iter().rev() {
                 if self.input_language == InputLanguage::Bash
                     && target.iter().any(|word| word.chars().any(char::is_control))
@@ -381,137 +417,300 @@ impl CompletionEngine {
                 pending.push((wrapped, wrapped_context, visited.clone()));
             }
         }
-        Ok(files)
+        Ok(files != FilePolicy::Skip)
     }
 
     fn contextual(
         &self,
-        command: &str,
+        raw_command: &str,
         word: &Word,
         context: &CompletionContext,
         cwd: &Path,
         matches: &mut Candidates,
         evaluate: &mut Evaluator<'_>,
-    ) -> rash::Result<bool> {
-        #[cfg(not(feature = "git"))]
-        let _ = cwd;
-        let command = command_name(command.rsplit(['/', '\\']).next().unwrap_or(command));
+    ) -> rash::Result<FilePolicy> {
+        let command = command_name(
+            raw_command
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(raw_command),
+        );
         let args = word.arguments();
         let positional = args.iter().filter(|arg| !arg.starts_with('-')).count();
-        let options = word.value.starts_with('-') && !args.iter().any(|arg| arg == "--");
+        let use_options = !args.iter().any(|arg| arg == "--");
+        let options = word.value.starts_with('-') && use_options;
         let mut files = true;
-
-        if command == "git" {
-            if let Some(context) = git_context::context(args, &word.value) {
-                files = context.files;
-                match context.target {
-                    Target::Subcommand => add_choices(matches, subcommand_choices("git").unwrap()),
-                    Target::Options(choices) => add_choices(matches, choices),
-                    #[cfg(feature = "git")]
-                    Target::Refs(filter) if word.literal_command() => {
-                        for reference in self.git.query(cwd, &context.globals) {
-                            add_git_ref(matches, reference, filter, &context.prefix);
-                        }
-                    }
-                    Target::Refs(filter) => {
-                        let _ = (filter, &context.prefix);
-                    }
-                    Target::Files | Target::None => {}
-                }
-            }
-        } else if options {
-            if let Some(entries) = option_choices(command) {
-                add_choices(matches, entries);
-            }
-        } else if positional == 0 {
-            if let Some(entries) = subcommand_choices(command) {
-                add_choices(matches, entries);
-                files = false;
-            }
-        }
-        if command == "set"
-            && !options
-            && (positional == 0
-                || args
-                    .iter()
-                    .any(|arg| matches!(arg.as_str(), "-q" | "--query" | "-e" | "--erase")))
-        {
-            for name in &self.variables {
-                matches.add(name, name, "Variable", true);
-            }
-            files = false;
-        }
-        if matches!(command, "type" | "command" | "builtin" | "functions") && !options {
-            for name in &self.builtins {
-                if command != "functions" {
-                    matches.add(name, name, "Builtin", true);
-                }
-            }
-            if command != "builtin" {
-                let names = if command == "functions" {
-                    &self.functions
-                } else {
-                    &self.commands
-                };
-                for name in names {
-                    matches.add(name, name, "Command", true);
-                }
-            }
-            files = false;
-        }
-        // Cargo's flags depend on the subcommand; these are common to the
-        // build/check/run/test family and should not appear as filenames.
-        if command == "cargo" && options && positional > 0 {
-            add_choices(matches, CARGO_BUILD_OPTIONS);
-        }
-        if command == "history" {
-            files = false;
-        }
-        for spec in self
+        let registrations: Vec<_> = self
             .registrations
             .iter()
-            .filter(|spec| spec.command == command)
-        {
-            let short = spec.short_option.map(|option| format!("-{option}"));
-            let long = spec
-                .long_option
-                .as_ref()
-                .map(|option| format!("--{option}"));
-            let old = spec.old_option.as_ref().map(|option| format!("-{option}"));
-            let flags = [short.as_deref(), long.as_deref(), old.as_deref()];
-            let has_option = flags.iter().any(Option::is_some);
-            let follows_option = args
-                .last()
-                .is_some_and(|arg| flags.iter().flatten().any(|flag| arg == flag));
-            let attached = word
-                .value
-                .split_once('=')
-                .filter(|(name, _)| flags.iter().flatten().any(|flag| name == flag));
-            let wants_arguments = !has_option || follows_option || attached.is_some();
-            let Some(arguments) = evaluate(context, spec, wants_arguments)? else {
-                continue;
-            };
-            files &= !spec.no_files;
-            if options {
-                for flag in flags.iter().flatten() {
-                    matches.add(flag, flag, &spec.description, true);
+            .enumerate()
+            .filter(|(_, spec)| self.registration_matches(spec, raw_command, command, cwd))
+            .collect();
+        // Script registrations and explicit erasure own this command's choices.
+        // Native conveniences are only a fallback before scripts load.
+        if registrations.is_empty() {
+            if command == "git" {
+                if let Some(context) = git_context::context(args, &word.value) {
+                    files = context.files;
+                    match context.target {
+                        Target::Subcommand => {
+                            add_choices(matches, subcommand_choices("git").unwrap())
+                        }
+                        Target::Options(choices) => add_choices(matches, choices),
+                        #[cfg(feature = "git")]
+                        Target::Refs(filter) if word.literal_command() => {
+                            for reference in self.git.query(cwd, &context.globals) {
+                                add_git_ref(matches, reference, filter, &context.prefix);
+                            }
+                        }
+                        Target::Refs(filter) => {
+                            let _ = (filter, &context.prefix);
+                        }
+                        Target::Files | Target::None => {}
+                    }
+                }
+            } else if options {
+                if let Some(entries) = option_choices(command) {
+                    add_choices(matches, entries);
+                }
+            } else if positional == 0 {
+                if let Some(entries) = subcommand_choices(command) {
+                    add_choices(matches, entries);
+                    files = false;
                 }
             }
-            if wants_arguments {
-                for argument in &arguments {
-                    let (value, description) = argument
-                        .split_once('\t')
-                        .unwrap_or((argument, &spec.description));
-                    let value = attached
-                        .map_or_else(|| value.to_owned(), |(flag, _)| format!("{flag}={value}"));
-                    matches.add(&value, &value, description, true);
+            if command == "set"
+                && !options
+                && (positional == 0
+                    || args
+                        .iter()
+                        .any(|arg| matches!(arg.as_str(), "-q" | "--query" | "-e" | "--erase")))
+            {
+                for name in &self.variables {
+                    matches.add(name, name, "Variable", true);
                 }
-                if follows_option && spec.requires_argument {
-                    files = !spec.no_files;
+                files = false;
+            }
+            if matches!(command, "type" | "command" | "builtin" | "functions") && !options {
+                for name in &self.builtins {
+                    if command != "functions" {
+                        matches.add(name, name, "Builtin", true);
+                    }
+                }
+                if command != "builtin" {
+                    let names = if command == "functions" {
+                        &self.functions
+                    } else {
+                        &self.commands
+                    };
+                    for name in names {
+                        matches.add(name, name, "Command", true);
+                    }
+                }
+                files = false;
+            }
+            // Cargo's flags depend on the subcommand; these are common to the
+            // build/check/run/test family and should not appear as filenames.
+            if command == "cargo" && options && positional > 0 {
+                add_choices(matches, CARGO_BUILD_OPTIONS);
+            }
+            if command == "history" {
+                files = false;
+            }
+            return Ok(if files {
+                FilePolicy::Inherit
+            } else {
+                FilePolicy::Skip
+            });
+        }
+
+        let mut active = Vec::new();
+        for (index, spec) in registrations.into_iter().rev() {
+            if !spec.erased
+                && spec.wrap_target.is_none()
+                && evaluate(context, spec, false)?.is_some()
+            {
+                active.push((index, spec));
+            }
+        }
+        let current_short = short_option_pos(&word.value, &active);
+        let previous = args.last().map_or("", String::as_str);
+        let previous_short = short_option_pos(previous, &active);
+        let old_previous = active.iter().any(|(_, spec)| {
+            spec.old_option
+                .as_ref()
+                .is_some_and(|name| previous == format!("-{name}"))
+        });
+        let mut file_policy = FilePolicy::Inherit;
+        let mut claimed = false;
+        if use_options {
+            for (index, spec) in &active {
+                let attached = if word.value.starts_with('-') {
+                    spec.short_option
+                        .and_then(|option| {
+                            current_short
+                                .filter(|(_, c)| *c == option)
+                                .map(|(offset, c)| offset + c.len_utf8())
+                        })
+                        .or_else(|| {
+                            [
+                                spec.long_option.as_ref().map(|name| format!("--{name}=")),
+                                spec.old_option.as_ref().map(|name| format!("-{name}=")),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .find(|prefix| word.value.starts_with(prefix))
+                            .map(|prefix| prefix.len())
+                        })
+                } else {
+                    None
+                };
+                let follows = !word.value.starts_with('-')
+                    && if old_previous {
+                        spec.old_option
+                            .as_ref()
+                            .is_some_and(|name| previous == format!("-{name}"))
+                    } else {
+                        spec.requires_argument
+                            && (spec
+                                .long_option
+                                .as_ref()
+                                .is_some_and(|name| previous == format!("--{name}"))
+                                || spec.short_option.is_some_and(|c| {
+                                    previous_short
+                                        == Some((previous.len().saturating_sub(c.len_utf8()), c))
+                                }))
+                    };
+                if attached.is_some() || follows {
+                    claimed |= spec.requires_argument;
+                    file_policy = file_policy.max(spec.file_policy());
+                    let prefix = attached.map_or("", |at| &word.value[..at]);
+                    if !prefix.is_empty() {
+                        matches.file_prefix = Some(prefix.into());
+                    }
+                    self.add_arguments(context, spec, *index, prefix, matches, evaluate)?;
                 }
             }
         }
-        Ok(files)
+        if claimed {
+            return Ok(file_policy);
+        }
+        let short_requires_argument = current_short.is_some_and(|(_, c)| {
+            active
+                .iter()
+                .filter(|(_, spec)| spec.short_option == Some(c))
+                .all(|(_, spec)| spec.requires_argument)
+        });
+        for (index, spec) in active {
+            if spec.short_option.is_none()
+                && spec.long_option.is_none()
+                && spec.old_option.is_none()
+            {
+                file_policy = file_policy.max(spec.file_policy());
+                self.add_arguments(context, spec, index, "", matches, evaluate)?;
+            }
+            if !options {
+                continue;
+            }
+            matches.order_group = spec.keep_order.then_some(index);
+            if let Some(option) = spec.short_option {
+                let value = if word.value == "-" {
+                    Some(format!("-{option}"))
+                } else if current_short.is_some_and(|(at, c)| at + c.len_utf8() == word.value.len())
+                    && !short_requires_argument
+                    && !word.value[1..].contains(option)
+                {
+                    Some(format!("{}{option}", word.value))
+                } else {
+                    None
+                };
+                if let Some(value) = value {
+                    matches.add(&value, &value, &spec.description, true);
+                }
+            }
+            for flag in [
+                spec.long_option.as_ref().map(|name| format!("--{name}")),
+                spec.old_option.as_ref().map(|name| format!("-{name}")),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if spec.long_option.is_some()
+                    && !spec.requires_argument
+                    && (!spec.arguments.is_empty()
+                        || spec
+                            .argument_sources
+                            .iter()
+                            .any(|source| !source.is_empty()))
+                {
+                    let attached = format!("{flag}=");
+                    matches.add(&attached, &attached, &spec.description, false);
+                }
+                matches.add(&flag, &flag, &spec.description, true);
+            }
+        }
+        matches.order_group = None;
+        Ok(file_policy)
+    }
+
+    fn registration_matches(
+        &self,
+        spec: &CompletionSpec,
+        raw: &str,
+        command: &str,
+        cwd: &Path,
+    ) -> bool {
+        let value = if spec.is_path {
+            if raw.contains(['/', '\\']) {
+                std::path::absolute(cwd.join(raw)).ok()
+            } else {
+                self.executable_paths
+                    .get(&command_name(raw).to_ascii_lowercase())
+                    .cloned()
+            }
+            .and_then(|path| std::path::absolute(path).ok())
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
+        } else {
+            Some(command.to_owned())
+        };
+        value.is_some_and(|value| {
+            let pattern = fish_wcstringutil::unescape_wildcards(
+                &fish_widestring::WString::from(if spec.is_path {
+                    spec.command.replace('\\', "/")
+                } else {
+                    spec.command.clone()
+                }),
+                false,
+            );
+            fish_wcstringutil::wildcard_match(
+                fish_widestring::WString::from(value),
+                &pattern,
+                false,
+            )
+        })
+    }
+
+    fn add_arguments(
+        &self,
+        context: &CompletionContext,
+        spec: &CompletionSpec,
+        index: usize,
+        prefix: &str,
+        matches: &mut Candidates,
+        evaluate: &mut Evaluator<'_>,
+    ) -> rash::Result<()> {
+        matches.order_group = spec.keep_order.then_some(index);
+        if let Some(arguments) = evaluate(context, spec, true)? {
+            for argument in arguments {
+                let (value, description) = argument
+                    .split_once('\t')
+                    .unwrap_or((&argument, &spec.description));
+                let value = format!("{prefix}{value}");
+                matches.add(&value, &value, description, true);
+            }
+        }
+        matches.order_group = None;
+        Ok(())
     }
 
     fn complete_paths(&self, word: &Word, cwd: &Path, matches: &mut Candidates) {
@@ -575,6 +774,47 @@ impl CompletionEngine {
             }
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum FilePolicy {
+    Inherit,
+    Skip,
+    Force,
+}
+
+impl CompletionSpec {
+    fn file_policy(&self) -> FilePolicy {
+        if self.force_files {
+            FilePolicy::Force
+        } else if self.no_files {
+            FilePolicy::Skip
+        } else {
+            FilePolicy::Inherit
+        }
+    }
+}
+
+/// Walk a short-option group until an unknown switch or an option taking an
+/// argument. Byte offsets preserve non-ASCII short options in the native editor.
+fn short_option_pos(value: &str, options: &[(usize, &CompletionSpec)]) -> Option<(usize, char)> {
+    if !value.starts_with('-') || value.starts_with("--") {
+        return None;
+    }
+    let mut last = None;
+    for (offset, c) in value.char_indices().skip(1) {
+        let Some((_, spec)) = options
+            .iter()
+            .find(|(_, spec)| spec.short_option == Some(c))
+        else {
+            break;
+        };
+        last = Some((offset, c));
+        if spec.requires_argument {
+            break;
+        }
+    }
+    last
 }
 
 fn fish_only_keyword(name: &str) -> bool {
@@ -746,11 +986,15 @@ struct Candidate {
     description: String,
     space: bool,
     rank: Rank,
+    order_group: Option<usize>,
+    sequence: usize,
 }
 
 struct Candidates {
     prefix: String,
     entries: BTreeMap<String, Candidate>,
+    order_group: Option<usize>,
+    file_prefix: Option<String>,
 }
 
 impl Candidates {
@@ -758,6 +1002,8 @@ impl Candidates {
         Self {
             prefix: prefix.into(),
             entries: BTreeMap::new(),
+            order_group: None,
+            file_prefix: None,
         }
     }
 
@@ -775,6 +1021,7 @@ impl Candidates {
         space: bool,
         rank: Rank,
     ) {
+        let sequence = self.entries.len();
         self.entries
             .entry(value.to_owned())
             .or_insert_with(|| Candidate {
@@ -783,6 +1030,8 @@ impl Candidates {
                 description: description.into(),
                 space,
                 rank,
+                order_group: self.order_group,
+                sequence,
             });
     }
 
@@ -803,7 +1052,15 @@ impl Candidates {
             .into_values()
             .filter(|entry| entry.rank.0 <= best.max(1))
             .collect();
-        entries.sort_by(|a, b| a.rank.cmp(&b.rank).then_with(|| a.value.cmp(&b.value)));
+        entries.sort_by(|a, b| {
+            b.order_group.cmp(&a.order_group).then_with(|| {
+                if a.order_group.is_some() {
+                    a.sequence.cmp(&b.sequence)
+                } else {
+                    a.rank.cmp(&b.rank).then_with(|| a.value.cmp(&b.value))
+                }
+            })
+        });
         entries
             .into_iter()
             .map(|entry| Pair {
@@ -1883,7 +2140,12 @@ mod tests {
             replacements(&engine, "example --m", &directory.0),
             ["--mode "]
         );
-        assert!(replacements(&engine, "example ", &directory.0).is_empty());
+        // Option-specific file policy applies when completing that option's
+        // argument; it does not disable the command's positional file choices.
+        assert_eq!(
+            replacements(&engine, "example ", &directory.0),
+            ["unrelated.txt "]
+        );
         assert_eq!(
             replacements(&engine, "example --mode f", &directory.0),
             ["fast "]

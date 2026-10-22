@@ -404,10 +404,18 @@ complete -c mytool -l mode -r -a 'fast thorough' -d 'Select checking mode'
 complete -c mytool -n '__fish_seen_subcommand_from build' -l release
 ```
 
-Native `complete` supports `-c`, `-s`, `-l`, `-o`, `-a`, `-d`, `-f`, `-r`, `-x`,
-`-n` (condition) and `-e` (erase), with their long forms. `complete` lists
-registrations as Fish source; `complete -C 'mytool --m'` prints choices with
-tab-separated descriptions.
+Native `complete` shares Fish's option parser and argument-list syntax checking.
+It supports command names (`-c` or positional), executable path patterns (`-p`),
+short/long/old option aliases (`-s`, `-l`, `-o`), arguments and descriptions
+(`-a`, `-d`), conditions (`-n`), wrappers (`-w`), erasure (`-e`), parameter
+requirements (`-r`, `-x`), file policies (`-f`, `-F`) and source ordering (`-k`).
+Repeated aliases, attached arguments, grouped short options and abbreviated long
+options work as on POSIX Fish. File policies apply to the matching argument;
+`--keep-order` preserves choices within each registration, newest groups first.
+Explicit registrations replace the editor's built-in Git/Cargo suggestions.
+`complete` lists registrations as reusable Fish source, optionally filtered by
+command and colored with `--color`. `complete -C 'mytool --m'` prints choices with
+tab-separated descriptions; `--escape` produces shell-escaped choices.
 Registrations belong to the current session and can be recreated by configuration.
 Conditions and argument sources are evaluated on demand for both Tab and
 `complete -C`. Repeated conditions must all succeed; identical conditions are
@@ -425,8 +433,8 @@ Functions defined with `--wraps` inherit target completion, including
 fixed arguments such as `--wraps='git checkout'`. Multiple targets and nested
 wrappers are supported with bounded, cycle-safe traversal. Wrapper targets never
 execute shell code. A saved wrapper's metadata becomes available when its function
-is loaded. `complete --wraps` registrations, automatic completion-script loading,
-and path completion through `$VARIABLE/` are not yet supported.
+is loaded. Automatic completion-script loading and path completion through
+`$VARIABLE/` are not yet supported.
 
 Completion evaluation receives empty standard input by default. During Tab,
 Ctrl-C interrupts running generators before returning to the edited line.

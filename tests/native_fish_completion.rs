@@ -8,6 +8,33 @@ fn fish(source: &str) -> std::process::Output {
         .unwrap()
 }
 
+struct Directory(std::path::PathBuf);
+
+impl Directory {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "fish-completion-options-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for Directory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn registrations_are_queryable_erasable_and_round_trip_as_fish_source() {
     let output = fish(
@@ -43,6 +70,239 @@ fn registration_defers_dynamic_completion_source_until_query() {
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn repeated_aliases_and_grouped_short_options_share_their_arguments() {
+    assert_eq!(
+        output(
+            r#"
+        complete -c native_probe -f
+        complete -c native_probe -s ab -s c -l alpha -l beta -o old -o older -d Flag
+        complete -C 'native_probe -'
+        complete -C 'native_probe -a'
+        complete -c native_probe -e -s ac -l beta -o older
+        complete -C 'native_probe -'
+        complete -c native_probe -s I -x -a 'include imports'
+        complete -C 'native_probe -bIim'
+        complete -C 'native_probe -bI im'
+        complete -C 'native_probe -bI'
+    "#
+        ),
+        concat!(
+            "--alpha\tFlag\n--beta\tFlag\n-a\tFlag\n-b\tFlag\n-c\tFlag\n-old\tFlag\n-older\tFlag\n",
+            "-ab\tFlag\n-ac\tFlag\n",
+            "--alpha\tFlag\n-b\tFlag\n-old\tFlag\n",
+            "-bIimports\nimports\n-bIimports\n-bIinclude\n",
+        )
+    );
+}
+
+#[test]
+fn optional_long_arguments_require_equals_and_required_arguments_claim_the_token() {
+    assert_eq!(
+        output(
+            r#"
+        complete -c native_probe -f -a positional
+        complete -c native_probe -l maybe -a 'yes no'
+        complete -c native_probe -l must -x -a 'yes no'
+        complete -C 'native_probe --may'
+        complete -C 'native_probe --maybe y'
+        complete -C 'native_probe --maybe=y'
+        complete -C 'native_probe --must '
+        complete -C 'native_probe -- --m'
+    "#
+        ),
+        "--maybe\n--maybe=\n--maybe=yes\nno\nyes\n"
+    );
+}
+
+#[test]
+fn keep_order_preserves_newest_groups_before_sorted_candidates() {
+    assert_eq!(
+        output(
+            r#"
+        complete -c native_probe -fa 'alpha delta bravo'
+        complete -c native_probe -fka 'golf charlie echo'
+        complete -c native_probe -fka 'india foxtrot hotel'
+        complete -c native_probe -fa 'kilo juliett lima'
+        complete -C 'native_probe '
+    "#
+        ),
+        "india\nfoxtrot\nhotel\ngolf\ncharlie\necho\nalpha\nbravo\ndelta\njuliett\nkilo\nlima\n"
+    );
+}
+
+#[test]
+fn positional_commands_abbreviated_options_and_filtered_definitions_round_trip() {
+    assert_eq!(
+        output(
+            r#"
+        complete native_probe -f --au --una -s ab --l alpha -a one
+        complete native_other -f -a two
+        set saved (complete native_probe)
+        echo definitions:(count $saved)
+        complete native_probe -e
+        for definition in $saved; eval $definition; end
+        complete -C'native_probe --alpha=o'
+        complete -c ignored -C 'native_other t'
+        complete -c native_probe -e -s ab -l alpha
+        echo erased:(count (complete native_probe))
+    "#
+        ),
+        "definitions:3\n--alpha=one\ntwo\nerased:0\n"
+    );
+}
+
+#[test]
+fn completion_wrappers_keep_context_and_can_be_erased_independently() {
+    assert_eq!(
+        output(
+            r#"
+        complete -c native_probe -f -n '__fish_seen_subcommand_from fixed' -a wrapped
+        complete -c native_outer -f -w 'native_probe fixed'
+        complete -C 'native_outer w'
+        complete -C 'command native_outer w'
+        complete -c native_outer -e -w 'native_probe fixed'
+        complete -C 'native_outer w'
+        complete -c native_outer -w 'native_probe fixed'
+        complete -c native_probe -w native_outer
+        complete -C 'native_outer w'
+        set saved (complete native_outer)
+        echo wrappers:(count $saved)
+        complete -c native_outer -e
+        echo erased:(count (complete native_outer))
+        complete -C 'native_outer w'
+    "#
+        ),
+        "wrapped\nwrapped\nwrapped\nwrappers:3\nerased:0\n"
+    );
+}
+
+#[test]
+fn explicit_registrations_and_erase_replace_native_suggestions() {
+    assert_eq!(
+        output(
+            r#"
+        complete -c cargo -f -a 'custom check' -d Script
+        complete -C 'cargo ch'
+        complete -c cargo -e
+        complete -C 'cargo chec'
+        complete -c git -f -a custom
+        complete -C 'git cu'
+        complete -c git -e
+        complete -C 'git checko'
+    "#
+        ),
+        "check\tScript\ncustom\n"
+    );
+}
+
+#[test]
+fn malformed_registrations_fail_before_changing_state() {
+    for flags in [
+        "-fF",
+        "-xF",
+        "-s ''",
+        "-l ''",
+        "-o ''",
+        "--color invalid",
+        "-c one two",
+        "-C one two",
+    ] {
+        let result = fish(&format!("complete -c native_probe {flags}"));
+        assert_eq!(
+            result.status.code(),
+            Some(2),
+            "{flags}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    for flags in ["-n 'if true'", "-a '(echo unclosed'", "-a '\"unclosed'"] {
+        let result = fish(&format!("complete -c native_probe {flags}"));
+        assert_eq!(
+            result.status.code(),
+            Some(1),
+            "{flags}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    let result = fish("complete -C");
+    assert_eq!(result.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("no commandline"));
+}
+
+#[test]
+fn escaped_queries_match_builtin_behavior() {
+    assert_eq!(
+        output(
+            r#"
+        complete -c native_probe -f -a "'two words'"
+        complete --escape -C 'native_probe t'
+        complete -C 'native_probe t'
+    "#
+        ),
+        "two\\ words\ntwo words\n"
+    );
+}
+
+#[test]
+fn definition_colors_use_the_editor_palette_without_coloring_query_output() {
+    let colored = output(
+        "set -g fish_color_command red; complete -c native_probe -fa alpha; complete --color always native_probe",
+    );
+    assert!(colored.contains("\u{1b}["));
+    assert!(colored.contains("31mcomplete"), "{colored:?}");
+    let plain = output("complete -c native_probe -fa alpha; complete --color never native_probe");
+    assert!(!plain.contains('\u{1b}'));
+    assert_eq!(
+        output("complete -c native_probe -fa alpha; complete --color always -C 'native_probe a'"),
+        "alpha\n"
+    );
+}
+
+#[test]
+fn path_registrations_and_file_policy_follow_command_and_wrapper_precedence() {
+    let directory = Directory::new();
+    std::fs::write(directory.path().join("native_probe.exe"), b"").unwrap();
+    std::fs::write(directory.path().join("sample.txt"), b"").unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_fish"))
+        .args([
+            "-N",
+            "-c",
+            r#"
+            complete -p '*/native_probe.exe' -f -a path_choice
+            complete -C './native_probe.exe path_'
+            complete -C 'native_probe path_'
+            complete -c 'native_f*' -f -a fuzzy_command
+            complete -C 'native_foo fuzzy_'
+            complete -c native_probe -F
+            complete -C 'native_probe sam'
+            complete -c native_outer -f -w native_probe
+            complete -C 'native_outer sam'
+            complete -c native_outer -F
+            complete -C 'native_outer sam'
+            complete -c native_probe -s I -r
+            complete -C 'native_probe -Isam'
+        "#,
+        ])
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        result.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        "path_choice\npath_choice\nfuzzy_command\nsample.txt\nsample.txt\n-Isample.txt\n"
+    );
 }
 
 #[test]
