@@ -140,9 +140,12 @@ the current edit and returns to the prompt. Ctrl-Z at the prompt does not suspen
 the shell itself.
 
 Native Fish suggests the remainder of a matching history entry in gray as you
-type. Right or Ctrl-F accepts the suggestion at the end of the input; Alt-Right
-or Alt-F accepts one word. Enter executes only the text you have accepted. Up and
-Down search history for the text you typed (including matches inside a command),
+type. Right or Ctrl-F accepts the suggestion at the end of the input;
+Alt-Right or Alt-F accepts one word. Ctrl-E accepts the rest of the suggested
+line when the cursor is at the end of the input, stopping at a newline. Otherwise,
+it moves to the current line's end. Accepting a suggestion never executes it;
+Enter executes only the text you have accepted. Up and Down search history for
+the text you typed (including matches inside a command),
 skip repeated matches, and restore your draft after the newest match. Ctrl-R
 opens incremental history search. In a multiline edit the arrows move between
 lines before searching history at the top or bottom.

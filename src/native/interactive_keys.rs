@@ -50,6 +50,46 @@ impl SuggestionKey {
     }
 }
 
+pub(super) struct EndOfLineKey {
+    pub pager: PagerBindings,
+}
+
+impl ConditionalEventHandler for EndOfLineKey {
+    fn handle(&self, _: &Event, _: RepeatCount, _: bool, ctx: &EventContext<'_>) -> Option<Cmd> {
+        if ctx.mode() == rustyline::EditMode::Vi && ctx.input_mode() != rustyline::InputMode::Insert
+        {
+            return None;
+        }
+        Some(self.command(ctx))
+    }
+}
+
+impl EndOfLineKey {
+    pub(super) fn command(&self, ctx: &EventContext<'_>) -> Cmd {
+        if ctx.pos() == ctx.line().len() {
+            if let Some(hint) = ctx.hint_text().filter(|hint| !hint.is_empty()) {
+                return match hint.split_once('\n') {
+                    Some(("", _)) => Cmd::Noop,
+                    Some((line, _)) => {
+                        self.pager
+                            .queue_completion(ctx.line(), ctx.pos(), ctx.pos(), line.into())
+                    }
+                    None => Cmd::CompleteHint,
+                };
+            }
+        }
+        // The pager wrapper has dismissed a display-only menu. Moving at an
+        // existing line end would not repaint, so explicitly erase its rows.
+        if ctx.has_hint()
+            && ctx.hint_text().is_none()
+            && (ctx.pos() == ctx.line().len() || ctx.line()[ctx.pos()..].starts_with('\n'))
+        {
+            return Cmd::Repaint;
+        }
+        Cmd::Move(Movement::EndOfLine)
+    }
+}
+
 fn suggestion_word(hint: &str) -> &str {
     let mut seen_word = false;
     for (at, ch) in hint.char_indices() {

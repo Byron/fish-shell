@@ -179,7 +179,7 @@ mod windows {
     use crate::native::interactive_abbreviations::Abbreviations;
     use crate::native::interactive_bindings::{Action, Bindings};
     use crate::native::interactive_completion::CompletionEngine;
-    use crate::native::interactive_keys::{HistoryKey, HistorySearch, SuggestionKey};
+    use crate::native::interactive_keys::{EndOfLineKey, HistoryKey, HistorySearch, SuggestionKey};
     use crate::native::interactive_pager::{EditorHint, PagerBindings};
     use rustyline::completion::{Completer, Pair};
     use rustyline::config::Configurer as _;
@@ -357,6 +357,12 @@ mod windows {
                         })))),
                     );
                 }
+                editor.bind_sequence(
+                    KeyEvent::ctrl('E'),
+                    pager.wrap(Some(EventHandler::Conditional(Box::new(EndOfLineKey {
+                        pager: pager.clone(),
+                    })))),
+                );
                 editor.bind_sequence(
                     KeyEvent(KeyCode::Enter, Modifiers::ALT),
                     pager.wrap(Some(EventHandler::Conditional(Box::new(
@@ -604,6 +610,12 @@ mod windows {
                         pager: self.pager.clone(),
                     }
                     .command(count, ctx),
+                ),
+                Action::EndOfLine => Some(
+                    EndOfLineKey {
+                        pager: self.pager.clone(),
+                    }
+                    .command(ctx),
                 ),
                 Action::HistorySearchBackward | Action::HistorySearchForward => HistoryKey {
                     search: Arc::clone(&self.search),

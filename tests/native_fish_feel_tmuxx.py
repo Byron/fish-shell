@@ -149,7 +149,13 @@ def main():
             # tmuxx capture -e preserves cell colors, including the autosuggestion.
             colored = capture(escaped=True).rstrip().splitlines()[-1]
             assert re.search(r"\x1b\[[0-9;:]*m", colored), colored
-            keys(acceptance, "Enter")
+            cursor_before = int(metadata("#{cursor_x}"))
+            keys(acceptance)
+            wait_for(lambda _: metadata("#{cursor_x}") == str(cursor_before + len(" alpha beta")),
+                     "accepting the hint did not advance the input cursor")
+            text = expect_input(source)
+            assert text.splitlines().count(output) == 1, "accepting a hint executed the command"
+            keys("Enter")
             expect(output, count=2)
 
         owner = subprocess.Popen(
@@ -202,6 +208,29 @@ def main():
 
             suggestion("FEEL_hint_right", "Right")
             suggestion("FEEL_hint_ctrl_f", "C-f")
+            suggestion("FEEL_hint_ctrl_e_魚", "C-e")
+            literal("echo FEEL_end_of_line")
+            keys("Left", "Left", "C-e")
+            literal("_moved")
+            keys("Enter")
+            expect("FEEL_end_of_line_moved")
+            send("bind ctrl-e end-of-line")
+            suggestion("FEEL_hint_bound_end", "C-e")
+            send("bind --erase ctrl-e")
+            paste("history append 'echo FEEL_hint_line first\necho FEEL_hint_extra'")
+            keys("Enter")
+            expect_input("")
+            literal("echo FEEL_hint_line")
+            wait_for(lambda text: "echo FEEL_hint_extra" in text.rstrip().splitlines()[-1:],
+                     "missing multiline autosuggestion")
+            # The second press must not accept the newline or the next command.
+            keys("C-e", "C-e")
+            literal("_edited")
+            expect_input("echo FEEL_hint_line first_edited")
+            assert "FEEL_hint_line first" not in capture().splitlines()
+            keys("Enter")
+            expect("FEEL_hint_line first_edited")
+            assert "FEEL_hint_extra" not in capture().splitlines()
             for marker, key in [("FEEL_hint_word", "M-f"),
                                 ("FEEL_hint_alt_right", "M-Right")]:
                 send(f"echo {marker} alpha beta")
@@ -235,7 +264,7 @@ def main():
             # Incomplete source stays in one editable buffer. Change an earlier
             # line before closing the block and make sure the old text never runs.
             send("for item in FEEL_multiline_wrong")
-            keys("Up", "End", "C-w")
+            keys("Up", "C-e", "C-w")
             literal("FEEL_multiline_correct")
             keys("Down")
             send("echo $item")
@@ -381,7 +410,7 @@ def main():
                 expect(result, count=before + 1)
 
                 literal("FEEL_pager ")
-                keys("Tab", "C-n", "Escape")
+                keys("Tab", "C-n", "C-e")
                 expect_input("FEEL_pager ")
                 keys("C-p")
                 expect_input("FEEL_pager zebra ")
@@ -529,6 +558,7 @@ def main():
             keys("End", "Enter")
             expect("FEEL_vi_aXy")
             suggestion("FEEL_vi_hint", "Right")
+            suggestion("FEEL_vi_hint_ctrl_e", "C-e")
             send("echo FEEL_vi_word alpha beta")
             expect("FEEL_vi_word alpha beta")
             literal("echo FEEL_vi_word")
