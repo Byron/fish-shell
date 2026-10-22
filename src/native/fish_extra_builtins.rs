@@ -119,45 +119,7 @@ impl Session {
             "functions" => {
                 self.functions_builtin(args, host, output)?;
             }
-            "status" => {
-                self.status = 0;
-                match args.first().map_or("", String::as_str) {
-                    "is-interactive" | "--is-interactive" | "-i" => {
-                        self.status = i32::from(!self.interactive);
-                    }
-                    "is-login" | "--is-login" | "-l" => self.status = i32::from(!self.login),
-                    "is-native-windows" => {
-                        if args.len() != 1 {
-                            return Err(Error::new(format!(
-                                "status is-native-windows: expected 0 arguments; got {}",
-                                args.len() - 1
-                            )));
-                        }
-                    }
-                    "is-block" | "--is-block" | "-b" => {
-                        self.status = i32::from(self.scopes.len() <= 1)
-                    }
-                    "is-command-substitution" | "--is-command-substitution" | "-c" => {
-                        self.status = i32::from(!output.capture)
-                    }
-                    "fish-path" | "--fish-path" => self.write(
-                        format!("{}\n", std::env::current_exe()?.display()).as_bytes(),
-                        host,
-                        output,
-                    )?,
-                    "current-command" => self.write(b"fish\n", host, output)?,
-                    "filename" | "current-filename" | "--filename" | "--current-filename"
-                    | "-f" => {
-                        if args.len() != 1 {
-                            return Err(Error::new("status filename: expected no arguments"));
-                        }
-                        let filename = self.source_origin.as_deref().unwrap_or("Standard input");
-                        self.write(format!("{filename}\n").as_bytes(), host, output)?;
-                    }
-                    "" => self.write(b"This is native Windows Fish.\n", host, output)?,
-                    _ => return Err(unsupported("this status query")),
-                }
-            }
+            "status" => self.status_builtin(args, host, output)?,
             "jobs" | "bg" | "fg" | "wait" | "kill" | "disown" => {
                 self.host_builtin(name, args, host, output)?;
             }

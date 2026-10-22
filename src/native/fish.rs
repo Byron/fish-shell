@@ -37,6 +37,8 @@ mod random_builtin;
 mod runtime;
 #[path = "fish_source.rs"]
 mod source_builtin;
+#[path = "fish_status.rs"]
+mod status_builtin;
 #[path = "fish_test.rs"]
 mod test_builtin;
 #[path = "fish_universal.rs"]
@@ -173,6 +175,8 @@ pub struct Session {
     function_depth: usize,
     function_frames: Vec<functions::FunctionFrame>,
     source_depth: usize,
+    #[serde(default)]
+    substitution_depth: usize,
     #[serde(default)]
     source_origin: Option<String>,
     #[serde(default)]
@@ -330,6 +334,7 @@ impl Session {
             function_depth: 0,
             function_frames: vec![],
             source_depth: 0,
+            substitution_depth: 0,
             source_origin: None,
             worker_pipeline_input: false,
         };
@@ -803,6 +808,7 @@ impl Session {
                 updated.refreshing_universals = self.refreshing_universals;
                 updated.completion_line = self.completion_line.clone();
                 updated.completion_depth = self.completion_depth;
+                updated.substitution_depth = self.substitution_depth;
                 updated.source_origin = self.source_origin.clone();
                 *self = updated;
             }
@@ -1160,7 +1166,9 @@ impl Session {
                 // Substitutions share ordinary variable updates with the caller,
                 // but explicit local bindings belong only to this substitution.
                 self.scopes.push(BTreeMap::new());
+                self.substitution_depth += 1;
                 let result = self.eval_source(source, host, &mut output);
+                self.substitution_depth -= 1;
                 self.scopes.pop();
                 self.input_mode_blocked = input_mode_blocked;
                 if self.completion_depth == 0 || self.flow != Flow::Exit {

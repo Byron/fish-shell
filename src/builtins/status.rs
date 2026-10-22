@@ -13,10 +13,8 @@ use crate::tty_handoff::{TERMINAL_OS_NAME, get_scroll_content_up_capability, xtv
 use crate::wutil::{self, waccess, wbasename, wdirname, wrealpath};
 use cfg_if::cfg_if;
 use fish_feature_flags::{self as features, feature_test};
-use fish_util::wcsfilecmp_glob;
-use fish_widestring::{bytes2wcstring, osstr2wcstring, str2wcstring, wcs2bytes};
+use fish_widestring::{bytes2wcstring, osstr2wcstring, wcs2bytes};
 use nix::unistd::AccessFlags;
-use rust_embed::RustEmbed;
 
 /// Create an enum with name `$name`.
 /// Its variants are given as comma-separated tuples, with each tuple containing the variant name,
@@ -172,30 +170,6 @@ localizable_consts! {
     BUILTIN_INVALID_JOB_CONTROL_MODE "Invalid job control mode '%s'"
 }
 
-/// Print the features and their values.
-fn print_features(streams: &mut IoStreams) {
-    // TODO: move this to features.rs
-    let mut max_len = i32::MIN;
-    for md in features::METADATA {
-        max_len = max_len.max(md.name.len() as i32);
-    }
-    for md in features::METADATA {
-        let set = if feature_test(md.flag) {
-            L!("on")
-        } else {
-            L!("off")
-        };
-        streams.out.append(&sprintf!(
-            "%-*s%-3s %s %s\n",
-            max_len + 1,
-            md.name,
-            set,
-            md.groups,
-            md.description,
-        ));
-    }
-}
-
 fn parse_cmd_opts(
     opts: &mut Options,
     optind: &mut usize,
@@ -301,38 +275,6 @@ fn parse_cmd_opts(
     Ok(SUCCESS)
 }
 
-struct EmptyEmbed;
-impl RustEmbed for EmptyEmbed {
-    fn get(_file_path: &str) -> Option<rust_embed::EmbeddedFile> {
-        None
-    }
-    fn iter() -> impl Iterator<Item = std::borrow::Cow<'static, str>> {
-        std::iter::empty()
-    }
-}
-
-cfg_if!(
-    if #[cfg(feature = "embed-manpages")] {
-        #[derive(RustEmbed)]
-        #[folder = "$FISH_RESOLVED_BUILD_DIR/fish-docs/man/man1"]
-        #[prefix = "man/man1/"]
-        struct Docs;
-    } else {
-        type Docs = EmptyEmbed;
-    }
-);
-
-cfg_if!(
-    if #[cfg(using_cmake)] {
-        #[derive(RustEmbed)]
-        #[folder = "$FISH_CMAKE_BINARY_DIR/share"]
-        #[include = "__fish_build_paths.fish"]
-        struct CMakeBinaryDir;
-    } else {
-        type CMakeBinaryDir = EmptyEmbed;
-    }
-);
-
 pub fn status(parser: &mut Parser, streams: &mut IoStreams, args: &mut [&wstr]) -> BuiltinResult {
     let cmd = args[0];
     let argc = args.len();
@@ -416,7 +358,11 @@ pub fn status(parser: &mut Parser, streams: &mut IoStreams, args: &mut [&wstr]) 
             };
             set_job_control_mode(job_control_mode);
         }
-        Features => print_features(streams),
+        Features => {
+            streams
+                .out
+                .append(&crate::status_info::features(feature_test));
+        }
         c @ TestFeature => {
             if args.len() != 1 {
                 err_fmt!(builtins::Error::UNEXP_ARG_COUNT, 1, args.len())
@@ -447,13 +393,10 @@ pub fn status(parser: &mut Parser, streams: &mut IoStreams, args: &mut [&wstr]) 
             }
             let arg = wcs2bytes(args[0]);
             let arg = std::str::from_utf8(&arg).unwrap();
-            let Some(emfile) = crate::autoload::Asset::get(arg)
-                .or_else(|| Docs::get(arg))
-                .or_else(|| CMakeBinaryDir::get(arg))
-            else {
+            let Some(data) = crate::status_info::get_file(arg) else {
                 return Err(STATUS_CMD_ERROR);
             };
-            let src = bytes2wcstring(&emfile.data);
+            let src = bytes2wcstring(&data);
             streams.out.append(&src);
             return Ok(SUCCESS);
         }
@@ -500,28 +443,7 @@ pub fn status(parser: &mut Parser, streams: &mut IoStreams, args: &mut [&wstr]) 
             }
         }
         ListFiles => {
-            let mut paths = vec![];
-            let mut add = |arg| {
-                let arg = wcs2bytes(arg);
-                let arg = std::str::from_utf8(&arg).unwrap();
-                for path in crate::autoload::Asset::iter()
-                    .chain(Docs::iter())
-                    .chain(CMakeBinaryDir::iter())
-                {
-                    if arg.is_empty() || path.starts_with(arg) {
-                        paths.push(str2wcstring(&path));
-                    }
-                }
-            };
-            if args.is_empty() {
-                add(L!(""));
-            } else {
-                for arg in args {
-                    add(arg);
-                }
-            }
-
-            paths.sort_by(|a, b| wcsfilecmp_glob(a, b));
+            let paths = crate::status_info::list_files(args);
             for path in &paths {
                 streams.out.appendln(path);
             }
@@ -561,41 +483,7 @@ pub fn status(parser: &mut Parser, streams: &mut IoStreams, args: &mut [&wstr]) 
             }
             match s {
                 BuildInfo => {
-                    let version = str2wcstring(crate::BUILD_VERSION);
-                    let target = str2wcstring(env!("BUILD_TARGET_TRIPLE"));
-                    let host = str2wcstring(env!("BUILD_HOST_TRIPLE"));
-                    let profile = str2wcstring(env!("BUILD_PROFILE"));
-                    streams.out.append(L!("Build system: "));
-                    let buildsystem = if cfg!(using_cmake) {
-                        L!("CMake")
-                    } else {
-                        L!("Cargo")
-                    };
-                    streams.out.appendln(buildsystem);
-                    streams.out.append(L!("Version: "));
-                    streams.out.appendln(&version);
-                    if target == host {
-                        streams.out.append(L!("Target (and host): "));
-                        streams.out.appendln(&target);
-                    } else {
-                        streams.out.append(L!("Target: "));
-                        streams.out.appendln(&target);
-                        streams.out.append(L!("Host: "));
-                        streams.out.appendln(&host);
-                    }
-                    streams.out.append(L!("Profile: "));
-                    streams.out.appendln(&profile);
-                    streams.out.append(L!("Features: "));
-                    let features: &[&str] = &[
-                        #[cfg(feature = "embed-manpages")]
-                        "embed-manpages",
-                        #[cfg(feature = "localize-messages")]
-                        "localize-messages",
-                        #[cfg(target_feature = "crt-static")]
-                        "crt-static",
-                    ];
-                    streams.out.appendln(&str2wcstring(features.join(" ")));
-                    streams.out.appendln("");
+                    streams.out.append(&crate::status_info::build_info());
                     return Ok(SUCCESS);
                 }
                 Basename | Dirname | Filename => {

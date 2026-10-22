@@ -22,6 +22,7 @@ fn main() {
     rsconf::set_env_value("BUILD_PROFILE", &env_var("PROFILE").unwrap());
     rsconf::set_env_value("FISH_BUILD_VERSION", &get_version());
     if target_os() == "windows" {
+        rsconf::declare_cfg("using_cmake", false);
         return;
     }
 

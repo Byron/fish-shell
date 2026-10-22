@@ -209,6 +209,20 @@ functions and global changes remain. Input is read and parsed before evaluation.
 `status filename` reports the current script, sourced file, or function's
 definition file, including after autoloading and pipeline execution. It reports
 `-` for sourced stdin and `Standard input` for commands entered without a file.
+`status basename` and `status dirname` expose the same source location;
+`status function` and `--level` inspect native function frames. `status features`
+and `status test-feature` share the feature catalog and report the native
+backend's actual behavior. Native wildcard, `%self`, and terminal policies are
+fixed; the POSIX-only terminal query feature is reported off.
+`status build-info`, `status list-files`, and `status get-file` share build and
+embedded-file metadata with POSIX, allowing bundled helpers to discover their
+packaged function sources. Native builds do not embed POSIX manpages.
+`status is-command-substitution` follows real substitution nesting, including
+pipeline workers, independently of prompt and completion output capture.
+Unknown queries return status 2; unavailable reader, line-number, stack, terminal,
+locale and POSIX job-control queries return status 1 with a diagnostic. They do
+not abort the remaining script. Interactive current-command tracking remains
+unavailable; noninteractive `status current-command` reports `fish` as on POSIX.
 
 Function declarations use the same option parser as POSIX Fish. Native functions
 support `--description`/`-d`, `--wraps`/`-w`, `--argument-names`/`-a`,
