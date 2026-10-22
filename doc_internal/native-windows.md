@@ -122,8 +122,17 @@ indices, repeated matches and replacement references. Named match groups set
 session variables. String escaping is also shared, including
 `string escape --style=regex` for completion helpers.
 
-The full builtin set is not implemented. Advanced read options and
-locale-specific numeric formatting remain unavailable;
+Native `read` supports grouped options, lists, delimiters, NUL records (`-z`),
+one line per variable (`-L`), Unicode character limits (`-n`), and Fish tokenization
+(`-t`/`--tokenize-raw`). Tokenization preserves literal variable and command
+substitutions without executing them. Field splitting shares its implementation
+with POSIX Fish. Records are bounded to 16 MiB; reads preserve subsequent input,
+and failures clear remaining destination variables. Bare `read` writes the
+record without adding a delimiter. Normal line reads recognize Windows CRLF;
+NUL reads preserve embedded newlines and carriage returns.
+
+The full builtin set is not implemented. Reader editing, silent input,
+function-scoped `read`, and locale-specific numeric formatting remain unavailable;
 unsupported options produce diagnostics.
 
 Native builds enable `native-utilities` by default, packaging 35 commands such

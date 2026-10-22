@@ -8,6 +8,7 @@ impl Session {
             ("version", crate::BUILD_VERSION),
             ("FISH_VERSION", crate::BUILD_VERSION),
             ("CMD_DURATION", "0"),
+            ("IFS", "\n \t"),
         ] {
             self.variables.insert(
                 name.into(),

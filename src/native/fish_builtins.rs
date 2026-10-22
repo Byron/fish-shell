@@ -7,6 +7,8 @@ mod extra;
 pub(super) mod numeric;
 #[path = "fish_printf.rs"]
 mod printf;
+#[path = "fish_read.rs"]
+mod read;
 #[path = "fish_string.rs"]
 mod string;
 

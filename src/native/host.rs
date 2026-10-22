@@ -367,6 +367,16 @@ impl Host for NativeHost {
     }
 
     fn read_line(&mut self, redirects: &[Redirection], _: bool) -> Result<ReadResult> {
+        self.read_record(redirects, Some(b'\n'), None, false)
+    }
+
+    fn read_record(
+        &mut self,
+        redirects: &[Redirection],
+        delimiter: Option<u8>,
+        max_chars: Option<usize>,
+        _: bool,
+    ) -> Result<ReadResult> {
         let targets = targets(redirects, false)?;
         let mut input: Box<dyn io::Read + '_> = match &targets[0] {
             Target::Inherited(0) => Box::new(io::stdin().lock()),
@@ -375,13 +385,37 @@ impl Host for NativeHost {
         };
         let mut line = Vec::new();
         let mut byte = [0];
+        let mut characters = 0;
+        let mut continuation = 0;
         loop {
+            if self.cancelled() {
+                return Ok(ReadResult::Interrupted(line));
+            }
             match input.read(&mut byte) {
                 Ok(0) => break,
                 Ok(_) => {
                     line.push(byte[0]);
-                    if byte[0] == b'\n' {
+                    if delimiter == Some(byte[0]) {
                         break;
+                    }
+                    if line.len() > 16 * 1024 * 1024 {
+                        return Err(Error { message: "input record limit exceeded".into(), status: 122 });
+                    }
+                    if continuation > 0 && byte[0] & 0xc0 == 0x80 {
+                        continuation -= 1;
+                    } else {
+                        continuation = match byte[0] {
+                            0xc2..=0xdf => 1,
+                            0xe0..=0xef => 2,
+                            0xf0..=0xf4 => 3,
+                            _ => 0,
+                        };
+                    }
+                    if continuation == 0 {
+                        characters += 1;
+                        if max_chars.is_some_and(|limit| characters >= limit) {
+                            break;
+                        }
                     }
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,

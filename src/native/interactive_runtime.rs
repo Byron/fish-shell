@@ -382,6 +382,21 @@ impl Host for CompletionHost<'_> {
         )
     }
 
+    fn read_record(
+        &mut self,
+        redirects: &[Redirection],
+        delimiter: Option<u8>,
+        max_chars: Option<usize>,
+        interrupt: bool,
+    ) -> Result<ReadResult> {
+        self.host.read_record(
+            &self.io.redirects(redirects, true, true, self.buffer_output),
+            delimiter,
+            max_chars,
+            interrupt,
+        )
+    }
+
     fn fd_is_terminal(
         &mut self,
         fd: i32,

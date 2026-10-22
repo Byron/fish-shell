@@ -15,11 +15,9 @@ use crate::{
         ReaderConfig, commandline_set_buffer, reader_pop, reader_push, reader_readline,
         set_shell_modes_temporarily,
     },
-    tokenizer::{Tok, TokFlags, Tokenizer},
     wutil::{self, perror_nix},
 };
-use fish_common::{UnescapeStringStyle, escape, read_blocked, unescape_string};
-use fish_wcstringutil::{split_about, split_string_tok};
+use fish_common::{escape, read_blocked};
 use fish_widestring::bytes2wcstring;
 use nix::unistd::{Whence, lseek};
 use std::{
@@ -642,160 +640,27 @@ pub fn read(parser: &mut Parser, streams: &mut IoStreams, argv: &mut [&wstr]) ->
             return exit_res;
         }
 
-        if let Some(token_mode) = opts.token_mode {
-            let mut tok = Tokenizer::new(
-                &buff,
-                TokFlags {
-                    accept_unfinished: true,
-                    argument_list: true,
-                    ..Default::default()
-                },
-            );
-            let token_text = |tokenizer: &mut Tokenizer<'_>, token: &Tok| -> WString {
-                let mut text = Cow::Borrowed(tokenizer.text_of(token));
-                match token_mode {
+        let ifs = parser
+            .vars()
+            .get_unless_empty(L!("IFS"))
+            .map(|var| var.as_string())
+            .unwrap_or_default();
+        let mode = if let Some(token_mode) = opts.token_mode {
+            crate::read_fields::SplitMode::Tokens {
+                unescape: match token_mode {
                     TokenOutputMode::Expanded => panic!(),
-                    TokenOutputMode::Raw => (),
-                    TokenOutputMode::Unescaped => {
-                        if let Some(unescaped) =
-                            unescape_string(&text, UnescapeStringStyle::default())
-                        {
-                            text = Cow::Owned(unescaped);
-                        }
-                    }
-                }
-                text.into_owned()
-            };
-            if opts.array {
-                // Array mode: assign each token as a separate element of the sole var.
-                let mut tokens = vec![];
-                while let Some(t) = tok.next() {
-                    tokens.push(token_text(&mut tok, &t));
-                }
-
-                parser.set_var_and_fire(argv[var_ptr], opts.set_mode, tokens);
-                var_ptr += 1;
-            } else {
-                while vars_left(var_ptr) - 1 > 0 {
-                    let Some(t) = tok.next() else {
-                        break;
-                    };
-                    let out = token_text(&mut tok, &t);
-                    parser.set_var_and_fire(argv[var_ptr], opts.set_mode, vec![out]);
-                    var_ptr += 1;
-                }
-
-                // If we still have tokens, set the last variable to them.
-                if let Some(t) = tok.next() {
-                    let rest = buff[t.offset()..].to_owned();
-                    parser.set_var_and_fire(argv[var_ptr], opts.set_mode, vec![rest]);
-                    var_ptr += 1;
-                }
+                    TokenOutputMode::Raw => false,
+                    TokenOutputMode::Unescaped => true,
+                },
             }
-            // The rest of the loop is other split-modes, we don't care about those.
-            // Make sure to check the loop exit condition before continuing.
-            if !opts.one_line || vars_left(var_ptr) == 0 {
-                break;
-            }
-            continue;
-        }
-
-        let mut ifs_delimiter = WString::new();
-        let delimiter: &wstr = opts.delimiter.as_deref().unwrap_or_else(|| {
-            ifs_delimiter = parser
-                .vars()
-                .get_unless_empty(L!("IFS"))
-                .map(|var| var.as_string())
-                .unwrap_or_default();
-            &ifs_delimiter
-        });
-
-        if delimiter.is_empty() {
-            // Every character is a separate token with one wrinkle involving non-array mode where
-            // the final var gets the remaining characters as a single string.
-            let x = 1.max(buff.len());
-            let n_splits = if opts.array || vars_left(var_ptr) > x {
-                x
-            } else {
-                vars_left(var_ptr)
-            };
-            let mut chars = Vec::with_capacity(n_splits);
-
-            for (i, c) in buff.chars().enumerate() {
-                if opts.array || i + 1 < vars_left(var_ptr) {
-                    chars.push(WString::from_chars([c]));
-                } else {
-                    chars.push(buff[i..].to_owned());
-                    break;
-                }
-            }
-
-            if opts.array {
-                // Array mode: assign each char as a separate element of the sole var.
-                parser.set_var_and_fire(argv[var_ptr], opts.set_mode, chars);
-                var_ptr += 1;
-            } else {
-                // Not array mode: assign each char to a separate var with the remainder being
-                // assigned to the last var.
-                for c in chars {
-                    parser.set_var_and_fire(argv[var_ptr], opts.set_mode, vec![c]);
-                    var_ptr += 1;
-                }
-            }
-        } else if opts.array {
-            // The user has requested the input be split into a sequence of tokens and all the
-            // tokens assigned to a single var. How we do the tokenizing depends on whether the user
-            // specified the delimiter string or we're using IFS.
-            if opts.delimiter.is_none() {
-                // We're using IFS, so tokenize the buffer using each IFS char. This is for backward
-                // compatibility with old versions of fish.
-                let tokens = split_string_tok(&buff, delimiter, None)
-                    .into_iter()
-                    .map(|s| s.to_owned())
-                    .collect();
-                parser.set_var_and_fire(argv[var_ptr], opts.set_mode, tokens);
-                var_ptr += 1;
-            } else {
-                // We're using a delimiter provided by the user so use the `string split` behavior.
-                let splits = split_about(&buff, delimiter, usize::MAX, false)
-                    .into_iter()
-                    .map(|s| s.to_owned())
-                    .collect();
-                parser.set_var_and_fire(argv[var_ptr], opts.set_mode, splits);
-                var_ptr += 1;
-            }
+        } else if let Some(delimiter) = opts.delimiter.as_deref() {
+            crate::read_fields::SplitMode::Delimiter(delimiter)
         } else {
-            // Not array mode. Split the input into tokens and assign each to the vars in sequence.
-            if opts.delimiter.is_none() {
-                // We're using IFS, so tokenize the buffer using each IFS char. This is for backward
-                // compatibility with old versions of fish.
-                // Note the final variable gets any remaining text.
-                let mut var_vals: Vec<WString> =
-                    split_string_tok(&buff, delimiter, Some(vars_left(var_ptr)))
-                        .into_iter()
-                        .map(|s| s.to_owned())
-                        .collect();
-                let mut val_idx = 0;
-                while vars_left(var_ptr) != 0 {
-                    let mut val = WString::new();
-                    if val_idx < var_vals.len() {
-                        std::mem::swap(&mut val, &mut var_vals[val_idx]);
-                        val_idx += 1;
-                    }
-                    parser.set_var_and_fire(argv[var_ptr], opts.set_mode, vec![val]);
-                    var_ptr += 1;
-                }
-            } else {
-                // We're using a delimiter provided by the user so use the `string split` behavior.
-                // We're making at most argc - 1 splits so the last variable
-                // is set to the remaining string.
-                let splits = split_about(&buff, delimiter, argc - 1, false);
-                assert!(splits.len() <= vars_left(var_ptr));
-                for split in splits {
-                    parser.set_var_and_fire(argv[var_ptr], opts.set_mode, vec![split.to_owned()]);
-                    var_ptr += 1;
-                }
-            }
+            crate::read_fields::SplitMode::Ifs(&ifs)
+        };
+        for values in crate::read_fields::split(&buff, mode, opts.array, vars_left(var_ptr)) {
+            parser.set_var_and_fire(argv[var_ptr], opts.set_mode, values);
+            var_ptr += 1;
         }
 
         if !opts.one_line || vars_left(var_ptr) == 0 {

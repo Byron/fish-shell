@@ -132,6 +132,25 @@ pub trait Host {
         interrupt_for_traps: bool,
     ) -> Result<ReadResult>;
 
+    /// Read through one delimiter (included), a Unicode character limit, or EOF.
+    /// A missing delimiter reads until EOF. The host must not consume a later
+    /// record: multiple builtins may share the same opened input description.
+    fn read_record(
+        &mut self,
+        redirects: &[Redirection],
+        delimiter: Option<u8>,
+        max_chars: Option<usize>,
+        interrupt_for_traps: bool,
+    ) -> Result<ReadResult> {
+        if delimiter == Some(b'\n') && max_chars.is_none() {
+            self.read_line(redirects, interrupt_for_traps)
+        } else {
+            Err(crate::Error::new(
+                "this host does not support the requested input record mode",
+            ))
+        }
+    }
+
     /// Inspect a resolved descriptor, including redirections, without I/O.
     /// Hosts without terminal streams may retain the default.
     fn fd_is_terminal(
