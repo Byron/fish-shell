@@ -171,6 +171,10 @@ PATH. AWK supports the common text-processing forms used by helpers, with known
 upstream limitations including `exit` skipping `END` blocks and subprocess forms
 requiring `sh`. See [the concrete utility follow-ups](native-utilities-follow-ups.md)
 for tested dependencies and remaining integration limits.
+Completion helpers prefer `python3` and versioned Python 3 commands, then accept
+an installed `python` after verifying Python 3.5 or newer in isolated mode.
+This supports Cargo package and feature suggestions with standard Windows
+`python.exe` installations; Python remains an external dependency.
 `argparse` uses the same option parser as POSIX Fish, including short and long
 options, repeated and optional arguments, mutually exclusive options, argument
 counts, and validation commands. It writes local `_flag_*`, `argv_opts`, and

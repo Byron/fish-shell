@@ -30,6 +30,14 @@ function __fish_anypython
         echo $best_path
         return 0
     end
+    # Windows installations commonly provide python.exe without python3.exe.
+    # An unversioned interpreter is suitable only if it is Python 3.5 or newer.
+    # Isolated mode and -S avoid running user site customization during the probe.
+    if set -l path (command -s python)
+        and command $path -ISc 'import sys; sys.exit(sys.version_info < (3, 5))' &>/dev/null
+        echo $path
+        return 0
+    end
     # We have no python.
     return 1
 end
