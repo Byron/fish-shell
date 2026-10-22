@@ -1,5 +1,5 @@
 //! Native I/O and variable adapters for shared Fish string operations.
-use super::{StringOutput, *};
+use super::{StringOutput, append, for_each_input};
 use crate::string_regex::{
     MatchOptions, RegexError, ReplaceOptions, StringMatcher, StringReplacer,
 };
@@ -8,6 +8,8 @@ use fish_wcstringutil::escape::{
 };
 use fish_wgetopt::{ArgType::*, WGetopter, WOption, wopt};
 use fish_widestring::prelude::*;
+use rash::host::{Host, Redirection};
+use rash::{Error, Result};
 use std::borrow::Cow;
 
 const MATCH_OPTIONS: &[WOption] = &[
@@ -124,30 +126,36 @@ fn run_impl(
                 )
             })
             .map_err(|error| regex_error(command, error))?;
-            for_each_input(inputs, host, redirects, |input, _| {
-                let mut output_error = None;
-                if let Err(error) = matcher.report_matches(input, |line| {
-                    if output_error.is_none() {
-                        output_error = append(&mut output.bytes, line, true).err();
+            for_each_input(
+                inputs,
+                host,
+                redirects,
+                stdin_is_directly_redirected,
+                |input, _| {
+                    let mut output_error = None;
+                    if let Err(error) = matcher.report_matches(input, |line| {
+                        if output_error.is_none() {
+                            output_error = append(&mut output.bytes, line, true).err();
+                        }
+                    }) {
+                        let diagnostic = format!(
+                            "string match: regular expression error: {}",
+                            error.error_message()
+                        );
+                        if let Some(previous) = &mut output.diagnostic {
+                            previous.push('\n');
+                            previous.push_str(&diagnostic);
+                        } else {
+                            output.diagnostic = Some(diagnostic);
+                        }
                     }
-                }) {
-                    let diagnostic = format!(
-                        "string match: regular expression error: {}",
-                        error.error_message()
-                    );
-                    if let Some(previous) = &mut output.diagnostic {
-                        previous.push('\n');
-                        previous.push_str(&diagnostic);
-                    } else {
-                        output.diagnostic = Some(diagnostic);
+                    if let Some(error) = output_error {
+                        return Err(error);
                     }
-                }
-                if let Some(error) = output_error {
-                    return Err(error);
-                }
-                let count = matcher.match_count();
-                Ok((opts.quiet && count > 0) || options.max_matches == Some(count))
-            })?;
+                    let count = matcher.match_count();
+                    Ok((opts.quiet && count > 0) || options.max_matches == Some(count))
+                },
+            )?;
             output.status = i32::from(matcher.match_count() == 0);
             output.captures = matcher
                 .named_captures()
@@ -172,20 +180,26 @@ fn run_impl(
             )
             .map_err(|error| regex_error(command, error))?;
             let mut count = 0;
-            for_each_input(inputs, host, redirects, |input, newline| {
-                let (replaced, result) =
-                    replacer.replace(Cow::Borrowed(input)).map_err(|error| {
-                        Error::new(format!(
-                            "string replace: regular expression substitute error: {}",
-                            error.error_message()
-                        ))
-                    })?;
-                count += usize::from(replaced);
-                if !options.matching.quiet && (!options.filter || replaced) {
-                    append(&mut output.bytes, &result, newline)?;
-                }
-                Ok((options.matching.quiet && count > 0) || options.max_matches == Some(count))
-            })?;
+            for_each_input(
+                inputs,
+                host,
+                redirects,
+                stdin_is_directly_redirected,
+                |input, newline| {
+                    let (replaced, result) =
+                        replacer.replace(Cow::Borrowed(input)).map_err(|error| {
+                            Error::new(format!(
+                                "string replace: regular expression substitute error: {}",
+                                error.error_message()
+                            ))
+                        })?;
+                    count += usize::from(replaced);
+                    if !options.matching.quiet && (!options.filter || replaced) {
+                        append(&mut output.bytes, &result, newline)?;
+                    }
+                    Ok((options.matching.quiet && count > 0) || options.max_matches == Some(count))
+                },
+            )?;
             output.status = i32::from(count == 0);
         }
         "escape" => {
@@ -206,11 +220,17 @@ fn run_impl(
                 style => style,
             };
             let mut escaped_any = false;
-            for_each_input(inputs, host, redirects, |input, newline| {
-                append(&mut output.bytes, &escape_string(input, style), newline)?;
-                escaped_any = true;
-                Ok(false)
-            })?;
+            for_each_input(
+                inputs,
+                host,
+                redirects,
+                stdin_is_directly_redirected,
+                |input, newline| {
+                    append(&mut output.bytes, &escape_string(input, style), newline)?;
+                    escaped_any = true;
+                    Ok(false)
+                },
+            )?;
             output.status = i32::from(!escaped_any);
         }
         "unescape" => {
@@ -222,13 +242,19 @@ fn run_impl(
                 .map_err(|_| Error::new("string unescape: invalid escape style"))?
                 .unwrap_or_default();
             let mut unescaped_any = false;
-            for_each_input(inputs, host, redirects, |input, newline| {
-                if let Some(result) = unescape_string(input, style) {
-                    append(&mut output.bytes, &result, newline)?;
-                    unescaped_any = true;
-                }
-                Ok(false)
-            })?;
+            for_each_input(
+                inputs,
+                host,
+                redirects,
+                stdin_is_directly_redirected,
+                |input, newline| {
+                    if let Some(result) = unescape_string(input, style) {
+                        append(&mut output.bytes, &result, newline)?;
+                        unescaped_any = true;
+                    }
+                    Ok(false)
+                },
+            )?;
             output.status = i32::from(!unescaped_any);
         }
         _ => unreachable!(),
@@ -304,59 +330,4 @@ fn regex_error(command: &str, error: RegexError) -> Error {
             format!("string {command}: invalid escape sequence in pattern \"{replacement}\"")
         }
     })
-}
-
-fn append(output: &mut Vec<u8>, line: &wstr, newline: bool) -> Result<()> {
-    let line = line.to_string();
-    if output
-        .len()
-        .saturating_add(line.len())
-        .saturating_add(usize::from(newline))
-        > 16 * 1024 * 1024
-    {
-        return Err(Error::new("string: output limit exceeded"));
-    }
-    output.extend(line.as_bytes());
-    if newline {
-        output.push(b'\n');
-    }
-    Ok(())
-}
-
-/// Read incrementally so quiet and max-matches leave subsequent input unread.
-fn for_each_input(
-    args: &[&wstr],
-    host: &mut impl Host,
-    redirects: &[Redirection],
-    mut consume: impl FnMut(&wstr, bool) -> Result<bool>,
-) -> Result<()> {
-    if !args.is_empty() {
-        for arg in args {
-            if consume(arg, true)? {
-                break;
-            }
-        }
-        return Ok(());
-    }
-    loop {
-        let ReadResult::Line(mut bytes) = host.read_line(redirects, false)? else {
-            return Err(Error {
-                message: "string: input interrupted".into(),
-                status: 130,
-            });
-        };
-        if bytes.is_empty() {
-            break;
-        }
-        let newline = bytes.last() == Some(&b'\n');
-        if newline {
-            bytes.pop();
-        }
-        let input =
-            String::from_utf8(bytes).map_err(|_| Error::new("string: input must be UTF-8"))?;
-        if consume(&WString::from(input), newline)? {
-            break;
-        }
-    }
-    Ok(())
 }

@@ -179,7 +179,7 @@ b"
 
 #[test]
 fn pipeline_input_keeps_newlines_and_stops_after_quiet_matches() {
-    let mut child = command("string replace -r a A")
+    let mut child = command("string replace -r a A <&0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -193,13 +193,177 @@ fn pipeline_input_keeps_newlines_and_stops_after_quiet_matches() {
         stdout(
             r#"
         printf 'dog\ncat\nbat\n' | begin
-            string match -rq cat
-            string replace -r a A
+            string match -rq cat <&0
+            string replace -r a A <&0
         end
         printf 'a\0b\n' | string match -r '.*b$' | string escape
     "#
         ),
         "bAt\na\\x00b\n"
+    );
+}
+
+#[test]
+fn basic_options_accept_compact_grouped_and_long_argument_forms() {
+    for (args, status, expected) in [
+        (vec!["string", "sub", "-s2", "-l2", "a文😀z"], 0, "文😀\n"),
+        (
+            vec!["string", "sub", "--start=-2", "--length=1", "abcde"],
+            0,
+            "d\n",
+        ),
+        (vec!["string", "sub", "abcde", "-l2"], 0, "ab\n"),
+        (vec!["string", "sub", "-qs2", "abcde"], 0, ""),
+        (vec!["string", "trim", "-lc_", "__value__"], 0, "value__\n"),
+        (
+            vec!["string", "trim", "--chars=_", "--right", "__value__"],
+            0,
+            "__value\n",
+        ),
+        (vec!["string", "split", "-rm1", ":", "a:b:c"], 0, "a:b\nc\n"),
+        (
+            vec!["string", "split", "--max=1", "", "a文😀"],
+            0,
+            "a\n文😀\n",
+        ),
+        (vec!["string", "split", "-rm1", "", "a文😀"], 0, "a文\n😀\n"),
+        (vec!["string", "split", "-n", ":", ":one:"], 1, "one\n"),
+        (vec!["string", "split", "-n", ":", "", "a:b"], 1, "a\nb\n"),
+        (vec!["string", "split", "-qn", ":", "", "a:b"], 0, ""),
+        (vec!["string", "join", "-nq", ",", "", "one", "two"], 0, ""),
+        (vec!["string", "lower", "--", "-UPPER"], 0, "-upper\n"),
+    ] {
+        validate_case(&args, status, expected);
+    }
+}
+
+#[test]
+fn basic_option_errors_do_not_stop_the_script() {
+    for (source, diagnostic) in [
+        ("string length --chars=x value", "unknown option"),
+        ("string lower -N value", "unknown option"),
+        ("string sub -n value", "unknown option"),
+        ("string trim --left=yes value", "does not take an argument"),
+        ("string sub --length", "requires an argument"),
+        ("string sub -s0", "indexes start at one"),
+        ("string split -m-1 : value", "invalid maximum"),
+        (
+            "string repeat --count=9223372036854775808 value",
+            "invalid count",
+        ),
+        ("string unknown", "unsupported subcommand"),
+    ] {
+        let output = run(&format!("{source}; echo status:$status; echo continued"));
+        assert!(output.status.success(), "{source}");
+        assert_eq!(output.stdout, b"status:2\ncontinued\n", "{source}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(diagnostic),
+            "{source}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn repeat_supports_maximum_only_and_suppresses_only_the_final_newline() {
+    for (args, status, expected) in [
+        (vec!["string", "repeat", "-m5", "ab"], 0, "ababa\n"),
+        (vec!["string", "repeat", "--max=3", "文😀"], 0, "文😀文\n"),
+        (vec!["string", "repeat", "-n3", "-m0", "ab"], 0, "ababab\n"),
+        (vec!["string", "repeat", "-n0", "-m3", "xy"], 0, "xyx\n"),
+        (vec!["string", "repeat", "-m0", "ab"], 1, ""),
+        (vec!["string", "repeat", "-n0", "ab"], 1, ""),
+        (
+            vec!["string", "repeat", "-n2", "", "a", "", "b", ""],
+            0,
+            "aa\nbb\n",
+        ),
+        (vec!["string", "repeat", "-Nn2", "a", "b"], 0, "aa\nbb"),
+        (
+            vec!["string", "repeat", "-n9223372036854775807", "-m3", "xy"],
+            0,
+            "xyx\n",
+        ),
+    ] {
+        validate_case(&args, status, expected);
+    }
+}
+
+#[test]
+fn basic_streams_preserve_carriage_returns_and_unterminated_final_records() {
+    for (operation, expected) in [
+        ("lower", b"a\r\nb".as_slice()),
+        ("upper", b"A\r\nB".as_slice()),
+        ("sub -s1", b"A\r\nb".as_slice()),
+        ("length", b"2\n1\n".as_slice()),
+        ("join ,", b"A\r,b".as_slice()),
+        ("repeat -n2", b"A\rA\r\nbb".as_slice()),
+    ] {
+        let output = run(&format!("printf 'A\\r\\nb' | string {operation}"));
+        assert!(output.status.success(), "{operation}: {:?}", output.stderr);
+        assert!(output.stderr.is_empty(), "{operation}: {:?}", output.stderr);
+        assert_eq!(output.stdout, expected, "{operation}");
+    }
+    assert_eq!(stdout("printf ' a \\r\\n b ' | string trim"), "a\nb");
+    assert_eq!(
+        stdout("printf 'a:b\\r\\nc:d' | string split :"),
+        "a\nb\r\nc\nd\n"
+    );
+}
+
+#[test]
+fn inherited_stdin_requires_an_explicit_inner_redirection() {
+    assert_eq!(
+        stdout(
+            r#"
+        printf 'untouched\n' | begin
+            string length
+            echo basic:$status
+            string match '*'
+            echo match:$status
+            string upper <&0
+        end
+        function inherited
+            string trim
+            echo function:$status
+            string lower <&0
+        end
+        printf 'INPUT\n' | inherited
+    "#,
+        ),
+        "basic:1\nmatch:1\nUNTOUCHED\nfunction:1\ninput\n"
+    );
+    for source in [
+        "printf 'stream\\n' | string sub -s1 argument; echo status:$status",
+        "string length argument < NUL; echo status:$status",
+        "string repeat -m2 argument < NUL; echo status:$status",
+    ] {
+        let output = run(source);
+        assert_eq!(output.stdout, b"status:2\n", "{source}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("too many arguments"));
+    }
+}
+
+#[test]
+fn quiet_basic_stream_operations_leave_input_for_the_next_command() {
+    assert_eq!(
+        stdout(
+            r#"
+        printf 'first\nsecond\n' | begin
+            string length -q <&0
+            string upper <&0
+        end
+        printf 'same\n CHANGE \nlast\n' | begin
+            string trim -q <&0
+            string upper <&0
+        end
+        printf 'one\ntwo\nthree\n' | begin
+            string join -q , <&0
+            string upper <&0
+        end
+    "#,
+        ),
+        "SECOND\nLAST\nTHREE\n"
     );
 }
 

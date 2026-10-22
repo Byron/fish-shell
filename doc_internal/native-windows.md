@@ -84,6 +84,11 @@ queries, function queries/removal, and common `status` queries. `math` uses the
 same arithmetic parser and functions as POSIX Fish. `string` supports literal
 split, join, replace, trim, case conversion, Unicode length/substrings, repeat,
 escaping, and wildcard matching, with arguments or redirected standard input.
+Supported string options accept compact forms such as `string sub -s1 -l16`,
+grouped flags, and `--option=value`. String operations read stdin only when it
+is directly piped or redirected to the builtin; an empty argument list does not
+consume input inherited by a function or block. Use `<&0` for an explicit read
+inside such a block.
 Command substitutions, brace lists, indirect variables, and list index ranges
 are supported. Unquoted native command substitutions split Windows CRLF output
 into lines; quoted substitutions retain their internal line endings.
