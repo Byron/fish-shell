@@ -72,7 +72,7 @@ def main():
         tmux_config = root / "tmuxx.conf"
         tmux_config.write_text("set -gw remain-on-exit on\n", encoding="utf-8")
         env = dict(os.environ, HOME=temporary, USERPROFILE=temporary,
-                   XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"),
+                   XDG_CONFIG_HOME=str(root / "config"), FISH_NATIVE_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"),
                    XDG_CACHE_HOME=str(root / "cache"))
         env.pop("TMUX", None)
         env.pop("TMUXX_ENDPOINT", None)

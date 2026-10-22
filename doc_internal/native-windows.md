@@ -266,7 +266,15 @@ contents changed. Shortening input or dismissing a menu erases leftover text
 without first blanking the prompt and the rest of the menu. Resizing, scrolling,
 or prompt controls the renderer cannot safely compare can require a full redraw.
 
-Native Fish reads `fish/config.fish` under `XDG_CONFIG_HOME`, or under `%APPDATA%`
+Native Fish reads `fish/config.fish` under `FISH_NATIVE_CONFIG_HOME` when it is
+an absolute Windows path. This optional override is only used by the native
+frontend: a launcher can select its Windows configuration without changing
+`XDG_CONFIG_HOME` for MSYS Fish or other child programs. For example, set it to
+`C:/Users/name/.config` to share a backend-aware loader with MSYS Fish's normal
+home configuration. MSYS must use its own POSIX path spelling for XDG overrides;
+its wildcard startup scanning does not support Windows drive paths.
+
+Without the native override, Fish uses `XDG_CONFIG_HOME`, or `%APPDATA%`
 when that variable is not set. Without either location it uses
 `~/.config/fish/config.fish`. `-N`/`--no-config` skips this file. The configuration
 runs in the native evaluator and must use its supported Fish syntax and builtins.

@@ -129,7 +129,12 @@ pub fn startup_file(language: &str) -> Option<PathBuf> {
     if language != "fish" {
         return None;
     }
-    let directory = absolute_env("XDG_CONFIG_HOME")
+    #[cfg(windows)]
+    let native_config = absolute_env("FISH_NATIVE_CONFIG_HOME");
+    #[cfg(not(windows))]
+    let native_config = None;
+    let directory = native_config
+        .or_else(|| absolute_env("XDG_CONFIG_HOME"))
         .or_else(|| absolute_env("APPDATA"))
         .or_else(|| home_dir().map(|home| home.join(".config")))?;
     let path = directory.join("fish/config.fish");

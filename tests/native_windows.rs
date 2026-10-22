@@ -57,7 +57,11 @@ fn shell(name: &str, cwd: &Path) -> Command {
         _ => unreachable!(),
     };
     let mut command = Command::new(executable);
-    command.arg("-N").current_dir(cwd).stdin(Stdio::null());
+    command
+        .arg("-N")
+        .current_dir(cwd)
+        .env_remove("FISH_NATIVE_CONFIG_HOME")
+        .stdin(Stdio::null());
     command
 }
 

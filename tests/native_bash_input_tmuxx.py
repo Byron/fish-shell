@@ -50,7 +50,7 @@ def main():
             os.environ,
             HOME=temporary,
             USERPROFILE=temporary,
-            XDG_CONFIG_HOME=str(root / "config"),
+            XDG_CONFIG_HOME=str(root / "config"), FISH_NATIVE_CONFIG_HOME=str(root / "config"),
             XDG_DATA_HOME=str(root / "data"),
             XDG_CACHE_HOME=str(root / "cache"),
         )
