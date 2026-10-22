@@ -11,6 +11,7 @@ impl Session {
         output: &mut Output,
     ) -> Result<bool> {
         match name {
+            "__fish_native_utility" => self.native_utility(args, host, output)?,
             "_" => {
                 // Native Fish has no message catalog yet. Match the untranslated
                 // gettext behavior, including concatenation without a newline.
@@ -297,6 +298,7 @@ impl Session {
             index += 1;
         }
         self.status = 0;
+        let mut any_found = false;
         for name in &args[index..] {
             let mut found = Vec::new();
             if !paths_only {
@@ -311,12 +313,17 @@ impl Session {
             if !paths_only && is_builtin(name) {
                 found.push(("builtin", name.clone()));
             }
-            for path in self.command_paths(name) {
-                found.push(("file", path));
+            if found.is_empty() || all {
+                let paths = self.command_paths(name, all)?;
+                let has_path = !paths.is_empty();
+                for path in paths {
+                    found.push(("file", path));
+                }
+                if !has_path && (!paths_only || quiet) && crate::native::utilities::available(name) {
+                    found.push(("utility", name.clone()));
+                }
             }
-            if found.is_empty() {
-                self.status = if mode == "command" { 127 } else { 1 };
-            }
+            any_found |= !found.is_empty();
             for (kind, value) in found.into_iter().take(if all { usize::MAX } else { 1 }) {
                 if quiet {
                     continue;
@@ -331,6 +338,7 @@ impl Session {
                         match kind {
                             "function" => "a function".to_owned(),
                             "builtin" => "a builtin".to_owned(),
+                            "utility" => "a bundled utility".to_owned(),
                             _ => value,
                         }
                     )
@@ -338,35 +346,32 @@ impl Session {
                 self.write(line.as_bytes(), host, output)?;
             }
         }
+        self.status = if any_found {
+            0
+        } else if mode == "command" {
+            127
+        } else {
+            1
+        };
         Ok(())
     }
 
-    fn command_paths(&self, name: &str) -> Vec<String> {
-        let explicit = name.contains(['/', '\\']) || std::path::Path::new(name).is_absolute();
-        let directories = if explicit {
-            vec![String::new()]
+    fn command_paths(&self, name: &str, all: bool) -> Result<Vec<String>> {
+        let (path, pathext) = self.command_search_environment()?;
+        let name = std::ffi::OsStr::new(name);
+        let paths = if all {
+            crate::native::command_resolution::paths(name, path.as_deref(), pathext.as_deref())?
         } else {
-            self.values("PATH")
+            crate::native::command_resolution::first(name, path.as_deref(), pathext.as_deref())?
+                .into_iter()
+                .collect()
         };
-        let extensions = self.values("PATHEXT").join(";");
-        let extensions = if extensions.is_empty() {
-            ".COM;.EXE;.BAT;.CMD"
-        } else {
-            &extensions
-        };
-        let mut results = Vec::new();
-        for directory in directories {
-            let path = std::path::Path::new(&directory).join(name);
-            for suffix in std::iter::once("").chain(extensions.split(';')) {
-                let candidate = std::path::PathBuf::from(format!("{}{suffix}", path.display()));
-                if candidate.is_file() {
-                    results.push(candidate.to_string_lossy().into_owned());
-                    break;
-                }
-            }
-        }
-        results
+        Ok(paths
+            .into_iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect())
     }
+
 
     fn read(&mut self, args: &[String], host: &mut impl Host, output: &mut Output) -> Result<()> {
         let mut scope = Vec::new();

@@ -125,6 +125,26 @@ session variables. String escaping is also shared, including
 The full builtin set is not implemented. Advanced read options and
 locale-specific numeric formatting remain unavailable;
 unsupported options produce diagnostics.
+
+Native builds enable `native-utilities` by default, packaging 35 commands such
+as `awk`, `sed`, `grep`, `find`, `sort`, `seq`, `uname`, and common file/text tools.
+They run in isolated child processes and are available at the prompt and in
+scripts when ordinary command lookup finds no executable. Functions and aliases
+keep their priority; programs selected through `PATH` are never retried as
+packaged utilities after an error. Explicit executable paths use only that path.
+`command -q` and `type -q` recognize packaged utilities; `command -s` and `type -p`
+print real executable paths only. `type -t` reports `utility` for a fallback.
+Disable the feature with `--no-default-features` and explicitly select the other
+desired Cargo features.
+
+Windows' own `sort.exe` and `find.exe` remain ordinary PATH commands. Bundled
+helpers can explicitly request Unix-compatible behavior using `__fish_sort` and
+`__fish_find`; Rustup completions use these adapters. Programs launched inside
+utilities, such as `xargs seq` or `find -exec`, still require executable files on
+PATH. AWK supports the common text-processing forms used by helpers, with known
+upstream limitations including `exit` skipping `END` blocks and subprocess forms
+requiring `sh`. See [the concrete utility follow-ups](native-utilities-follow-ups.md)
+for tested dependencies and remaining integration limits.
 `argparse` uses the same option parser as POSIX Fish, including short and long
 options, repeated and optional arguments, mutually exclusive options, argument
 counts, and validation commands. It writes local `_flag_*`, `argv_opts`, and

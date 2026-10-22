@@ -1,6 +1,8 @@
 //! Native command/script and interactive shell frontend.
 
 #[cfg(windows)]
+mod command_resolution;
+#[cfg(windows)]
 pub mod fish;
 #[cfg(windows)]
 mod history;
@@ -36,6 +38,8 @@ mod startup;
 mod storage;
 #[cfg(windows)]
 mod universal_variables;
+#[cfg(windows)]
+mod utilities;
 
 #[cfg(windows)]
 pub mod syntax;
@@ -222,6 +226,10 @@ pub fn unsupported_tool(name: &str) -> i32 {
 }
 
 fn run(language: Language) -> i32 {
+    #[cfg(windows)]
+    if let Some(status) = utilities::run_if_requested() {
+        return status;
+    }
     let mut args = std::env::args_os().skip(1);
     if let Some(arg) = args.next() {
         if let Some(worker_language) = arg

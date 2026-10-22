@@ -17,6 +17,7 @@ pub(super) const BUILTIN_NAMES: &[&str] = &[
     "[",
     "_",
     "__fish_git",
+    "__fish_native_utility",
     "abbr",
     "argparse",
     "bg",
@@ -333,18 +334,41 @@ impl Session {
         Ok(())
     }
 
-    fn external(
+    pub(super) fn external(
         &mut self,
         name: &str,
         args: &[String],
         host: &mut impl Host,
         output: &mut Output,
     ) -> Result<()> {
+        let argv = if host.supports_workers() {
+            // Look up before handing the command to the host. Shell-local
+            // PATH/PATHEXT affect execution without becoming child exports.
+            match self.external_argv(name, args) {
+                Ok(argv) => argv,
+                Err(error) => {
+                    self.status = if error.kind() == std::io::ErrorKind::NotFound {
+                        127
+                    } else {
+                        126
+                    };
+                    output.bytes.extend(host.write(
+                        2,
+                        format!("{name}: {error}\n").as_bytes(),
+                        &output.redirects,
+                        output.capture,
+                    )?);
+                    return Ok(());
+                }
+            }
+        } else {
+            std::iter::once(name.as_bytes().to_vec())
+                .chain(args.iter().map(|arg| arg.as_bytes().to_vec()))
+                .collect()
+        };
         let env = self.exports();
         let command = Command {
-            argv: std::iter::once(name.as_bytes().to_vec())
-                .chain(args.iter().map(|arg| arg.as_bytes().to_vec()))
-                .collect(),
+            argv,
             display: None,
             env,
             redirects: output.redirects.clone(),

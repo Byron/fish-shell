@@ -36,6 +36,8 @@ mod source_builtin;
 mod test_builtin;
 #[path = "fish_universal.rs"]
 mod universal;
+#[path = "fish_utilities.rs"]
+mod utilities_builtin;
 pub(crate) use expand::unescape_literal;
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]

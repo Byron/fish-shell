@@ -9,11 +9,16 @@ mod windows;
 #[cfg(all(test, windows))]
 pub use windows::request_interrupt_for_test;
 #[cfg(windows)]
-pub use windows::{Group, controls, install_controls, pipe, poll};
+pub use windows::{Group, controls, install_controls, pipe, poll, spawn};
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
 pub use unix::{Group, controls, install_controls, pipe, poll};
+
+#[cfg(unix)]
+pub fn spawn(command: &mut Command) -> io::Result<Child> {
+    command.spawn()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(windows, allow(dead_code))]

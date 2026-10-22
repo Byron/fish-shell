@@ -5,6 +5,35 @@ use super::*;
 use std::process::Child;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+fn prepare_command(stage: &Command) -> Result<io::Result<ProcessCommand>> {
+    use crate::native::{command_resolution, utilities};
+    let name = checked_os(&stage.argv[0])?;
+    let args = stage.argv[1..]
+        .iter()
+        .map(|arg| checked_os(arg))
+        .collect::<Result<Vec<_>>>()?;
+    let path = command_resolution::environment(&stage.env, b"PATH")
+        .map(checked_os)
+        .transpose()?;
+    let pathext = command_resolution::environment(&stage.env, b"PATHEXT")
+        .map(checked_os)
+        .transpose()?;
+    Ok((|| {
+        if let Some(path) = command_resolution::first(&name, path.as_deref(), pathext.as_deref())? {
+            let mut command = ProcessCommand::new(path);
+            command.args(args);
+            Ok(command)
+        } else if !command_resolution::is_explicit(&name)
+            && name.to_str().is_some_and(utilities::available)
+        {
+            utilities::command(name.to_str().unwrap(), &args)
+        } else {
+            Err(io::Error::new(io::ErrorKind::NotFound, "command not found"))
+        }
+    })())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum State {
     Running,
@@ -333,10 +362,19 @@ impl NativeHost {
             let Some(name) = stage.argv.first() else {
                 return Err(Error::new("empty external command"));
             };
-            let mut command = ProcessCommand::new(checked_os(name)?);
-            for arg in &stage.argv[1..] {
-                command.arg(checked_os(arg)?);
-            }
+            #[cfg(windows)]
+            let (mut command, resolution_error) = match prepare_command(stage)? {
+                Ok(command) => (command, None),
+                Err(error) => (ProcessCommand::new(checked_os(name)?), Some(error)),
+            };
+            #[cfg(not(windows))]
+            let (mut command, resolution_error) = {
+                let mut command = ProcessCommand::new(checked_os(name)?);
+                for arg in &stage.argv[1..] {
+                    command.arg(checked_os(arg)?);
+                }
+                (command, None::<io::Error>)
+            };
             command.env_clear();
             for (name, value) in &stage.env {
                 if cfg!(windows)
@@ -373,7 +411,11 @@ impl NativeHost {
             command.stdout(child_stdio(&targets[1], 1, job.output.as_deref())?);
             command.stderr(child_stdio(&targets[2], 2, job.output.as_deref())?);
             job.group.configure(&mut command);
-            match command.spawn() {
+            let spawned = match resolution_error {
+                Some(error) => Err(error),
+                None => process::spawn(&mut command),
+            };
+            match spawned {
                 Ok(mut child) => {
                     if let Err(error) = job.group.add(&child) {
                         let _ = child.kill();

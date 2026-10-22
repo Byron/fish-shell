@@ -13,6 +13,10 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::System::Console::{
     CTRL_BREAK_EVENT, CTRL_C_EVENT, GenerateConsoleCtrlEvent, SetConsoleCtrlHandler,
 };
+use windows_sys::Win32::System::Diagnostics::Debug::{
+    GetThreadErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX,
+    SetThreadErrorMode,
+};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
@@ -94,6 +98,28 @@ pub fn poll(child: &mut Child) -> io::Result<Option<Event>> {
     child
         .try_wait()
         .map(|status| status.map(|status| Event::Exited(status.code().unwrap_or(1))))
+}
+
+/// Invalid executable images and missing loader dependencies must return an
+/// error to the shell, instead of blocking it behind a Windows error dialog.
+pub fn spawn(command: &mut Command) -> io::Result<Child> {
+    struct ErrorMode(u32);
+    impl Drop for ErrorMode {
+        fn drop(&mut self) {
+            // Restore only this thread's state, including during unwinding.
+            unsafe { SetThreadErrorMode(self.0, std::ptr::null_mut()) };
+        }
+    }
+    let mode = unsafe { GetThreadErrorMode() }
+        | SEM_FAILCRITICALERRORS
+        | SEM_NOGPFAULTERRORBOX
+        | SEM_NOOPENFILEERRORBOX;
+    let mut previous = 0;
+    if unsafe { SetThreadErrorMode(mode, &mut previous) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let _guard = ErrorMode(previous);
+    command.spawn()
 }
 
 pub struct TerminalGuard;

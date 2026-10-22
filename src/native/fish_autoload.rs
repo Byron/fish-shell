@@ -121,7 +121,9 @@ impl Session {
         // Native implementations of builtins/editor commands take the place of
         // their bundled POSIX shims. User function files can still override them.
         // Likewise, retain fish> unless a user supplies a fish_prompt function.
-        let embedded = !builtins::is_builtin(name) && name != "fish_prompt";
+        let embedded = !builtins::is_builtin(name)
+            && name != "fish_prompt"
+            && !(name == "seq" && crate::native::utilities::available("seq"));
         let found = self
             .function_autoload
             .resolve_command_from_paths_with_embedded(&wide, &paths, embedded);

@@ -24,7 +24,7 @@ set -l rustup_show \
 # rustup does not really expose a mechanism of retrieving a list of all valid components without the archs appended
 # Just print the list of installable x86_64-unknown-linux-gnu components for everyone
 function __rustup_components
-    rustup component list | string match -r "\S+" | string replace -rf -- "-x86_64-unknown-linux-gnu.*" "" | sort -u
+    rustup component list | string match -r "\S+" | string replace -rf -- "-x86_64-unknown-linux-gnu.*" "" | __fish_sort -u
 end
 
 function __rustup_installed_components
@@ -35,7 +35,7 @@ function __rustup_installed_components
         set toolchain_filter "--toolchain $toolchain"
     end
 
-    rustup component list --installed $toolchain_filter | string replace -r -- (printf -- "-%s\n" (__rustup_targets) | string join "|") "" | sort -u
+    rustup component list --installed $toolchain_filter | string replace -r -- (printf -- "-%s\n" (__rustup_targets) | string join "|") "" | __fish_sort -u
 
 end
 
@@ -288,8 +288,12 @@ complete -f -c rustup -n '__fish_seen_subcommand_from doc' -a '(__fish_rustup_do
 
 function __fish_rustup_docs_modules
     set -l doc_path (__rustup_doc_path)
-    command find "$doc_path"/{std,core,alloc} -name index.html \
-        | string replace --regex "$doc_path/(.+)/index\.html" '$1\tModule' \
+    set -l modules (__fish_find "$doc_path"/{std,core,alloc} -name index.html)
+    set -q modules[1]; or return
+    if status is-native-windows
+        set modules (string replace -a '\\' / -- $modules)
+    end
+    string replace --regex (string escape --style=regex -- "$doc_path")'/(.+)/index\.html' '$1\tModule' -- $modules \
         | string replace --all / ::
 end
 
@@ -311,5 +315,10 @@ function __fish_rustup_docs_macros
 end
 
 function __rustup_doc_path
-    rustup doc --path | string replace --regex '/[^/]*$' ''
+    set -l doc_path (rustup doc --path)
+    set -q doc_path[1]; or return
+    if status is-native-windows
+        set doc_path (string replace -a '\\' / -- $doc_path)
+    end
+    string replace --regex '/[^/]*$' '' -- $doc_path
 end
