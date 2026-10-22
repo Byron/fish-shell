@@ -16,6 +16,8 @@ mod argparse_builtin;
 mod autoload;
 #[path = "fish_complete.rs"]
 mod complete;
+#[path = "fish_completion_autoload.rs"]
+mod completion_autoload;
 #[path = "fish_events.rs"]
 mod events;
 #[path = "fish_expand.rs"]
@@ -93,6 +95,8 @@ pub struct Session {
     autoload_paths: Vec<String>,
     #[serde(default)]
     pub(super) completions: Vec<super::interactive_completion::CompletionSpec>,
+    #[serde(default)]
+    completion_autoload: completion_autoload::Loader,
     /// Retained in worker snapshots for commandline queries in pipeline helpers.
     #[serde(default)]
     completion_line: Option<super::interactive_completion::CompletionContext>,
@@ -263,6 +267,7 @@ impl Session {
             autoload_tombstones: Default::default(),
             autoload_paths: Vec::new(),
             completions: Vec::new(),
+            completion_autoload: Default::default(),
             completion_line: None,
             completion_depth: 0,
             abbreviations: Default::default(),

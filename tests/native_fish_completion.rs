@@ -184,10 +184,12 @@ fn explicit_registrations_and_erase_replace_native_suggestions() {
     assert_eq!(
         output(
             r#"
+        complete -c cargo -e
         complete -c cargo -f -a 'custom check' -d Script
         complete -C 'cargo ch'
         complete -c cargo -e
         complete -C 'cargo chec'
+        complete -c git -e
         complete -c git -f -a custom
         complete -C 'git cu'
         complete -c git -e

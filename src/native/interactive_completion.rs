@@ -346,6 +346,49 @@ impl CompletionEngine {
         Ok((word.start, result))
     }
 
+    /// Discover completion providers without evaluating any typed source. The
+    /// loader can refresh function/registration snapshots and repeat discovery
+    /// when a newly sourced file introduces additional wrapping relationships.
+    pub(super) fn autoload_commands(
+        &self,
+        line: &str,
+        pos: usize,
+        cwd: &Path,
+    ) -> Vec<(String, CompletionContext)> {
+        if !self.fish || pos > line.len() || !line.is_char_boundary(pos) {
+            return Vec::new();
+        }
+        let word = completion_word(line, pos, self.input_language == InputLanguage::Fish);
+        if word.comment
+            || word.redirect
+            || word.variable.is_some()
+            || word.expansion
+            || word.value.contains('\n')
+            || word.value.contains('`') && self.input_language != InputLanguage::Bash
+        {
+            return Vec::new();
+        }
+        let mut seen = BTreeSet::new();
+        self.wrapper_contexts(
+            &word,
+            CompletionContext {
+                line: line.into(),
+                cursor: pos,
+            },
+        )
+        .into_iter()
+        .filter_map(|(word, context)| {
+            let raw = word.command()?;
+            let name = command_name(raw.rsplit(['/', '\\']).next().unwrap_or(raw));
+            if (name == "git" || self.command_exists(raw, cwd)) && seen.insert(name.to_owned()) {
+                Some((name.to_owned(), context))
+            } else {
+                None
+            }
+        })
+        .collect()
+    }
+
     fn contextual_with_wrappers(
         &self,
         word: &Word,
@@ -354,8 +397,26 @@ impl CompletionEngine {
         matches: &mut Candidates,
         evaluate: &mut Evaluator<'_>,
     ) -> rash::Result<bool> {
-        let mut pending = vec![(word.clone(), context, BTreeSet::new())];
         let mut files = FilePolicy::Inherit;
+        for (word, context) in self.wrapper_contexts(word, context) {
+            let Some(command) = word.command() else {
+                continue;
+            };
+            let policy = self.contextual(command, &word, &context, cwd, matches, evaluate)?;
+            if files == FilePolicy::Inherit {
+                files = policy;
+            }
+        }
+        Ok(files != FilePolicy::Skip)
+    }
+
+    fn wrapper_contexts(
+        &self,
+        word: &Word,
+        context: CompletionContext,
+    ) -> Vec<(Word, CompletionContext)> {
+        let mut pending = vec![(word.clone(), context, BTreeSet::new())];
+        let mut contexts = Vec::new();
         for _ in 0..MAX_WRAPPER_CONTEXTS {
             let Some((word, context, mut visited)) = pending.pop() else {
                 break;
@@ -364,10 +425,7 @@ impl CompletionEngine {
                 continue;
             };
             let command = &word.words[index];
-            let policy = self.contextual(command, &word, &context, cwd, matches, evaluate)?;
-            if files == FilePolicy::Inherit {
-                files = policy;
-            }
+            contexts.push((word.clone(), context.clone()));
             if !visited.insert(command.clone()) {
                 continue;
             }
@@ -417,7 +475,7 @@ impl CompletionEngine {
                 pending.push((wrapped, wrapped_context, visited.clone()));
             }
         }
-        Ok(files != FilePolicy::Skip)
+        contexts
     }
 
     fn contextual(
@@ -1592,6 +1650,121 @@ mod tests {
             vec!["HOME".into(), "PATH".into(), "fish_private".into()],
         );
         engine
+    }
+
+    #[test]
+    fn autoload_discovery_reuses_wrapped_contexts_and_stops_cycles() {
+        let directory = Directory::new();
+        let mut engine = engine();
+        engine.set_context(
+            vec!["outer".into(), "inner".into(), "target".into()],
+            None,
+            Vec::new(),
+        );
+        engine.set_wrappers(vec![
+            ("outer".into(), vec!["inner fixed".into()]),
+            ("inner".into(), vec!["target more".into()]),
+            ("target".into(), vec!["outer".into()]),
+        ]);
+        let line = "echo 文 | outer par";
+        let contexts = engine.autoload_commands(line, line.len(), &directory.0);
+        assert_eq!(
+            contexts
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["outer", "inner", "target"]
+        );
+        assert_eq!(contexts[0].1.line, line);
+        assert_eq!(contexts[1].1.line, "echo 文 | inner fixed par");
+        assert_eq!(contexts[2].1.line, "echo 文 | target more fixed par");
+        assert!(
+            contexts
+                .iter()
+                .all(|(_, context)| context.cursor == context.line.len())
+        );
+    }
+
+    #[test]
+    fn autoload_discovery_retains_completion_wrappers_on_explicit_commands() {
+        let directory = Directory::new();
+        let mut engine = engine();
+        engine.set_context(
+            vec![
+                "outer".into(),
+                "function_target".into(),
+                "registered_target".into(),
+            ],
+            None,
+            Vec::new(),
+        );
+        engine.set_wrappers(vec![("outer".into(), vec!["function_target fixed".into()])]);
+        engine.set_registrations(vec![CompletionSpec {
+            command: "outer".into(),
+            wrap_target: Some("registered_target extra".into()),
+            ..Default::default()
+        }]);
+        for decoration in ["command", "builtin", "exec"] {
+            let line = format!("{decoration} outer ");
+            let contexts = engine.autoload_commands(&line, line.len(), &directory.0);
+            assert_eq!(
+                contexts
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>(),
+                ["outer", "registered_target"]
+            );
+            assert_eq!(
+                contexts[1].1.line,
+                format!("{decoration} registered_target extra ")
+            );
+        }
+        let line = "outer ";
+        assert_eq!(
+            engine
+                .autoload_commands(line, line.len(), &directory.0)
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn autoload_discovery_only_loads_existing_argument_commands() {
+        let directory = Directory::new();
+        std::fs::write(directory.0.join("probe.exe"), b"").unwrap();
+        let engine = engine();
+        for line in [
+            "git",
+            "git # comment",
+            "git $root",
+            "git $root/",
+            "git > path",
+            "git (echo side)/file",
+            "missing_native_helper ",
+            "(echo git) ",
+        ] {
+            assert!(
+                engine
+                    .autoload_commands(line, line.len(), &directory.0)
+                    .is_empty(),
+                "{line}"
+            );
+        }
+        for (line, expected) in [
+            ("git ", "git"),
+            ("echo ", "echo"),
+            ("./probe.exe arg", "probe"),
+            ("git (echo side) tail", "git"),
+        ] {
+            let contexts = engine.autoload_commands(line, line.len(), &directory.0);
+            assert_eq!(contexts.len(), 1, "{line}");
+            assert_eq!(contexts[0].0, expected, "{line}");
+        }
+        assert!(
+            engine
+                .autoload_commands("echo 文", 6, &directory.0)
+                .is_empty()
+        );
     }
 
     #[test]

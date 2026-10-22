@@ -35,6 +35,16 @@ def main():
         config = root / "config" / "fish"
         config.mkdir(parents=True)
         (config / "config.fish").write_text("set -g editor_config configured\n", encoding="utf-8")
+        (config / "functions").mkdir()
+        (config / "completions").mkdir()
+        (config / "functions" / "EDITOR-alias.fish").write_text(
+            "function EDITOR-alias --wraps 'EDITOR-target fixed'; EDITOR-target fixed $argv; end\n",
+            encoding="utf-8")
+        (config / "functions" / "EDITOR-target.fish").write_text(
+            "function EDITOR-target; echo AUTOLOAD:$argv[-1]; end\n", encoding="utf-8")
+        (config / "completions" / "EDITOR-target.fish").write_text(
+            "complete EDITOR-target -f -n '__fish_seen_subcommand_from fixed' -a generated-choice\n",
+            encoding="utf-8")
         (root / "EDITOR filename 🐟.txt").write_text("completion fixture\n", encoding="utf-8")
         commands = root / "commands"
         commands.mkdir()
@@ -123,6 +133,9 @@ def main():
 
             pane = new_session("editor", "-i")
             expect_prompt(pane)
+            literal(pane, "EDITOR-alias gen")
+            keys(pane, "Tab", "Enter")
+            expect(pane, "AUTOLOAD:generated-choice")
             send(pane, "echo EDITOR_config:$editor_config")
             expect(pane, "EDITOR_config:configured")
 

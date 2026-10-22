@@ -472,8 +472,24 @@ Functions defined with `--wraps` inherit target completion, including
 fixed arguments such as `--wraps='git checkout'`. Multiple targets and nested
 wrappers are supported with bounded, cycle-safe traversal. Wrapper targets never
 execute shell code. A saved wrapper's metadata becomes available when its function
-is loaded. Automatic completion-script loading and path completion through
-`$VARIABLE/` are not yet supported.
+is loaded. The first completion query loads eligible function and completion
+files, then follows newly discovered wrappers so saved aliases work immediately.
+User `fish/completions` files under the configured native home take precedence
+over vendor directories and embedded completions. Generated completions come
+after embedded ones. Set `fish_complete_path` to configure the disk search path;
+autoloading is also available with `-N`. Unused files are not evaluated.
+Vendor paths use `XDG_DATA_HOME` and explicitly configured `XDG_DATA_DIRS`;
+generated completions use `XDG_CACHE_HOME`. Native data/cache defaults use
+`LOCALAPPDATA`, with `~/.local/share` and `~/.cache` as final fallbacks.
+The corresponding `__fish_*_dir` variables are available to shared helpers.
+
+The loader shares file identity checks, caching and recursion protection with
+POSIX Fish. Changing completion paths invalidates registrations for loaded
+commands; explicit whole-command erasure can suppress automatic loading.
+Pipeline workers retain loader state. Script execution uses the same protected
+input and status handling as completion generators. Dynamic suggestions still
+depend on the evaluator features and programs required by each script.
+Path completion through `$VARIABLE/` remains separate work.
 
 Completion evaluation receives empty standard input by default. During Tab,
 Ctrl-C interrupts running generators before returning to the edited line.
@@ -607,7 +623,7 @@ python tests/native_history_tmuxx.py .\target\x86_64-pc-windows-msvc\release\fis
 ```
 
 This is a separate native editor, not the full POSIX Fish reader.
-Automatic completion-script loading and full Fish keymap compatibility remain separate work. The
+Full Fish keymap compatibility remains separate work. The
 standalone Rash executable on Unix retains its simple line-input fallback.
 The native dependency carries a small [Windows input patch](../vendor/rustyline/FISH_PATCHES.md)
 to Rustyline; its Unix backend and the POSIX Fish reader are unchanged.

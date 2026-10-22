@@ -14,6 +14,7 @@ impl Session {
         host: &mut impl Host,
         output: &mut Output,
     ) -> Result<()> {
+        self.refresh_completion_paths();
         const OPTIONS: &[WOption] = &[
             wopt(L!("exclusive"), ArgType::NoArgument, 'x'),
             wopt(L!("no-files"), ArgType::NoArgument, 'f'),
@@ -242,6 +243,15 @@ impl Session {
                 };
                 if erase {
                     let all = aliases.is_empty() && wraps.is_empty();
+                    if all
+                        && !is_path
+                        && !self
+                            .completions
+                            .iter()
+                            .any(|entry| matches_target(entry) && !entry.erased)
+                    {
+                        self.prevent_completion_autoload(&command);
+                    }
                     self.completions.retain(|existing| {
                         !matches_target(existing)
                             || if let Some(target) = &existing.wrap_target {
@@ -338,74 +348,80 @@ impl Session {
         self.completion_depth += 1;
         self.flow = Flow::Normal;
 
-        // Registrations and wrapping relationships are fixed for this query;
-        // evaluator mutations remain in the live session for subsequent queries.
-        let (commands, path, variables) = self.completion_context();
-        engine.set_context(commands, path, variables);
-        engine.set_environment(self.completion_environment());
-        engine.set_input_language(self.input_language);
-        engine.set_registrations(self.completions.clone());
-        engine.set_wrappers(self.completion_wrappers());
-        let mut conditions = BTreeMap::new();
-        let result = engine.complete_evaluated(
-            line,
-            pos,
-            cwd,
-            shell_output,
-            &mut |context, spec, arguments| {
-                if host.cancelled() || self.flow == Flow::Exit {
-                    return Ok(None);
-                }
-                self.completion_line = Some(context.clone());
-                for condition in &spec.conditions {
-                    if condition.is_empty() {
-                        continue;
-                    }
-                    let key = (context.clone(), condition.clone());
-                    let enabled = if let Some(enabled) = conditions.get(&key) {
-                        *enabled
-                    } else {
-                        let mut output = Output {
-                            capture: true,
-                            ..Default::default()
-                        };
-                        self.scopes.push(BTreeMap::new());
-                        let result = self.eval_source(condition, host, &mut output);
-                        self.scopes.pop();
-                        let enabled = self.status == 0;
-                        self.status = status;
-                        self.pipeline = pipeline.clone();
-                        result?;
-                        conditions.insert(key, enabled);
-                        enabled
-                    };
-                    if !enabled || self.flow == Flow::Exit || host.cancelled() {
+        let result = (|| {
+            self.autoload_completions(line, pos, cwd, host, engine)?;
+            if self.flow == Flow::Exit || host.cancelled() {
+                return Ok((pos, Vec::new()));
+            }
+            // Registrations and wrapping relationships are fixed for this query;
+            // evaluator mutations remain in the live session for subsequent queries.
+            let (commands, path, variables) = self.completion_context();
+            engine.set_context(commands, path, variables);
+            engine.set_environment(self.completion_environment());
+            engine.set_input_language(self.input_language);
+            engine.set_registrations(self.completions.clone());
+            engine.set_wrappers(self.completion_wrappers());
+            let mut conditions = BTreeMap::new();
+            engine.complete_evaluated(
+                line,
+                pos,
+                cwd,
+                shell_output,
+                &mut |context, spec, arguments| {
+                    if host.cancelled() || self.flow == Flow::Exit {
                         return Ok(None);
                     }
-                }
-                let mut values = if arguments {
-                    spec.arguments.clone()
-                } else {
-                    Vec::new()
-                };
-                if arguments {
-                    for source in &spec.argument_sources {
-                        for word in argument_words(source)? {
-                            values.extend(self.expand(&word, host)?);
-                            if values.len() > 100_000 {
-                                return Err(Error::new("too many completion arguments"));
-                            }
-                            if self.flow == Flow::Exit || host.cancelled() {
-                                return Ok(None);
+                    self.completion_line = Some(context.clone());
+                    for condition in &spec.conditions {
+                        if condition.is_empty() {
+                            continue;
+                        }
+                        let key = (context.clone(), condition.clone());
+                        let enabled = if let Some(enabled) = conditions.get(&key) {
+                            *enabled
+                        } else {
+                            let mut output = Output {
+                                capture: true,
+                                ..Default::default()
+                            };
+                            self.scopes.push(BTreeMap::new());
+                            let result = self.eval_source(condition, host, &mut output);
+                            self.scopes.pop();
+                            let enabled = self.status == 0;
+                            self.status = status;
+                            self.pipeline = pipeline.clone();
+                            result?;
+                            conditions.insert(key, enabled);
+                            enabled
+                        };
+                        if !enabled || self.flow == Flow::Exit || host.cancelled() {
+                            return Ok(None);
+                        }
+                    }
+                    let mut values = if arguments {
+                        spec.arguments.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    if arguments {
+                        for source in &spec.argument_sources {
+                            for word in argument_words(source)? {
+                                values.extend(self.expand(&word, host)?);
+                                if values.len() > 100_000 {
+                                    return Err(Error::new("too many completion arguments"));
+                                }
+                                if self.flow == Flow::Exit || host.cancelled() {
+                                    return Ok(None);
+                                }
                             }
                         }
                     }
-                }
-                self.status = status;
-                self.pipeline = pipeline.clone();
-                Ok(Some(values))
-            },
-        );
+                    self.status = status;
+                    self.pipeline = pipeline.clone();
+                    Ok(Some(values))
+                },
+            )
+        })();
         self.status = status;
         self.pipeline = pipeline;
         if self.flow != Flow::Exit {

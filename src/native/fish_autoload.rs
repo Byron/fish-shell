@@ -30,8 +30,80 @@ pub(super) mod serialization {
     }
 }
 
+pub(super) fn read_source(path: AutoloadPath) -> Result<(String, String)> {
+    match path {
+        AutoloadPath::OnDisk(path) => {
+            let origin = path.to_string();
+            let source = std::fs::read_to_string(&origin)?;
+            Ok((origin, source))
+        }
+        AutoloadPath::Embedded(path) => {
+            let asset = Asset::get(&path)
+                .ok_or_else(|| Error::new(format!("autoload source missing: {path}")))?;
+            let source = std::str::from_utf8(&asset.data)
+                .map_err(|_| Error::new("autoload source must be UTF-8"))?
+                .to_owned();
+            Ok((format!("embedded:{path}"), source))
+        }
+    }
+}
+
+fn absolute_directory(name: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os(name)
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
 impl Session {
     pub(super) fn initialize_function_paths(&mut self) {
+        let home = absolute_directory("HOME").or_else(|| absolute_directory("USERPROFILE"));
+        let data = absolute_directory("XDG_DATA_HOME")
+            .or_else(|| absolute_directory("LOCALAPPDATA"))
+            .or_else(|| home.as_ref().map(|home| home.join(".local/share")))
+            .map(|directory| directory.join("fish"));
+        let cache = absolute_directory("XDG_CACHE_HOME")
+            .or_else(|| absolute_directory("LOCALAPPDATA"))
+            .or_else(|| home.as_ref().map(|home| home.join(".cache")))
+            .map(|directory| directory.join("fish"));
+        let mut vendor_data = Vec::new();
+        if std::env::var_os("FISH_UNIT_TESTS_RUNNING").is_none() {
+            vendor_data.extend(data.iter().cloned());
+            if let Some(directories) = std::env::var_os("XDG_DATA_DIRS") {
+                vendor_data.extend(
+                    std::env::split_paths(&directories)
+                        .filter(|directory| directory.is_absolute())
+                        .map(|directory| directory.join("fish")),
+                );
+            }
+        }
+        let vendor_functions: Vec<_> = vendor_data
+            .iter()
+            .map(|directory| directory.join("vendor_functions.d"))
+            .collect();
+        let vendor_completions: Vec<_> = vendor_data
+            .iter()
+            .map(|directory| directory.join("vendor_completions.d"))
+            .collect();
+        for (name, directories) in [
+            ("__fish_user_data_dir", data.into_iter().collect()),
+            ("__fish_cache_dir", cache.iter().cloned().collect()),
+            ("__fish_vendor_functionsdirs", vendor_functions.clone()),
+            ("__fish_vendor_completionsdirs", vendor_completions.clone()),
+        ] {
+            self.variables.insert(
+                name.into(),
+                Variable {
+                    values: directories
+                        .iter()
+                        .map(|directory| directory.to_string_lossy().into_owned())
+                        .collect(),
+                    exported: false,
+                    pathvar: false,
+                },
+            );
+        }
+        let mut function_paths = Vec::new();
+        let mut completion_paths = Vec::new();
         if let Some(directory) = super::super::interactive::config_directory("fish") {
             self.variables.insert(
                 "__fish_config_dir".into(),
@@ -41,10 +113,23 @@ impl Session {
                     pathvar: false,
                 },
             );
+            function_paths.push(directory.join("functions"));
+            completion_paths.push(directory.join("completions"));
+        }
+        function_paths.extend(vendor_functions);
+        completion_paths.extend(vendor_completions);
+        completion_paths.extend(cache.map(|directory| directory.join("generated_completions")));
+        for (name, directories) in [
+            ("fish_function_path", function_paths),
+            ("fish_complete_path", completion_paths),
+        ] {
             self.variables
-                .entry("fish_function_path".into())
+                .entry(name.into())
                 .or_insert_with(|| Variable {
-                    values: vec![directory.join("functions").to_string_lossy().into_owned()],
+                    values: directories
+                        .iter()
+                        .map(|directory| directory.to_string_lossy().into_owned())
+                        .collect(),
                     exported: false,
                     pathvar: false,
                 });
@@ -135,22 +220,7 @@ impl Session {
             self.functions.remove(name);
             self.autoloaded_functions.insert(name.to_owned());
             let result = (|| {
-                let (origin, source) = match path {
-                    AutoloadPath::OnDisk(path) => {
-                        let origin = path.to_string();
-                        let source = std::fs::read_to_string(&origin)?;
-                        (origin, source)
-                    }
-                    AutoloadPath::Embedded(path) => {
-                        let asset = Asset::get(&path).ok_or_else(|| {
-                            Error::new(format!("function source missing: {path}"))
-                        })?;
-                        let source = std::str::from_utf8(&asset.data)
-                            .map_err(|_| Error::new("function source must be UTF-8"))?
-                            .to_owned();
-                        (format!("embedded:{path}"), source)
-                    }
-                };
+                let (origin, source) = read_source(path)?;
                 self.eval_sourced(&source, origin, &[], true, host, output)
             })();
             self.function_autoload.mark_autoload_finished(&wide);
