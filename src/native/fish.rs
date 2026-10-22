@@ -1043,6 +1043,10 @@ mod blocks;
 #[path = "fish_builtins.rs"]
 mod builtins;
 
+pub(super) fn builtin_names() -> &'static [&'static str] {
+    builtins::BUILTIN_NAMES
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

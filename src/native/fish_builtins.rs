@@ -10,58 +10,60 @@ mod printf;
 #[path = "fish_string.rs"]
 mod string;
 
+/// Supported native builtins, sorted for lookup and `builtin --names` output.
+pub(super) const BUILTIN_NAMES: &[&str] = &[
+    ".",
+    ":",
+    "[",
+    "_",
+    "__fish_git",
+    "abbr",
+    "argparse",
+    "bg",
+    "bind",
+    "break",
+    "builtin",
+    "cd",
+    "command",
+    "commandline",
+    "complete",
+    "contains",
+    "continue",
+    "count",
+    "disown",
+    "echo",
+    "emit",
+    "eval",
+    "exit",
+    "false",
+    "fg",
+    "fish_default_key_bindings",
+    "fish_input_mode",
+    "fish_vi_key_bindings",
+    "functions",
+    "history",
+    "jobs",
+    "kill",
+    "math",
+    "path",
+    "printf",
+    "pwd",
+    "read",
+    "realpath",
+    "return",
+    "set",
+    "set_color",
+    "source",
+    "status",
+    "string",
+    "test",
+    "true",
+    "type",
+    "wait",
+];
+
 pub(super) fn is_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "true"
-            | "__fish_git"
-            | "_"
-            | ":"
-            | "false"
-            | "echo"
-            | "set"
-            | "emit"
-            | "pwd"
-            | "cd"
-            | "count"
-            | "history"
-            | "exit"
-            | "return"
-            | "break"
-            | "continue"
-            | "test"
-            | "["
-            | "source"
-            | "."
-            | "eval"
-            | "printf"
-            | "math"
-            | "path"
-            | "realpath"
-            | "string"
-            | "contains"
-            | "argparse"
-            | "read"
-            | "status"
-            | "type"
-            | "command"
-            | "builtin"
-            | "functions"
-            | "jobs"
-            | "bg"
-            | "fg"
-            | "wait"
-            | "kill"
-            | "disown"
-            | "complete"
-            | "commandline"
-            | "set_color"
-            | "abbr"
-            | "bind"
-            | "fish_vi_key_bindings"
-            | "fish_default_key_bindings"
-            | "fish_input_mode"
-    )
+    BUILTIN_NAMES.binary_search(&name).is_ok()
 }
 
 impl Session {
@@ -84,6 +86,9 @@ impl Session {
         }
         if decoration == StatementDecoration::Command {
             return self.external(name, args, host, output);
+        }
+        if decoration == StatementDecoration::Builtin && !is_builtin(name) {
+            return Err(Error::new(format!("builtin: unknown builtin {name}")));
         }
         if self.extra_builtin(name, args, host, output)? {
             return Ok(());

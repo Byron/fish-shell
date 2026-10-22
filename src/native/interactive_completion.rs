@@ -66,69 +66,15 @@ impl CompletionEngine {
                 .map(|name| String::from_utf8_lossy(name).into_owned())
                 .collect()
         } else {
-            [
-                ":",
-                "__fish_git",
-                "_",
-                ".",
-                "[",
-                "echo",
-                "emit",
-                "set",
-                "cd",
-                "pwd",
-                "count",
-                "history",
-                "test",
-                "true",
-                "false",
-                "source",
-                "eval",
-                "exit",
-                "return",
-                "break",
-                "continue",
-                "printf",
-                "math",
-                "string",
-                "contains",
-                "argparse",
-                "read",
-                "status",
-                "type",
-                "command",
-                "builtin",
-                "functions",
-                "complete",
-                "commandline",
-                "set_color",
-                "abbr",
-                "bind",
-                "fish_vi_key_bindings",
-                "fish_default_key_bindings",
-                "fish_input_mode",
-                "switch",
-                "case",
-                "jobs",
-                "bg",
-                "fg",
-                "wait",
-                "kill",
-                "disown",
-                "if",
-                "else",
-                "end",
-                "for",
-                "while",
-                "function",
-                "begin",
-                "not",
-                "and",
-                "or",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect()
+            super::fish::builtin_names()
+                .iter()
+                .copied()
+                .chain([
+                    "switch", "case", "if", "else", "end", "for", "while", "function", "begin",
+                    "not", "and", "or",
+                ])
+                .map(str::to_owned)
+                .collect()
         };
         let mut engine = Self {
             fish: language == "fish",
@@ -1387,6 +1333,24 @@ mod tests {
             vec!["HOME".into(), "PATH".into(), "fish_private".into()],
         );
         engine
+    }
+
+    #[test]
+    fn native_builtin_inventory_and_fish_keywords_remain_completable() {
+        let directory = Directory::new();
+        let engine = engine();
+        for (prefix, expected) in [("realp", "realpath "), ("pat", "path "), ("whil", "while ")] {
+            assert!(
+                replacements(&engine, prefix, &directory.0).contains(&expected.into()),
+                "{prefix}"
+            );
+        }
+        for name in super::super::fish::builtin_names() {
+            assert!(engine.builtins.contains(*name), "{name}");
+        }
+        let rash = CompletionEngine::new("rash");
+        assert!(!rash.builtins.contains("fish_input_mode"));
+        assert!(!rash.builtins.contains("realpath"));
     }
 
     #[test]

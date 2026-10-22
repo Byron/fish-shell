@@ -144,6 +144,13 @@ support `--description`/`-d`, `--wraps`/`-w`, `--argument-names`/`-a`,
 snapshots; named arguments and scope boundaries follow Fish semantics. Printed
 definitions preserve these properties.
 
+The bundled `alias` helper creates wrappers in the current session, including
+self-named wrappers around builtins or external commands. Native `read --list`
+and `builtin --names` provide its list parsing and recursion checks. Saved alias
+function files load normally. Bare `alias` listing can load POSIX-only helpers,
+and `alias --save` still depends on unsupported `funcsave` options and POSIX
+filesystem utilities; those two helper modes remain outside the native subset.
+
 `functions --copy OLD NEW` copies a function for wrappers such as a customized
 `fish_prompt`. The copy retains its description, named arguments, captured values
 and scope behavior. As in POSIX Fish, event handlers and completion wrappers are

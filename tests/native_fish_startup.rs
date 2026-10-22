@@ -172,6 +172,93 @@ fn described_wrappers_from_snippets_and_saved_aliases_forward_arguments() {
 }
 
 #[test]
+fn bundled_alias_helper_creates_configured_wrappers_and_forwards_quoted_arguments() {
+    let fixture = Fixture::new();
+    fixture.config(
+        "conf.d/aliases.fish",
+        r#"
+        function collect
+            printf '<%s>\n' $argv
+        end
+        alias short 'collect --short'
+        complete -c collect -f -a yellow
+    "#,
+    );
+    fixture.config(
+        "config.fish",
+        r#"
+        alias 'equal=collect --equal'
+        alias 文-wrapped "collect 'two words' 文"
+        short 'from config'
+    "#,
+    );
+    let output = fixture.run(
+        r#"
+        equal 'two arguments' final
+        文-wrapped 'three words'
+        complete -C 'short y'
+        functions short | string match -q '*--wraps*'
+        echo wraps:$status
+    "#,
+    );
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output),
+        "<--short>\n<from config>\n<--equal>\n<two arguments>\n<final>\n<two words>\n<文>\n<three words>\nyellow\nwraps:0\n"
+    );
+}
+
+#[test]
+fn aliases_avoid_builtin_external_and_completion_recursion() {
+    let fixture = Fixture::new();
+    fixture.config(
+        "config.fish",
+        r#"
+        alias cmd.exe 'cmd.exe /d /c echo external'
+        alias trailing 'collect trailing'
+        alias echo 'echo prefix'
+    "#,
+    );
+    let system_root = std::env::var_os("SystemRoot").expect("Windows runtime location");
+    let output = fixture
+        .command()
+        .env("PATH", PathBuf::from(system_root).join("System32"))
+        .args([
+            "-c",
+            r#"
+            echo tail
+            cmd.exe tail
+            functions echo | string match -q '*builtin echo prefix*'
+            builtin echo builtin:$status
+            functions cmd.exe | string match -q '*command cmd.exe*'
+            builtin echo external:$status
+            for name in echo cmd.exe trailing
+                functions $name | string match -q '*--wraps*'
+                builtin echo $name-wraps:$status
+            end
+        "#,
+        ])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output).replace("\r\n", "\n"),
+        "prefix tail\nexternal tail\nbuiltin:0\nexternal:0\necho-wraps:1\ncmd.exe-wraps:1\ntrailing-wraps:1\n"
+    );
+}
+
+#[test]
+fn alias_rejects_missing_names_and_bodies_without_defining_functions() {
+    let fixture = Fixture::new();
+    let output = fixture.run("alias '' 'echo invalid'; echo name:$status; alias missing_body ''; echo body:$status; functions -q missing_body; echo function:$status");
+    assert!(output.status.success());
+    assert_eq!(stdout(&output), "name:1\nbody:1\nfunction:1\n");
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("alias: name cannot be empty"), "{error}");
+    assert!(error.contains("alias: body cannot be empty"), "{error}");
+}
+
+#[test]
 fn invocation_and_function_queries_load_only_requested_files() {
     let fixture = Fixture::new();
     for (name, value) in [

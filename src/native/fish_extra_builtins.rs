@@ -1,4 +1,6 @@
 use super::*;
+use fish_wgetopt::{ArgType::NoArgument, WGetopter, WOption, wopt};
+use fish_widestring::prelude::*;
 
 impl Session {
     pub(super) fn extra_builtin(
@@ -108,7 +110,8 @@ impl Session {
                 self.status = i32::from(found.is_none());
             }
             "read" => self.read(args, host, output)?,
-            "type" | "command" | "builtin" => self.describe_command(name, args, host, output)?,
+            "type" | "command" => self.describe_command(name, args, host, output)?,
+            "builtin" => self.builtin_query(args, host, output)?,
             "functions" => {
                 self.functions_builtin(args, host, output)?;
             }
@@ -181,6 +184,75 @@ impl Session {
         Ok(())
     }
 
+    fn builtin_query(
+        &mut self,
+        args: &[String],
+        host: &mut impl Host,
+        output: &mut Output,
+    ) -> Result<()> {
+        const OPTIONS: &[WOption] = &[
+            wopt(L!("help"), NoArgument, 'h'),
+            wopt(L!("names"), NoArgument, 'n'),
+            wopt(L!("query"), NoArgument, 'q'),
+        ];
+        let arguments: Vec<WString> = std::iter::once(WString::from("builtin"))
+            .chain(args.iter().map(|arg| WString::from(arg.as_str())))
+            .collect();
+        let mut arguments: Vec<&wstr> = arguments.iter().map(WString::as_utfstr).collect();
+        let original = arguments.clone();
+        let mut parser = WGetopter::new(L!("hnq"), OPTIONS, &mut arguments);
+        let (mut query, mut names) = (false, false);
+        while let Some(option) = parser.next_opt() {
+            match option {
+                'q' => query = true,
+                'n' => names = true,
+                'h' => {
+                    self.write(
+                        b"builtin: see https://fishshell.com/docs/current/cmds/builtin.html\n",
+                        host,
+                        output,
+                    )?;
+                    self.status = 0;
+                    return Ok(());
+                }
+                error @ (':' | ';' | '?') => {
+                    let detail = match error {
+                        ':' => "requires an argument",
+                        ';' => "does not take an argument",
+                        _ => "unknown option",
+                    };
+                    return Err(Error::new(format!(
+                        "builtin: {}: {detail}",
+                        original[parser.wopt_index - 1]
+                    )));
+                }
+                _ => unreachable!("invalid builtin option"),
+            }
+        }
+        let index = parser.wopt_index;
+        drop(parser);
+        if query && names {
+            return Err(Error::new(
+                "builtin: --query and --names are mutually exclusive",
+            ));
+        }
+        if query {
+            self.status = i32::from(
+                !arguments[index..]
+                    .iter()
+                    .any(|name| is_builtin(&name.to_string())),
+            );
+        } else if names {
+            for name in BUILTIN_NAMES {
+                self.write(format!("{name}\n").as_bytes(), host, output)?;
+            }
+            self.status = 0;
+        } else {
+            return Err(Error::new("builtin: expected --query or --names"));
+        }
+        Ok(())
+    }
+
     fn describe_command(
         &mut self,
         mode: &str,
@@ -224,22 +296,20 @@ impl Session {
         self.status = 0;
         for name in &args[index..] {
             let mut found = Vec::new();
-            if !paths_only && mode != "builtin" {
+            if !paths_only {
                 self.ensure_function(name, host, output)?;
                 if self.flow == Flow::Exit {
                     return Ok(());
                 }
             }
-            if !paths_only && self.functions.contains_key(name) && mode != "builtin" {
+            if !paths_only && self.functions.contains_key(name) {
                 found.push(("function", name.clone()));
             }
             if !paths_only && is_builtin(name) {
                 found.push(("builtin", name.clone()));
             }
-            if mode != "builtin" {
-                for path in self.command_paths(name) {
-                    found.push(("file", path));
-                }
+            for path in self.command_paths(name) {
+                found.push(("file", path));
             }
             if found.is_empty() {
                 self.status = if mode == "command" { 127 } else { 1 };
@@ -309,7 +379,7 @@ impl Session {
                 "-l" | "--local" | "-g" | "--global" | "-x" | "--export" | "-u" | "--unexport" => {
                     scope.push(arg.clone());
                 }
-                "-a" | "--array" => array = true,
+                "-a" | "--array" | "--list" => array = true,
                 "-d" | "--delimiter" => {
                     index += 1;
                     delimiter = Some(
