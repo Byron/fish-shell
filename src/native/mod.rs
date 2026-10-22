@@ -7,6 +7,8 @@ pub mod interactive;
 #[cfg(windows)]
 mod interactive_abbreviations;
 #[cfg(windows)]
+mod interactive_bash;
+#[cfg(windows)]
 mod interactive_bindings;
 #[cfg(windows)]
 mod interactive_colors;
@@ -45,9 +47,28 @@ impl Language {
     }
 }
 
+/// Syntax of the next Fish prompt submission, independent of the evaluator.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum InputLanguage {
+    #[default]
+    Fish,
+    Bash,
+}
+
+impl InputLanguage {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "fish" => Ok(Self::Fish),
+            "bash" => Ok(Self::Bash),
+            _ => Err(Error::new("--interactive-language expects fish or bash")),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Options {
     language: Language,
+    input_language: Option<InputLanguage>,
     command: Option<Vec<u8>>,
     script: Option<OsString>,
     args: Vec<OsString>,
@@ -71,6 +92,7 @@ fn parse_options(
 ) -> Result<Invocation> {
     let mut options = Options {
         language,
+        input_language: None,
         command: None,
         script: None,
         args: vec![],
@@ -105,6 +127,18 @@ fn parse_options(
             Some("-P" | "--private") => options.private = true,
             Some("--rash-shell" | "--script-language=bash") => options.language = Language::Rash,
             Some("--script-language=fish") => options.language = Language::Fish,
+            Some("--interactive-language") => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| Error::new("--interactive-language expects fish or bash"))?;
+                options.input_language =
+                    Some(InputLanguage::parse(value.to_str().unwrap_or_default())?);
+            }
+            Some(arg) if arg.starts_with("--interactive-language=") => {
+                options.input_language = Some(InputLanguage::parse(
+                    &arg["--interactive-language=".len()..],
+                )?);
+            }
             Some("--bash-startup") => options.startup = true,
             Some("--") => {
                 if options.command.is_none() {
@@ -126,6 +160,11 @@ fn parse_options(
                 break;
             }
         }
+    }
+    if options.input_language.is_some() && options.language != Language::Fish {
+        return Err(Error::new(
+            "--interactive-language cannot be combined with Rash; it selects Fish prompt syntax",
+        ));
     }
     if options.startup && options.language != Language::Rash {
         return Err(Error::new("--bash-startup requires Rash"));
@@ -195,6 +234,7 @@ fn run(language: Language) -> i32 {
                 io::stdout(),
                 "Usage: {} [OPTIONS] [SCRIPT [ARG ...]]\n\
                  Options: -c COMMAND, -n, -i, -N, -P/--private, --rash-shell, --script-language=fish|bash\n\
+                 --interactive-language=fish|bash selects Fish prompt syntax; scripts and -c stay Fish.\n\
                  Native backend: command/script execution, interactive editing and owned jobs.\n\
                  See doc_internal/native-windows.md for supported syntax and limitations.",
                 language.name()
@@ -271,6 +311,7 @@ impl Engine {
             Language::Fish => {
                 let mut session = fish::Session::new()?;
                 session.set_mode(interactive, options.login);
+                session.input_language = options.input_language.unwrap_or_default();
                 session.set_args(
                     options
                         .args
@@ -322,6 +363,18 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// Translate only outer prompt input. Configuration, scripts, eval and
+    /// source continue to enter the Fish evaluator directly.
+    fn evaluate_input(&mut self, source: &[u8], host: &mut host::NativeHost) -> Result<i32> {
+        #[cfg(windows)]
+        if let Self::Fish(session) = self {
+            let source = std::str::from_utf8(source)
+                .map_err(|_| Error::new("native Fish source must be UTF-8"))?;
+            return session.eval_input(source, host);
+        }
+        self.evaluate(source, host, false)
     }
 
     fn completion_context(&self) -> (Vec<String>, Option<OsString>, Vec<String>) {
@@ -394,7 +447,15 @@ impl Engine {
                 rash::syntax::SyntaxStatus::Incomplete
             ),
             #[cfg(windows)]
-            Self::Fish(_) => fish::is_incomplete(std::str::from_utf8(source).unwrap_or_default()),
+            Self::Fish(session) => {
+                let source = std::str::from_utf8(source).unwrap_or_default();
+                if session.input_language == InputLanguage::Bash {
+                    crate::bash_to_fish::translate(&fish_widestring::WString::from(source))
+                        .is_err_and(|error| error.incomplete)
+                } else {
+                    fish::is_incomplete(source)
+                }
+            }
         }
     }
 }
@@ -447,6 +508,7 @@ fn execute(options: Options) -> Result<i32> {
                 editor.set_completion_context(commands, path, variables);
                 #[cfg(windows)]
                 if let Engine::Fish(session) = &engine {
+                    editor.set_input_language(session.input_language);
                     editor.set_registrations(session.completions.clone());
                     editor.set_variables(&session.editor_variables());
                     editor.set_input_config(session.abbreviations.clone(), &session.bindings);
@@ -472,7 +534,7 @@ fn execute(options: Options) -> Result<i32> {
                     interactive::ReadEvent::Eof => {
                         if !source.is_empty() {
                             status = engine
-                                .evaluate(&source, &mut host, false)
+                                .evaluate_input(&source, &mut host)
                                 .unwrap_or_else(|error| report(options.language, error));
                         }
                         break;
@@ -503,7 +565,7 @@ fn execute(options: Options) -> Result<i32> {
                 #[cfg(windows)]
                 terminal.command_start(std::str::from_utf8(&source).unwrap_or_default())?;
                 status = engine
-                    .evaluate(&source, &mut host, false)
+                    .evaluate_input(&source, &mut host)
                     .unwrap_or_else(|error| report(options.language, error));
                 #[cfg(windows)]
                 terminal.command_end(status)?;

@@ -4,12 +4,14 @@
 //! editable in the same buffer; indentation is never added inside a quoted
 //! string or after a line-continuation backslash, where it would change data.
 
+use super::InputLanguage;
 use super::interactive_pager::PagerBindings;
 use crate::ast::{self, Leaf as _, Node as _, NodeVisitor as _};
 use crate::parse_constants::{ParseTokenType, ParseTreeFlags};
 use crate::tokenizer::{is_token_delimiter, quote_end};
 use fish_widestring::{WExt as _, WString, wstr};
 use rustyline::{Cmd, ConditionalEventHandler, Event, EventContext, RepeatCount};
+use std::sync::{Arc, Mutex};
 
 const SPACES_PER_INDENT: usize = 4;
 
@@ -17,15 +19,17 @@ pub(super) struct EnterKey {
     /// Alt-Enter adds a line even when the command is ready to execute.
     pub force_newline: bool,
     pub pager: PagerBindings,
+    pub input_language: Arc<Mutex<InputLanguage>>,
 }
 
 impl ConditionalEventHandler for EnterKey {
     fn handle(&self, _: &Event, _: RepeatCount, _: bool, ctx: &EventContext<'_>) -> Option<Cmd> {
-        Some(enter_command(
+        Some(enter_command_for_language(
             &self.pager,
             ctx.line(),
             ctx.pos(),
             self.force_newline,
+            *self.input_language.lock().ok()?,
         ))
     }
 }
@@ -39,7 +43,17 @@ pub(super) fn enter_command(
     cursor: usize,
     force_newline: bool,
 ) -> Cmd {
-    match enter(line, cursor, force_newline) {
+    enter_command_for_language(pager, line, cursor, force_newline, InputLanguage::Fish)
+}
+
+pub(super) fn enter_command_for_language(
+    pager: &PagerBindings,
+    line: &str,
+    cursor: usize,
+    force_newline: bool,
+    language: InputLanguage,
+) -> Cmd {
+    match enter_for_language(line, cursor, force_newline, language) {
         Cmd::Insert(_, text) => pager.queue_completion(line, cursor, cursor, text),
         command => command,
     }
@@ -48,7 +62,20 @@ pub(super) fn enter_command(
 /// Decide whether Enter executes the complete source or continues editing it.
 /// The cursor is a UTF-8 byte offset, matching the line editor's cursor API.
 pub(super) fn enter(line: &str, cursor: usize, force_newline: bool) -> Cmd {
-    if !force_newline && !super::fish::is_incomplete(line) {
+    enter_for_language(line, cursor, force_newline, InputLanguage::Fish)
+}
+
+pub(super) fn enter_for_language(
+    line: &str,
+    cursor: usize,
+    force_newline: bool,
+    language: InputLanguage,
+) -> Cmd {
+    let incomplete = match language {
+        InputLanguage::Fish => super::fish::is_incomplete,
+        InputLanguage::Bash => super::interactive_bash::is_incomplete,
+    };
+    if !force_newline && !incomplete(line) {
         return Cmd::AcceptLine;
     }
     let Some(prefix) = line.get(..cursor) else {
@@ -56,7 +83,13 @@ pub(super) fn enter(line: &str, cursor: usize, force_newline: bool) -> Cmd {
         // future caller accidentally passes an invalid position.
         return Cmd::Noop;
     };
-    Cmd::Insert(1, newline(prefix))
+    Cmd::Insert(
+        1,
+        match language {
+            InputLanguage::Fish => newline(prefix),
+            InputLanguage::Bash => super::interactive_bash::newline(prefix),
+        },
+    )
 }
 
 fn newline(prefix: &str) -> String {
@@ -379,5 +412,34 @@ mod tests {
             Cmd::AcceptLine
         );
         assert!(pager.take_completion("echo done", 9).is_none());
+    }
+
+    #[test]
+    fn bash_enter_keeps_blocks_editable_and_alt_enter_preserves_unicode_suffixes() {
+        use super::super::interactive_completion::CompletionEngine;
+        let language = InputLanguage::Bash;
+        assert_eq!(
+            enter_for_language("for x in a; do", 14, false, language),
+            Cmd::Insert(1, "\n    ".into())
+        );
+        assert_eq!(
+            enter_for_language("for x in a; do echo $x; done", 27, false, language),
+            Cmd::AcceptLine
+        );
+        assert_eq!(
+            enter_for_language("echo ${x:-unsupported}", 22, false, language),
+            Cmd::AcceptLine
+        );
+        let line = "if true; then\n    echo 🐟\nfi";
+        let cursor = "if true; then\n    echo 🐟".len();
+        let pager = PagerBindings::new(Arc::new(Mutex::new(CompletionEngine::new("fish"))));
+        assert_eq!(
+            enter_command_for_language(&pager, line, cursor, true, language),
+            Cmd::Complete
+        );
+        let (start, candidates) = pager.take_completion(line, cursor).unwrap();
+        let mut edited = line.to_owned();
+        edited.replace_range(start..cursor, &candidates[0].replacement);
+        assert_eq!(edited, "if true; then\n    echo 🐟\n    \nfi");
     }
 }

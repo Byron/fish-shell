@@ -158,7 +158,6 @@ pub mod bash_input;
 mod bash_input_session;
 #[cfg(not(windows))]
 pub mod bash_syntax;
-#[cfg(not(windows))]
 pub mod bash_to_fish;
 #[cfg(test)]
 #[cfg(not(windows))]

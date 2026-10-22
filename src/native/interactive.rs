@@ -22,6 +22,13 @@ pub struct Editor {
 }
 
 impl Editor {
+    pub fn set_input_language(&mut self, language: super::InputLanguage) {
+        #[cfg(windows)]
+        self.inner.set_input_language(language);
+        #[cfg(not(windows))]
+        let _ = language;
+    }
+
     #[cfg(windows)]
     pub(super) fn set_input_config(
         &mut self,
@@ -151,6 +158,7 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(windows)]
 mod windows {
     use super::*;
+    use crate::native::InputLanguage;
     use crate::native::interactive_abbreviations::Abbreviations;
     use crate::native::interactive_bindings::{Action, Bindings};
     use crate::native::interactive_completion::CompletionEngine;
@@ -186,6 +194,13 @@ mod windows {
     }
 
     impl Editor {
+        pub(super) fn set_input_language(&mut self, language: InputLanguage) {
+            let helper = self.editor.helper_mut().unwrap();
+            *helper.input_language.lock().unwrap() = language;
+            helper.engine.lock().unwrap().set_input_language(language);
+            helper.pager.reset();
+        }
+
         pub(super) fn set_input_config(
             &mut self,
             abbreviations: Abbreviations,
@@ -202,12 +217,14 @@ mod windows {
             let helper = self.editor.helper().unwrap();
             let pager = helper.pager.clone();
             let abbreviations = Arc::clone(&helper.abbreviations);
+            let input_language = Arc::clone(&helper.input_language);
             for (key, action) in bindings.entries() {
                 let handler = UserAction {
                     action,
                     pager: pager.clone(),
                     abbreviations: Arc::clone(&abbreviations),
                     search: Arc::clone(&self.search),
+                    input_language: Arc::clone(&input_language),
                 };
                 let previous = self.editor.bind_sequence(
                     key,
@@ -264,6 +281,7 @@ mod windows {
             editor.set_helper(Some(Completion::new(language)));
             let pager = editor.helper().unwrap().pager.clone();
             let abbreviations = Arc::clone(&editor.helper().unwrap().abbreviations);
+            let input_language = Arc::clone(&editor.helper().unwrap().input_language);
             let suspended = Arc::new(AtomicBool::new(false));
             editor.bind_sequence(
                 KeyEvent::ctrl('Z'),
@@ -283,6 +301,7 @@ mod windows {
                         abbreviations: Arc::clone(&abbreviations),
                         pager: pager.clone(),
                         space: true,
+                        input_language: Arc::clone(&input_language),
                     })))),
                 );
                 editor.bind_sequence(Event::Any, pager.wrap(None));
@@ -327,6 +346,7 @@ mod windows {
                         crate::native::interactive_layout::EnterKey {
                             force_newline: true,
                             pager: pager.clone(),
+                            input_language: Arc::clone(&input_language),
                         },
                     )))),
                 );
@@ -340,6 +360,7 @@ mod windows {
                             abbreviations: Arc::clone(&abbreviations),
                             pager: pager.clone(),
                             space: false,
+                            input_language: Arc::clone(&input_language),
                         })))),
                     );
                 }
@@ -431,6 +452,7 @@ mod windows {
         abbreviations: Arc<Mutex<Abbreviations>>,
         pager: PagerBindings,
         space: bool,
+        input_language: Arc<Mutex<InputLanguage>>,
     }
 
     impl ConditionalEventHandler for InputKey {
@@ -446,6 +468,18 @@ mod windows {
                 && ctx.input_mode() != rustyline::InputMode::Insert
             {
                 return None;
+            }
+            let language = *self.input_language.lock().ok()?;
+            if language == InputLanguage::Bash {
+                return (!self.space).then(|| {
+                    crate::native::interactive_layout::enter_command_for_language(
+                        &self.pager,
+                        ctx.line(),
+                        ctx.pos(),
+                        false,
+                        language,
+                    )
+                });
             }
             if let Some(mut expansion) = self
                 .abbreviations
@@ -503,6 +537,7 @@ mod windows {
         pager: PagerBindings,
         abbreviations: Arc<Mutex<Abbreviations>>,
         search: Arc<Mutex<HistorySearch>>,
+        input_language: Arc<Mutex<InputLanguage>>,
     }
 
     impl ConditionalEventHandler for UserAction {
@@ -535,6 +570,7 @@ mod windows {
                     abbreviations: Arc::clone(&self.abbreviations),
                     pager: self.pager.clone(),
                     space: false,
+                    input_language: Arc::clone(&self.input_language),
                 }
                 .handle(event, count, positive, ctx),
                 Action::Complete => self
@@ -555,6 +591,7 @@ mod windows {
 
     struct Completion {
         fish: bool,
+        input_language: Arc<Mutex<InputLanguage>>,
         engine: Arc<Mutex<CompletionEngine>>,
         pager: PagerBindings,
         abbreviations: Arc<Mutex<Abbreviations>>,
@@ -568,6 +605,7 @@ mod windows {
             let pager = PagerBindings::new(Arc::clone(&engine));
             Self {
                 fish: language == "fish",
+                input_language: Arc::new(Mutex::new(InputLanguage::Fish)),
                 engine,
                 pager,
                 abbreviations: Arc::new(Mutex::new(Abbreviations::default())),
@@ -598,18 +636,21 @@ mod windows {
     impl Highlighter for Completion {
         fn highlight<'l>(&self, line: &'l str, pos: usize) -> std::borrow::Cow<'l, str> {
             if self.fish {
+                let language = *self.input_language.lock().unwrap();
                 std::borrow::Cow::Owned(
-                    crate::native::interactive_highlight::highlight_with_palette(
+                    crate::native::interactive_highlight::highlight_for_language(
                         line,
                         pos,
                         |name| {
-                            self.abbreviations.lock().unwrap().contains(name)
+                            language == InputLanguage::Fish
+                                && self.abbreviations.lock().unwrap().contains(name)
                                 || self.engine.lock().unwrap().command_exists(
                                     name,
                                     &std::env::current_dir().unwrap_or_default(),
                                 )
                         },
                         &self.palette,
+                        language,
                     ),
                 )
             } else {
@@ -639,13 +680,30 @@ mod windows {
             }
             HistoryHinter::new()
                 .hint(line, pos, ctx)
+                .filter(|hint| {
+                    let source = format!("{line}{hint}");
+                    match *self.input_language.lock().unwrap() {
+                        InputLanguage::Fish => crate::native::fish::check_syntax(&source).is_ok(),
+                        InputLanguage::Bash => crate::bash_to_fish::translate(
+                            &fish_widestring::WString::from(source.as_str()),
+                        )
+                        .is_ok(),
+                    }
+                })
                 .map(EditorHint::suggestion)
         }
     }
     impl Validator for Completion {
         fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
             Ok(
-                if self.fish && crate::native::fish::is_incomplete(ctx.input()) {
+                if self.fish
+                    && match *self.input_language.lock().unwrap() {
+                        InputLanguage::Fish => crate::native::fish::is_incomplete(ctx.input()),
+                        InputLanguage::Bash => {
+                            crate::native::interactive_bash::is_incomplete(ctx.input())
+                        }
+                    }
+                {
                     ValidationResult::Incomplete
                 } else {
                     ValidationResult::Valid(None)
@@ -693,6 +751,30 @@ mod windows {
             assert!(contents.contains("echo first\n"));
             assert!(contents.contains("begin\\necho 🐟\\nend\n"));
             assert!(contents.contains("echo last\n"));
+        }
+
+        #[test]
+        fn shared_history_hints_use_the_active_input_grammar() {
+            use rustyline::hint::Hint as _;
+            let helper = Completion::new("fish");
+            let mut history = DefaultHistory::new();
+            history.add("if true; then echo bash; fi").unwrap();
+            let context = Context::new(&history);
+            assert!(helper.hint("if", 2, &context).is_none());
+            *helper.input_language.lock().unwrap() = InputLanguage::Bash;
+            assert_eq!(
+                helper.hint("if", 2, &context).unwrap().completion(),
+                Some(" true; then echo bash; fi")
+            );
+            let mut history = DefaultHistory::new();
+            history.add("if true; echo fish; end").unwrap();
+            let context = Context::new(&history);
+            assert!(helper.hint("if", 2, &context).is_none());
+            *helper.input_language.lock().unwrap() = InputLanguage::Fish;
+            assert_eq!(
+                helper.hint("if", 2, &context).unwrap().completion(),
+                Some(" true; echo fish; end")
+            );
         }
     }
 }

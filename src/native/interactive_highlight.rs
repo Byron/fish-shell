@@ -12,7 +12,7 @@ use fish_widestring::{WString, wstr};
 use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Role {
+pub(super) enum Role {
     #[default]
     Normal,
     Command,
@@ -92,6 +92,39 @@ pub(super) fn highlight_with_palette(
         pairs: vec![],
     };
     highlight_source(&source, 0, &mut colors, &command_exists, 0);
+    render(line, cursor, colors, palette)
+}
+
+pub(super) fn highlight_for_language(
+    line: &str,
+    cursor: usize,
+    command_exists: impl Fn(&str) -> bool,
+    palette: &Palette,
+    language: super::InputLanguage,
+) -> String {
+    if language == super::InputLanguage::Fish {
+        return highlight_with_palette(line, cursor, command_exists, palette);
+    }
+    let mut view = super::interactive_bash::View::new(line);
+    for range in view.commands {
+        if super::interactive_bash::literal_word(&line[range.clone()])
+            .is_some_and(|name| !command_exists(&name))
+        {
+            view.roles[range].fill(Role::Error);
+        }
+    }
+    let colors = Colors {
+        roles: line.char_indices().map(|(at, _)| view.roles[at]).collect(),
+        pairs: view
+            .pairs
+            .into_iter()
+            .map(|(open, close)| (line[..open].chars().count(), line[..close].chars().count()))
+            .collect(),
+    };
+    render(line, cursor, colors, palette)
+}
+
+fn render(line: &str, cursor: usize, colors: Colors, palette: &Palette) -> String {
     let cursor = line
         .char_indices()
         .take_while(|(offset, _)| *offset < cursor)
@@ -597,5 +630,42 @@ mod tests {
             let prefix = &line[..end];
             assert_eq!(without_ansi(&highlight(prefix, end, |_| true)), prefix);
         }
+    }
+
+    #[test]
+    fn bash_highlighting_preserves_every_unicode_prefix_and_resolves_literal_commands() {
+        let line = "if true; then echo 🐟 \"${item} $(cargo build)\"; fi # ' )";
+        for end in line
+            .char_indices()
+            .map(|(index, _)| index)
+            .chain([line.len()])
+        {
+            let prefix = &line[..end];
+            let rendered = highlight_for_language(
+                prefix,
+                end,
+                |_| true,
+                &Palette::default(),
+                super::super::InputLanguage::Bash,
+            );
+            assert_eq!(without_ansi(&rendered), prefix);
+        }
+        let visited = RefCell::new(Vec::new());
+        let rendered = highlight_for_language(
+            "echo $(missing-command) `literal",
+            0,
+            |name| {
+                visited.borrow_mut().push(name.to_owned());
+                name == "echo"
+            },
+            &Palette::default(),
+            super::super::InputLanguage::Bash,
+        );
+        assert_eq!(&*visited.borrow(), &["echo", "missing-command"]);
+        assert!(rendered.contains(&format!(
+            "{}missing-command",
+            Palette::default().sequence("fish_color_error", false)
+        )));
+        assert_eq!(without_ansi(&rendered), "echo $(missing-command) `literal");
     }
 }

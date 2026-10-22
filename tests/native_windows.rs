@@ -376,3 +376,141 @@ fn native_fish_startup_and_mode_queries_use_invocation_state() {
     assert_eq!(output.status.code(), Some(7));
     assert!(output.stdout.is_empty());
 }
+
+#[test]
+fn bash_interactive_language_keeps_commands_scripts_and_standard_input_in_fish() {
+    let scratch = Scratch::new();
+    let source = "set words 'two words' 漢字; for word in $words; echo $word; end";
+    for options in [
+        vec!["--interactive-language=bash"],
+        vec!["--interactive-language", "bash"],
+        vec!["--interactive-language=fish"],
+    ] {
+        let output = shell("fish", &scratch.0)
+            .args(&options)
+            .args(["-c", source])
+            .output()
+            .unwrap();
+        assert_success(&output);
+        assert_eq!(stdout(&output), "two words\n漢字\n");
+
+        let script = scratch.join("input mode Ω.fish");
+        std::fs::write(&script, source).unwrap();
+        let output = shell("fish", &scratch.0)
+            .args(&options)
+            .arg(&script)
+            .output()
+            .unwrap();
+        assert_success(&output);
+        assert_eq!(stdout(&output), "two words\n漢字\n");
+    }
+
+    let mut child = shell("fish", &scratch.0)
+        .arg("--interactive-language=bash")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write as _;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(source.as_bytes())
+            .unwrap();
+    }
+    let output = child.wait_with_output().unwrap();
+    assert_success(&output);
+    assert_eq!(stdout(&output), "two words\n漢字\n");
+
+    let output = shell("fish", &scratch.0)
+        .args([
+            "--interactive-language=bash",
+            "-c",
+            "dialect_assignment=wrong",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn bash_interactive_language_keeps_fish_configuration_and_skips_bash_startup() {
+    let scratch = Scratch::new();
+    std::fs::create_dir(scratch.join("fish")).unwrap();
+    std::fs::write(
+        scratch.join("fish/config.fish"),
+        "set -g configured 'Fish config Ω'; function configured_function; echo $configured; end",
+    )
+    .unwrap();
+    std::fs::write(
+        scratch.join(".bashrc"),
+        "printf wrong > bash-startup-marker\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_fish"))
+        .current_dir(&scratch.0)
+        .env("HOME", &scratch.0)
+        .env("USERPROFILE", &scratch.0)
+        .env("XDG_CONFIG_HOME", &scratch.0)
+        .args(["--interactive-language=bash", "-c", "configured_function"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(stdout(&output), "Fish config Ω\n");
+    assert!(!scratch.join("bash-startup-marker").exists());
+}
+
+#[test]
+fn invalid_interactive_languages_fail_before_commands_have_effects() {
+    for options in [
+        vec!["--interactive-language="],
+        vec!["--interactive-language=zsh"],
+        vec!["--interactive-language", "rash"],
+        vec!["--interactive-language=bash", "--rash-shell"],
+        vec!["--rash-shell", "--interactive-language=fish"],
+        vec!["--interactive-language=bash", "--script-language=bash"],
+    ] {
+        let scratch = Scratch::new();
+        let output = shell("fish", &scratch.0)
+            .args(&options)
+            .args(["-c", "echo wrong > marker"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{options:?}");
+        assert!(output.stdout.is_empty(), "{options:?}: {}", stdout(&output));
+        assert!(!output.stderr.is_empty(), "{options:?}");
+        assert!(!scratch.join("marker").exists(), "{options:?}");
+    }
+    let scratch = Scratch::new();
+    let output = shell("fish", &scratch.0)
+        .arg("--interactive-language")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(!output.stderr.is_empty());
+}
+
+#[test]
+fn input_mode_changes_require_an_interactive_session_and_an_explicit_language() {
+    let scratch = Scratch::new();
+    for source in [
+        "fish_input_mode bash",
+        "fish_input_mode fish",
+        "fish_input_mode",
+        "fish_input_mode zsh",
+        "fish_input_mode fish extra",
+    ] {
+        let output = shell("fish", &scratch.0)
+            .args(["--interactive-language=bash", "-c", source])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{source}");
+        assert!(output.stdout.is_empty(), "{source}: {}", stdout(&output));
+        assert!(!output.stderr.is_empty(), "{source}");
+    }
+}

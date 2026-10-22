@@ -54,6 +54,11 @@ pub struct Session {
     last_pid: Option<u32>,
     fish_pid: u32,
     interactive: bool,
+    #[serde(default)]
+    pub(super) input_language: super::InputLanguage,
+    /// Prompts and command substitutions cannot change the outer reader mode.
+    #[serde(default)]
+    input_mode_blocked: bool,
     login: bool,
     flow: Flow,
     depth: usize,
@@ -189,6 +194,8 @@ impl Session {
             last_pid: None,
             fish_pid: std::process::id(),
             interactive: false,
+            input_language: super::InputLanguage::Fish,
+            input_mode_blocked: false,
             login: false,
             flow: Flow::Normal,
             depth: 0,
@@ -204,6 +211,7 @@ impl Session {
         host: &mut impl Host,
     ) -> Result<i32> {
         session.flow = Flow::Normal;
+        session.input_mode_blocked = true;
         let result = session.eval(&source, host);
         if let Some(path) = result_path {
             // The parent removes the reservation if the pipeline is stopped or
@@ -298,7 +306,9 @@ impl Session {
             capture: true,
             ..Default::default()
         };
+        let input_mode_blocked = std::mem::replace(&mut self.input_mode_blocked, true);
         let result = self.eval_source("fish_prompt", host, &mut output);
+        self.input_mode_blocked = input_mode_blocked;
         self.status = status;
         self.pipeline = pipeline;
         result.map(|()| Some(String::from_utf8_lossy(&output.bytes).into_owned()))
@@ -328,6 +338,22 @@ impl Session {
             self.status = 130;
         }
         result.map(|_| self.status)
+    }
+
+    /// Capture the dialect for the entire submission before any command runs.
+    /// A fish_input_mode request takes effect only on the next prompt.
+    pub(super) fn eval_input(&mut self, source: &str, host: &mut impl Host) -> Result<i32> {
+        if self.input_language == super::InputLanguage::Fish {
+            return self.eval(source, host);
+        }
+        match crate::bash_to_fish::translate(&WString::from(source)) {
+            Ok(translated) => self.eval(&translated.to_string(), host),
+            Err(error) => {
+                self.status = 2;
+                self.pipeline = vec![2];
+                Err(Error::new(error.message))
+            }
+        }
     }
 
     fn eval_source(
@@ -529,6 +555,7 @@ impl Session {
                 }
                 // Evaluation depth belongs to the parent invocation, not its worker.
                 updated.depth = self.depth;
+                updated.input_mode_blocked = self.input_mode_blocked;
                 *self = updated;
             }
         }
@@ -810,7 +837,9 @@ impl Session {
                     capture: true,
                     ..Default::default()
                 };
+                let input_mode_blocked = std::mem::replace(&mut self.input_mode_blocked, true);
                 let result = self.eval_source(source, host, &mut output);
+                self.input_mode_blocked = input_mode_blocked;
                 self.flow = saved_flow;
                 result?;
                 expand::split_substitution(&output.bytes, quoted)
@@ -851,9 +880,19 @@ mod tests {
         fn read_line(&mut self, _: &[Redirection], _: bool) -> Result<ReadResult> {
             unreachable!()
         }
-        fn write(&mut self, _: i32, bytes: &[u8], _: &[Redirection], _: bool) -> Result<Vec<u8>> {
-            self.0.extend(bytes);
-            Ok(vec![])
+        fn write(
+            &mut self,
+            _: i32,
+            bytes: &[u8],
+            _: &[Redirection],
+            capture: bool,
+        ) -> Result<Vec<u8>> {
+            if capture {
+                Ok(bytes.to_vec())
+            } else {
+                self.0.extend(bytes);
+                Ok(vec![])
+            }
         }
         fn cancelled(&self) -> bool {
             false
@@ -867,6 +906,109 @@ mod tests {
         let mut capture = Capture::default();
         Session::new().unwrap().eval(source, &mut capture).unwrap();
         String::from_utf8(capture.0).unwrap()
+    }
+
+    #[test]
+    fn bash_input_keeps_fish_state_expansion_and_function_semantics() {
+        let mut session = Session::new().unwrap();
+        let mut capture = Capture::default();
+        session.set_mode(true, false);
+        session.eval("set -g words 'one two' three; function private_fn; echo $words; end; fish_input_mode bash", &mut capture).unwrap();
+        session.eval_input("value=hello; private_fn; echo ${value}; echo $words; say() { echo \"$1\"; }; say 'native fish'; echo $(x=nested; echo $x); echo `literal`", &mut capture).unwrap();
+        assert_eq!(
+            String::from_utf8(capture.0).unwrap(),
+            "one two three\nhello\none two three\nnative fish\nnested\n`literal`\n"
+        );
+        assert_eq!(session.values("value"), ["hello"]);
+        assert_eq!(session.values("words"), ["one two", "three"]);
+        assert!(session.functions.contains_key("say"));
+    }
+
+    #[test]
+    fn input_mode_switch_applies_after_the_entire_submission() {
+        let mut session = Session::new().unwrap();
+        let mut capture = Capture::default();
+        session.set_mode(true, false);
+        session
+            .eval_input("fish_input_mode bash; set -g first fish", &mut capture)
+            .unwrap();
+        assert_eq!(session.input_language, super::super::InputLanguage::Bash);
+        session
+            .eval_input(
+                "fish_input_mode fish; second=bash; echo $first $second",
+                &mut capture,
+            )
+            .unwrap();
+        assert_eq!(session.input_language, super::super::InputLanguage::Fish);
+        session
+            .eval_input("set -g third fish; echo $third", &mut capture)
+            .unwrap();
+        assert_eq!(String::from_utf8(capture.0).unwrap(), "fish bash\nfish\n");
+    }
+
+    #[test]
+    fn bash_input_special_variables_and_control_flow_use_fish_values() {
+        let mut session = Session::new().unwrap();
+        let mut capture = Capture::default();
+        session.input_language = super::super::InputLanguage::Bash;
+        session.set_args(vec!["first".into(), "second word".into()]);
+        session.last_pid = Some(42);
+        session.eval_input(
+            "false; echo $?suffix; echo $!; echo $1; echo $#; printf '<%s>\\n' \"$@\"; x=prefix; echo ${x}suffix; if false; then echo bad; elif true; then echo branch; else echo bad; fi; for item in one two; do echo $item; done; flag=yes; while test \"$flag\" = yes; do flag=no; echo loop; done; until true; do echo bad; done; f() { printf '[%s]\\n' \"$@\"; }; f a 'b c'",
+            &mut capture,
+        ).unwrap();
+        assert_eq!(
+            String::from_utf8(capture.0).unwrap(),
+            "1suffix\n42\nfirst\n2\n<first>\n<second word>\nprefixsuffix\nbranch\none\ntwo\nloop\n[a]\n[b c]\n"
+        );
+    }
+
+    #[test]
+    fn bash_translation_rejects_whole_submission_before_side_effects() {
+        let mut session = Session::new().unwrap();
+        let mut capture = Capture::default();
+        session.set_mode(true, false);
+        session.input_language = super::super::InputLanguage::Bash;
+        for source in [
+            "changed=yes; echo ${missing:-fallback}",
+            "changed=yes\necho $(echo ${missing:-fallback})",
+            "changed=yes; [[ a == a ]]",
+            "changed=yes; fish_input_mode fish; unsupported=(one two)",
+        ] {
+            assert!(
+                session.eval_input(source, &mut capture).is_err(),
+                "{source}"
+            );
+            assert!(session.values("changed").is_empty());
+            assert_eq!(session.status(), 2);
+            assert_eq!(session.input_language, super::super::InputLanguage::Bash);
+        }
+        assert!(capture.0.is_empty());
+    }
+
+    #[test]
+    fn prompts_substitutions_and_noninteractive_code_cannot_switch_input() {
+        let mut session = Session::new().unwrap();
+        let mut capture = Capture::default();
+        assert!(session.eval("fish_input_mode bash", &mut capture).is_err());
+        session.set_mode(true, false);
+        session
+            .eval(
+                "function fish_prompt; fish_input_mode bash; end",
+                &mut capture,
+            )
+            .unwrap();
+        assert!(session.prompt(&mut capture).is_err());
+        assert!(
+            session
+                .eval("echo (fish_input_mode bash)", &mut capture)
+                .is_err()
+        );
+        assert_eq!(session.input_language, super::super::InputLanguage::Fish);
+        // The guard is restored on error so a subsequent outer request works.
+        session.eval("fish_input_mode bash", &mut capture).unwrap();
+        session.eval("set -g still_fish yes", &mut capture).unwrap();
+        assert_eq!(session.values("still_fish"), ["yes"]);
     }
 
     #[test]

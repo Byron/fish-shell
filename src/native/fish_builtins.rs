@@ -51,6 +51,7 @@ pub(super) fn is_builtin(name: &str) -> bool {
             | "bind"
             | "fish_vi_key_bindings"
             | "fish_default_key_bindings"
+            | "fish_input_mode"
     )
 }
 
@@ -103,6 +104,30 @@ impl Session {
             return Ok(());
         }
         match name {
+            "fish_input_mode" => {
+                if args.len() == 1 && matches!(args[0].as_str(), "-h" | "--help") {
+                    self.write(
+                        b"fish_input_mode fish|bash: select the next Fish prompt's syntax\n",
+                        host,
+                        output,
+                    )?;
+                    self.status = 0;
+                    return Ok(());
+                }
+                let input_language = match args {
+                    [language] if language == "fish" => super::super::InputLanguage::Fish,
+                    [language] if language == "bash" => super::super::InputLanguage::Bash,
+                    _ => return Err(Error::new("fish_input_mode: expected fish|bash")),
+                };
+                if !self.interactive || self.input_mode_blocked {
+                    return Err(Error {
+                        message: "fish_input_mode: use interactive startup configuration or a submitted command, outside prompts and command substitutions".into(),
+                        status: 1,
+                    });
+                }
+                self.input_language = input_language;
+                self.status = 0;
+            }
             "abbr" | "bind" => {
                 let (status, text) = if name == "abbr" {
                     self.abbreviations.run_builtin(args)

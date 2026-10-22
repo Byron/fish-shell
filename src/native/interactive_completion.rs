@@ -4,6 +4,7 @@
 //! the evaluator's functions, variables and declarative registrations; it never
 //! evaluates the command line or launches a program to produce suggestions.
 
+use super::InputLanguage;
 use rustyline::completion::Pair;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
@@ -24,6 +25,7 @@ pub(super) struct CompletionSpec {
 
 pub(super) struct CompletionEngine {
     fish: bool,
+    input_language: InputLanguage,
     builtins: BTreeSet<String>,
     commands: BTreeSet<String>,
     functions: BTreeSet<String>,
@@ -74,6 +76,7 @@ impl CompletionEngine {
                 "bind",
                 "fish_vi_key_bindings",
                 "fish_default_key_bindings",
+                "fish_input_mode",
                 "switch",
                 "case",
                 "jobs",
@@ -99,6 +102,7 @@ impl CompletionEngine {
         };
         let mut engine = Self {
             fish: language == "fish",
+            input_language: InputLanguage::Fish,
             builtins,
             commands: BTreeSet::new(),
             functions: BTreeSet::new(),
@@ -152,6 +156,10 @@ impl CompletionEngine {
         self.registrations = registrations;
     }
 
+    pub(super) fn set_input_language(&mut self, language: InputLanguage) {
+        self.input_language = language;
+    }
+
     /// Share command discovery with syntax highlighting. Explicit paths use
     /// Windows' executable extensions, without searching or executing source.
     pub(super) fn command_exists(&self, name: &str, cwd: &Path) -> bool {
@@ -173,14 +181,20 @@ impl CompletionEngine {
         if pos > line.len() || !line.is_char_boundary(pos) {
             return (pos.min(line.len()), Vec::new());
         }
-        let word = completion_word(line, pos, self.fish);
+        let word = completion_word(
+            line,
+            pos,
+            self.fish && self.input_language == InputLanguage::Fish,
+        );
         if word.comment {
             return (pos, Vec::new());
         }
         if let Some(start) = word.variable {
             let mut matches = Candidates::new(&line[start..pos]);
             for variable in &self.variables {
-                if valid_variable(variable) {
+                if valid_variable(variable)
+                    && (self.input_language != InputLanguage::Bash || variable.is_ascii())
+                {
                     matches.add(variable, variable, "Variable", false);
                 }
             }
@@ -189,12 +203,32 @@ impl CompletionEngine {
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
+            if word.braced_variable {
+                let tail = &line[pos + suffix.len()..];
+                if !tail.is_empty()
+                    && !tail.starts_with('}')
+                    && !word.quote.is_some_and(|quote| tail.starts_with(quote))
+                {
+                    // Keep unsupported parameter operators and indices whole.
+                    // Closing the name before `:-` or `[0]` would turn the
+                    // remainder of an expansion into unrelated literal text.
+                    return (pos, Vec::new());
+                }
+            }
             preserve_suffix(&mut result, &suffix);
+            if word.braced_variable && suffix.is_empty() && !line[pos..].starts_with('}') {
+                for candidate in &mut result {
+                    candidate.replacement.push('}');
+                }
+            }
             return (start, result);
         }
         // Partial substitutions and literal dollar signs are not paths. Never
         // evaluate them, and do not accidentally replace them with a literal.
-        if word.expansion || word.value.contains(['`', '\n']) {
+        if word.expansion
+            || word.value.contains('\n')
+            || word.value.contains('`') && self.input_language != InputLanguage::Bash
+        {
             return (word.start, Vec::new());
         }
 
@@ -209,7 +243,14 @@ impl CompletionEngine {
                 }
             } else if !prefix.contains(['/', '\\']) {
                 for name in &self.builtins {
-                    matches.add(name, name, "Builtin", true);
+                    if self.input_language != InputLanguage::Bash || !fish_only_keyword(name) {
+                        matches.add(name, name, "Builtin", true);
+                    }
+                }
+                if self.input_language == InputLanguage::Bash {
+                    for name in ["then", "fi", "elif", "do", "done", "until", "in"] {
+                        matches.add(name, name, "Keyword", true);
+                    }
                 }
                 if !word.words.iter().any(|word| word == "builtin") {
                     for name in &self.commands {
@@ -236,6 +277,13 @@ impl CompletionEngine {
         let tail = token_tail(line, pos, word.quote);
         let append_space = pos == line.len();
         let mut result = matches.finish(true, append_space);
+        if self.input_language == InputLanguage::Bash {
+            // A backslash-newline is a continuation in Bash, never a literal
+            // newline in a filename. Preserve it as a quoted fragment instead.
+            for candidate in &mut result {
+                candidate.replacement = candidate.replacement.replace("\\\n", "'\n'");
+            }
+        }
         preserve_suffix(&mut result, &tail);
         (word.start, result)
     }
@@ -396,6 +444,13 @@ impl CompletionEngine {
             }
         }
     }
+}
+
+fn fish_only_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "begin" | "end" | "switch" | "case" | "and" | "or" | "not"
+    )
 }
 
 fn preserve_suffix(candidates: &mut Vec<Pair>, suffix: &str) {
@@ -583,6 +638,8 @@ struct Word {
     words: Vec<String>,
     quote: Option<char>,
     variable: Option<usize>,
+    braced_variable: bool,
+    bash: bool,
     expansion: bool,
     redirect: bool,
     comment: bool,
@@ -594,9 +651,14 @@ impl Word {
             !matches!(
                 word.as_str(),
                 "command" | "builtin" | "exec" | "not" | "and" | "or" | "if" | "while" | "else"
-            ) && !word
-                .split_once('=')
-                .is_some_and(|(name, _)| valid_variable(name))
+            ) && !(self.bash
+                && matches!(
+                    word.as_str(),
+                    "then" | "do" | "elif" | "until" | "!" | "{" | "}"
+                ))
+                && !word
+                    .split_once('=')
+                    .is_some_and(|(name, _)| valid_variable(name))
         })
     }
 
@@ -613,6 +675,7 @@ impl Word {
 fn completion_word(line: &str, pos: usize, fish: bool) -> Word {
     let mut word = Word {
         start: pos,
+        bash: !fish,
         ..Word::default()
     };
     let mut active = false;
@@ -623,6 +686,7 @@ fn completion_word(line: &str, pos: usize, fish: bool) -> Word {
             if character == '\n' {
                 word = Word {
                     start: pos,
+                    bash: !fish,
                     ..Word::default()
                 };
                 active = false;
@@ -636,10 +700,14 @@ fn completion_word(line: &str, pos: usize, fish: bool) -> Word {
             active = true;
             word.variable = None;
             if let Some((_, next)) = chars.next() {
-                if word.quote == Some('"') && !matches!(next, '$' | '`' | '"' | '\\' | '\n') {
+                if word.quote == Some('"')
+                    && (!matches!(next, '$' | '`' | '"' | '\\' | '\n') || !fish && next == '`')
+                {
                     word.value.push('\\');
                 }
-                word.value.push(next);
+                if next != '\n' || fish {
+                    word.value.push(next);
+                }
             }
         } else if character == '\\'
             && fish
@@ -658,10 +726,40 @@ fn completion_word(line: &str, pos: usize, fish: bool) -> Word {
             word.quote = Some(character);
         } else if word.quote.is_none() && character == '#' && !active {
             word.comment = true;
+        } else if !fish
+            && character == '$'
+            && word.quote != Some('\'')
+            && chars.peek().is_some_and(|(_, next)| *next == '(')
+        {
+            chars.next();
+            word.expansion = true;
+            substitutions.push(word);
+            word = Word {
+                start: pos,
+                bash: true,
+                ..Word::default()
+            };
+            active = false;
+        } else if !fish
+            && word.quote.is_none()
+            && character == '('
+            && chars.peek().is_some_and(|(_, next)| *next == ')')
+            && (word.words.is_empty() || word.words == ["function"])
+        {
+            // A Bash function signature opens a body, not a substitution in
+            // the function name. Keep completion inside its following group.
+            chars.next();
+            word = Word {
+                start: pos,
+                bash: true,
+                ..Word::default()
+            };
+            active = false;
         } else if word.quote.is_none() && character == '(' {
             substitutions.push(word);
             word = Word {
                 start: pos,
+                bash: !fish,
                 ..Word::default()
             };
             active = false;
@@ -672,6 +770,7 @@ fn completion_word(line: &str, pos: usize, fish: bool) -> Word {
         } else if word.quote.is_none() && matches!(character, ';' | '|' | '&' | '\n') {
             word = Word {
                 start: pos,
+                bash: !fish,
                 ..Word::default()
             };
             active = false;
@@ -682,6 +781,7 @@ fn completion_word(line: &str, pos: usize, fish: bool) -> Word {
             word.value.clear();
             word.redirect = true;
             word.variable = None;
+            word.braced_variable = false;
             word.expansion = false;
             active = false;
         } else if word.quote.is_none() && character.is_whitespace() {
@@ -694,13 +794,22 @@ fn completion_word(line: &str, pos: usize, fish: bool) -> Word {
             }
             word.value.clear();
             word.variable = None;
+            word.braced_variable = false;
             word.expansion = false;
             active = false;
         } else {
             active = true;
             if character == '$' && word.quote != Some('\'') {
                 word.variable = Some(at + 1);
+                word.braced_variable = false;
                 word.expansion = true;
+                if !fish && chars.peek().is_some_and(|(_, next)| *next == '{') {
+                    chars.next();
+                    word.value.push_str("${");
+                    word.variable = Some(at + 2);
+                    word.braced_variable = true;
+                    continue;
+                }
             } else if !(character.is_alphanumeric() || character == '_') {
                 word.variable = None;
             }
@@ -812,6 +921,10 @@ fn subcommand_choices(command: &str) -> Option<Choices> {
             ("is-command-substitution", "Test captured output"),
             ("fish-path", "Print path to fish"),
         ],
+        "fish_input_mode" => &[
+            ("fish", "Use Fish input syntax"),
+            ("bash", "Use Bash-shaped Fish input"),
+        ],
         _ => return None,
     })
 }
@@ -920,6 +1033,115 @@ mod tests {
             .into_iter()
             .map(|pair| pair.replacement)
             .collect()
+    }
+
+    #[test]
+    fn bash_contexts_reuse_fish_commands_and_contextual_completions() {
+        let directory = Directory::new();
+        let mut engine = engine();
+        engine.set_input_language(InputLanguage::Bash);
+        for line in [
+            "if true; then ech",
+            "for item in one; do ech",
+            "if false; then true; elif ech",
+            "if false; then true; else ech",
+            "until ech",
+            "hello() { ech",
+            "! ech",
+        ] {
+            assert!(
+                replacements(&engine, line, &directory.0).contains(&"echo ".into()),
+                "{line}"
+            );
+        }
+        for line in [
+            "if true; then cargo bu",
+            "echo $(cargo bu",
+            "echo \"$(cargo bu",
+        ] {
+            assert_eq!(
+                replacements(&engine, line, &directory.0),
+                ["build "],
+                "{line}"
+            );
+        }
+        assert_eq!(
+            replacements(&engine, "fish_input_mode b", &directory.0),
+            ["bash "]
+        );
+        assert!(!replacements(&engine, "end", &directory.0).contains(&"end ".into()));
+        assert!(replacements(&engine, "fi", &directory.0).contains(&"fi ".into()));
+        engine.set_input_language(InputLanguage::Fish);
+        assert!(replacements(&engine, "end", &directory.0).contains(&"end ".into()));
+    }
+
+    #[test]
+    fn bash_variable_completion_preserves_braces_quotes_and_interior_suffixes() {
+        let directory = Directory::new();
+        let mut engine = engine();
+        engine.set_input_language(InputLanguage::Bash);
+        for (line, expected) in [
+            ("echo ${PA", "PATH}"),
+            ("echo \"${PA", "PATH}"),
+            ("echo ${HOME}$PA", "PATH"),
+        ] {
+            let (start, candidates) = engine.complete(line, line.len(), &directory.0);
+            assert_eq!(&line[start..], "PA", "{line}");
+            assert_eq!(candidates[0].replacement, expected, "{line}");
+        }
+        for (line, cursor, expected) in [
+            ("echo ${PA}", 9, "PATH"),
+            ("echo ${PATH} tail", 9, "PA"),
+            ("echo ${PATH", 9, "PA"),
+        ] {
+            let (start, candidates) = engine.complete(line, cursor, &directory.0);
+            assert_eq!(start, 7);
+            assert_eq!(candidates[0].replacement, expected, "{line}");
+        }
+        for line in ["echo '${PA", "echo ${HOME:-fall", "echo ${HOME}/prefix"] {
+            assert!(
+                replacements(&engine, line, &directory.0).is_empty(),
+                "{line}"
+            );
+        }
+        for line in [
+            "echo ${PA:-fallback}",
+            "echo ${PA[0]}",
+            "echo ${PATH%tail}",
+            "echo ${PA#prefix}",
+            "echo ${PA other}",
+        ] {
+            let (_, candidates) = engine.complete(line, 9, &directory.0);
+            assert!(candidates.is_empty(), "{line}");
+        }
+    }
+
+    #[test]
+    fn bash_literal_path_completion_preserves_quoting_and_source_after_the_cursor() {
+        let directory = Directory::new();
+        let mut engine = engine();
+        engine.set_input_language(InputLanguage::Bash);
+        let filename = "space 🐟's `report.txt";
+        std::fs::write(directory.0.join(filename), "").unwrap();
+        let source = "echo 'space 🐟";
+        let (start, candidates) = engine.complete(source, source.len(), &directory.0);
+        let mut completed = source[..start].to_owned();
+        completed.push_str(&candidates[0].replacement);
+        let translated =
+            crate::bash_to_fish::translate(&fish_widestring::WString::from(completed.as_str()))
+                .unwrap();
+        assert!(translated.to_string().contains("report.txt"));
+        assert_eq!(
+            super::super::interactive_bash::literal_word(candidates[0].replacement.trim_end()),
+            Some(filename.into())
+        );
+        let source = "echo \"$(cargo build)\" tail";
+        let cursor = source.find("build").unwrap() + 2;
+        let (start, candidates) = engine.complete(source, cursor, &directory.0);
+        assert_eq!(candidates[0].replacement, "bu");
+        let mut edited = source.to_owned();
+        edited.replace_range(start..cursor, &candidates[0].replacement);
+        assert_eq!(edited, source);
     }
 
     #[test]

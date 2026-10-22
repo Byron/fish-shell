@@ -5,6 +5,25 @@ use crate::prelude::*;
 use fish_widestring::{bytes2wcstring, wcs2bytes};
 use rash::syntax::{self, Command, CommandKind, List, LogicalOp, Pipeline, RedirectKind};
 
+#[cfg(not(windows))]
+use crate::bash_syntax::literal_backticks;
+
+/// Native input uses the same literal-backtick dialect without depending on
+/// the POSIX reader's tree-sitter, highlighting and session adapters.
+#[cfg(windows)]
+pub(crate) fn literal_backticks(source: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    if source.contains(&b'`') {
+        std::borrow::Cow::Owned(
+            source
+                .iter()
+                .map(|&byte| if byte == b'`' { b'^' } else { byte })
+                .collect(),
+        )
+    } else {
+        std::borrow::Cow::Borrowed(source)
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Error {
     pub message: String,
@@ -36,16 +55,24 @@ pub fn translate(source: &wstr) -> Result<WString, Error> {
         return Err(Error::unsupported("NUL input"));
     }
     let result = bytes2wcstring(&translate_bytes(&wcs2bytes(source), 0)?);
-    let mut errors = Vec::new();
-    if crate::parse_util::detect_parse_errors(&result, Some(&mut errors), false).is_err() {
-        return Err(Error {
-            message: errors.first().map_or_else(
-                || "translated input is not valid Fish syntax".to_owned(),
-                |error| error.text.to_string(),
-            ),
-            incomplete: false,
-        });
+    #[cfg(not(windows))]
+    {
+        let mut errors = Vec::new();
+        if crate::parse_util::detect_parse_errors(&result, Some(&mut errors), false).is_err() {
+            return Err(Error {
+                message: errors.first().map_or_else(
+                    || "translated input is not valid Fish syntax".to_owned(),
+                    |error| error.text.to_string(),
+                ),
+                incomplete: false,
+            });
+        }
     }
+    #[cfg(windows)]
+    crate::native::fish::check_syntax(&result.to_string()).map_err(|error| Error {
+        message: error.message,
+        incomplete: false,
+    })?;
     Ok(result)
 }
 
@@ -54,7 +81,7 @@ fn translate_bytes(source: &[u8], depth: usize) -> Result<Vec<u8>, Error> {
         return Err(Error::unsupported("nesting beyond 128 levels"));
     }
     let mut offset = 0;
-    let input = crate::bash_syntax::literal_backticks(source);
+    let input = literal_backticks(source);
     let mut output = Printer(Vec::new(), depth, source);
     while offset < source.len() {
         let unit = syntax::parse_one(&input[offset..])?;
@@ -270,7 +297,9 @@ impl<'a> Printer<'a> {
     }
 }
 
-fn assignment(raw: &[u8]) -> Result<Option<(&[u8], &[u8])>, Error> {
+type Assignment<'a> = (&'a [u8], &'a [u8]);
+
+fn assignment(raw: &[u8]) -> Result<Option<Assignment<'_>>, Error> {
     let Some(eq) = raw.iter().position(|&byte| byte == b'=') else {
         return Ok(None);
     };
@@ -349,10 +378,7 @@ fn translate_word(raw: &[u8], depth: usize) -> Result<Vec<u8>, Error> {
                         if raw.get(pos + 2) == Some(&b'(') {
                             return Err(Error::unsupported("Bash arithmetic expansion"));
                         }
-                        let end = syntax::expansion_end(
-                            &crate::bash_syntax::literal_backticks(raw),
-                            pos,
-                        )?;
+                        let end = syntax::expansion_end(&literal_backticks(raw), pos)?;
                         output.extend_from_slice(b"$(");
                         output.extend_from_slice(&translate_bytes(
                             &raw[pos + 2..end - 1],
@@ -362,10 +388,7 @@ fn translate_word(raw: &[u8], depth: usize) -> Result<Vec<u8>, Error> {
                         pos = end;
                     }
                     Some(b'{') => {
-                        let end = syntax::expansion_end(
-                            &crate::bash_syntax::literal_backticks(raw),
-                            pos,
-                        )?;
+                        let end = syntax::expansion_end(&literal_backticks(raw), pos)?;
                         variable(&mut output, &raw[pos + 2..end - 1], quote, true)?;
                         pos = end;
                     }
@@ -454,12 +477,13 @@ mod tests {
     use super::*;
 
     fn check(source: &str) -> String {
+        #[cfg(not(windows))]
         crate::tests::prelude::test_init();
         translate(&WString::from(source)).unwrap().to_string()
     }
 
     #[test]
-    #[crate::tests::prelude::serial]
+    #[cfg_attr(not(windows), crate::tests::prelude::serial)]
     fn assignments_and_fish_commands() {
         assert_eq!(
             check("repo='a b'; git -C \"${repo}\" switch main"),
@@ -480,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    #[crate::tests::prelude::serial]
+    #[cfg_attr(not(windows), crate::tests::prelude::serial)]
     fn structural_control_flow() {
         assert_eq!(
             check("if false; then echo no; elif true; then echo yes; else echo no; fi"),
@@ -501,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    #[crate::tests::prelude::serial]
+    #[cfg_attr(not(windows), crate::tests::prelude::serial)]
     fn substitutions_quotes_and_redirects() {
         assert_eq!(
             check("echo $(if true; then echo ü; fi) ${name}suffix \"${name}suffix\""),
@@ -518,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    #[crate::tests::prelude::serial]
+    #[cfg_attr(not(windows), crate::tests::prelude::serial)]
     fn literal_backticks_keep_original_words_and_substitutions() {
         assert_eq!(
             check("echo `raw` \"unmatched `\""),
@@ -536,6 +560,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     #[crate::tests::prelude::serial]
     fn execution_uses_fish_lists_scope_and_functions() {
         use crate::io::{IoBufferfill, IoChain};
@@ -572,8 +597,9 @@ mod tests {
     }
 
     #[test]
-    #[crate::tests::prelude::serial]
+    #[cfg_attr(not(windows), crate::tests::prelude::serial)]
     fn rejects_whole_submission_and_nested_unsupported_syntax() {
+        #[cfg(not(windows))]
         crate::tests::prelude::test_init();
         for source in [
             "echo should_not_run; echo ${x:-fallback}",

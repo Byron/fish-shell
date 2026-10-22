@@ -275,6 +275,84 @@ editing, filename/command/PATH completion, multiline input, Ctrl-C/Ctrl-Z recove
 history reload and private mode, Fish configuration and `fish_prompt` status,
 function completion, and separate Rash history.
 
+## Bash-style interactive input
+
+Native Fish can accept Bash-shaped commands at the prompt while keeping the same
+Fish evaluator, variables, functions, working directory and jobs:
+
+```powershell
+fish.exe --interactive-language=bash -i
+```
+
+The separated spelling `--interactive-language bash` also works. Use
+`--interactive-language=fish` for the default Fish input syntax. These options
+select only interactive input: `-c`, script files, redirected standard input,
+`source`, `eval`, `config.fish` and `fish_prompt` retain Fish syntax. No Bash
+process or Bash startup file is involved. Use `rash` or
+`--script-language=bash` when Bash evaluation is required; those evaluator
+options cannot be combined with `--interactive-language`.
+
+The input dialect supports scalar assignments, ordinary commands and redirects,
+pipelines, logical chains, brace groups, `if`/`elif`/`else`/`fi`, `for` and
+`while`/`until` loops with `do`/`done`, function definitions, and `$()` command
+substitutions:
+
+```bash
+name='native Fish'
+greet() { printf 'hello %s\n' "$1"; }
+for item in "$name" 'another value'; do greet "$item"; done
+result=$(printf 'one two')
+```
+
+Expansion and scope follow Fish rules. Unquoted variables retain Fish lists;
+they do not acquire Bash word splitting or globbing of variable contents.
+Assignments update Fish variables, and functions defined in either input mode
+can be called from the other. Fish commands such as `set`, `string` and `math`
+keep their Fish behavior. Backticks are literal characters; use `$()` for command
+substitution. Bash arrays, arithmetic syntax, `[[ ... ]]`, `case`, subshell
+isolation, here-documents, here-strings and advanced Bash parameter expansions
+are unsupported. The complete submission is translated and checked before any
+of its commands run, so an unsupported later construct cannot execute an earlier
+command as a side effect.
+
+Switch syntax for the next prompt without starting another shell:
+
+```fish
+fish_input_mode bash
+```
+
+Run `fish_input_mode fish` to return. The rest of the current submission keeps
+the syntax it started with. A mode change requires an explicit `fish` or `bash`
+argument and an interactive session; prompts, command substitutions, and
+pipeline/background workers cannot change the mode. To choose Bash input from
+Fish configuration:
+
+```fish
+if status is-interactive
+    fish_input_mode bash
+end
+```
+
+Configuration runs after the command-line selection and can override it.
+Unfinished Bash blocks remain in one editable multiline buffer. Suggestions,
+history recall, completion and bracketed paste use the native Fish editor.
+Syntax coloring and indentation follow the selected input syntax. Literal
+completion registrations are shared; Fish abbreviations are disabled in Bash
+input so an expansion cannot insert commands written for a different syntax.
+History is shared between input modes and saves the original text you entered,
+including multiline source, rather than the translated Fish commands. A recalled
+command is interpreted using the currently selected mode. Autosuggestions are
+checked against that mode's syntax; explicit history search can still recall
+entries written in either syntax.
+
+The isolated Windows integration check exercises configuration, unexported state,
+functions, mode switching, editable multiline input, paste, history and rejection
+before side effects:
+
+```powershell
+python tests/native_bash_input_tmuxx.py .\target\x86_64-pc-windows-msvc\release\fish.exe C:/Apps/Rustty/tmuxx.exe
+```
+
 ## Pipelines and Windows job control
 
 Both native shells run concurrent pipelines, including builtins, functions and
