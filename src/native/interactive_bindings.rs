@@ -5,6 +5,7 @@
 
 use rustyline::{Anchor, At, Cmd, KeyCode, KeyEvent, Modifiers, Movement, Word};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Bindings {
@@ -226,9 +227,7 @@ impl Bindings {
                 let mut result = String::new();
                 for (key, action) in &self.entries {
                     if selected.as_ref().is_none_or(|selected| selected == key) {
-                        result.push_str(&format!(
-                            "bind -- {} {}\n", quote(&key.name()), action.name()
-                        ));
+                        writeln!(result, "bind -- {} {}", quote(&key.name()), action.name()).unwrap();
                     }
                 }
                 Ok((i32::from(selected.is_some() && result.is_empty()), result))
@@ -448,28 +447,28 @@ impl Key {
         if self.shift {
             name.push_str("shift-");
         }
-        name.push_str(&match self.code {
-            Code::Char(' ') => "space".into(),
+        match self.code {
+            Code::Char(' ') => name.push_str("space"),
             Code::Char(character) if self.control && character.is_ascii_alphabetic() => {
-                character.to_ascii_lowercase().to_string()
+                name.push(character.to_ascii_lowercase());
             }
-            Code::Char(character) => character.to_string(),
-            Code::Backspace => "backspace".into(),
-            Code::BackTab => "shift-tab".into(),
-            Code::Delete => "delete".into(),
-            Code::Down => "down".into(),
-            Code::End => "end".into(),
-            Code::Enter => "enter".into(),
-            Code::Escape => "escape".into(),
-            Code::Function(number) => format!("f{number}"),
-            Code::Home => "home".into(),
-            Code::Left => "left".into(),
-            Code::PageDown => "pagedown".into(),
-            Code::PageUp => "pageup".into(),
-            Code::Right => "right".into(),
-            Code::Tab => "tab".into(),
-            Code::Up => "up".into(),
-        });
+            Code::Char(character) => name.push(character),
+            Code::Backspace => name.push_str("backspace"),
+            Code::BackTab => name.push_str("shift-tab"),
+            Code::Delete => name.push_str("delete"),
+            Code::Down => name.push_str("down"),
+            Code::End => name.push_str("end"),
+            Code::Enter => name.push_str("enter"),
+            Code::Escape => name.push_str("escape"),
+            Code::Function(number) => write!(name, "f{number}").unwrap(),
+            Code::Home => name.push_str("home"),
+            Code::Left => name.push_str("left"),
+            Code::PageDown => name.push_str("pagedown"),
+            Code::PageUp => name.push_str("pageup"),
+            Code::Right => name.push_str("right"),
+            Code::Tab => name.push_str("tab"),
+            Code::Up => name.push_str("up"),
+        }
         name
     }
 }

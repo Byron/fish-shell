@@ -17,6 +17,9 @@ Local changes:
 - `src/keymap.rs` and `src/command.rs` provide a Windows-only command to replace
   an abbreviation and submit the corrected input with validation in one key
   press. Fish's native editor computes expansions and continuation indentation.
+- `src/completion.rs`, `src/history.rs` and `src/sqlite_history.rs` spell out
+  inferred return lifetimes so current Rust compilers build without lifetime
+  syntax warnings. The borrowing behavior is unchanged.
 
 The pure decoder tests run through `tests/native_windows_vt.rs` in Fish. Live
 ConPTY coverage uses the native release Fish executable and a private tmuxx

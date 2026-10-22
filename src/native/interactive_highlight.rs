@@ -224,7 +224,7 @@ fn highlight_source(
                 colors.paint(offset + range.start..offset + range.end, Role::Error);
             }
             TokenType::Redirect => {
-                colors.paint(offset + range.start..offset + range.end, Role::Redirection)
+                colors.paint(offset + range.start..offset + range.end, Role::Redirection);
             }
             TokenType::End => colors.paint(offset + range.start..offset + range.end, Role::End),
             _ => colors.paint(offset + range.start..offset + range.end, Role::Operator),

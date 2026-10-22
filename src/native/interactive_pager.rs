@@ -13,8 +13,8 @@ use rustyline::{
 };
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
+use unicode_segmentation::UnicodeSegmentation as _;
+use unicode_width::UnicodeWidthStr as _;
 
 /// Keep display-only menu rows out of suggestion acceptance and the command.
 pub(super) struct EditorHint {
@@ -219,10 +219,10 @@ impl PagerBindings {
             KeyEvent(KeyCode::Down | KeyCode::Right, Modifiers::NONE) => pager.navigate(1),
             KeyEvent(KeyCode::Up | KeyCode::Left, Modifiers::NONE) => pager.navigate(-1),
             KeyEvent(KeyCode::PageDown, Modifiers::NONE) => {
-                pager.navigate(page_size(terminal_size().1) as isize)
+                pager.navigate(page_size(terminal_size().1) as isize);
             }
             KeyEvent(KeyCode::PageUp, Modifiers::NONE) => {
-                pager.navigate(-(page_size(terminal_size().1) as isize))
+                pager.navigate(-(page_size(terminal_size().1) as isize));
             }
             KeyEvent(KeyCode::Home, Modifiers::NONE) => {
                 pager.selected = (!pager.matches.is_empty()).then_some(0);
@@ -232,12 +232,9 @@ impl PagerBindings {
             }
             KeyEvent(KeyCode::Enter, Modifiers::NONE)
             | KeyEvent(KeyCode::Char('J' | 'M'), Modifiers::CTRL) => {
-                let command = pager
-                    .accept()
-                    .map(|(start, replacement)| {
-                        self.queue_completion(line, pos, start, replacement)
-                    })
-                    .unwrap_or(Cmd::Repaint);
+                let command = pager.accept().map_or(Cmd::Repaint, |(start, replacement)| {
+                    self.queue_completion(line, pos, start, replacement)
+                });
                 *state = None;
                 return Some(command);
             }

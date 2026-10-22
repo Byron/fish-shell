@@ -8,6 +8,7 @@ use crate::parse_constants::ParseTreeFlags;
 use fish_widestring::WString;
 use rustyline::EditMode;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::ops::Range;
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -129,11 +130,13 @@ impl Abbreviations {
                 let mut result = String::new();
                 for (name, replacement) in &self.entries {
                     if words.is_empty() || words.contains(name) {
-                        result.push_str(&format!(
-                            "abbr --add -- {} {}\n",
+                        writeln!(
+                            result,
+                            "abbr --add -- {} {}",
                             quote(name),
                             quote(replacement)
-                        ));
+                        )
+                        .unwrap();
                     }
                 }
                 Ok((0, result))

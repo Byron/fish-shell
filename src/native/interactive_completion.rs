@@ -203,28 +203,28 @@ impl CompletionEngine {
         let mut matches = Candidates::new(prefix);
         let mut files = true;
         if !word.redirect {
-            if command.is_none() {
-                if !prefix.contains(['/', '\\']) {
-                    for name in &self.builtins {
-                        matches.add(name, name, "Builtin", true);
+            if let Some(command) = command {
+                if self.fish {
+                    files = self.contextual(command, &word, &mut matches);
+                }
+            } else if !prefix.contains(['/', '\\']) {
+                for name in &self.builtins {
+                    matches.add(name, name, "Builtin", true);
+                }
+                if !word.words.iter().any(|word| word == "builtin") {
+                    for name in &self.commands {
+                        matches.add(name, name, "Command", true);
                     }
-                    if !word.words.iter().any(|word| word == "builtin") {
-                        for name in &self.commands {
+                    // Hide .exe normally, but honor a suffix typed explicitly.
+                    if prefix
+                        .rsplit_once('.')
+                        .is_some_and(|(_, suffix)| "exe".starts_with(&suffix.to_ascii_lowercase()))
+                    {
+                        for name in &self.executables {
                             matches.add(name, name, "Command", true);
-                        }
-                        // Hide .exe normally, but honor a suffix typed explicitly.
-                        if prefix.rsplit_once('.').is_some_and(|(_, suffix)| {
-                            "exe".starts_with(&suffix.to_ascii_lowercase())
-                        }) {
-                            for name in &self.executables {
-                                matches.add(name, name, "Command", true);
-                            }
                         }
                     }
                 }
-            } else if self.fish {
-                let command = command.unwrap();
-                files = self.contextual(command, &word, &mut matches);
             }
         }
 

@@ -161,7 +161,7 @@ mod windows {
     use rustyline::error::ReadlineError;
     use rustyline::highlight::Highlighter;
     use rustyline::hint::{Hinter, HistoryHinter};
-    use rustyline::history::{DefaultHistory, History, SearchDirection};
+    use rustyline::history::{DefaultHistory, History as _, SearchDirection};
     use rustyline::validate::{ValidationContext, ValidationResult, Validator};
     use rustyline::{
         Cmd, CompletionType, ConditionalEventHandler, Config, Context, Event, EventContext,
