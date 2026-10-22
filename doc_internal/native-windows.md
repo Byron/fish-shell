@@ -111,8 +111,15 @@ unsupported options produce diagnostics.
 `argparse` uses the same option parser as POSIX Fish, including short and long
 options, repeated and optional arguments, mutually exclusive options, argument
 counts, and validation commands. It writes local `_flag_*`, `argv_opts`, and
-remaining `argv` values for the caller. The `path` builtin still needs further
-shared implementation work.
+remaining `argv` values for the caller.
+
+Native `path basename`, `path dirname`, `path normalize`, and `path resolve`
+support startup scripts that locate files relative to `status filename`.
+Lexical path operations share their core with POSIX Fish, with Windows drive
+and UNC roots handled separately. `builtin realpath -s` makes an absolute path
+without resolving links in its argument. Filesystem resolution uses Windows
+semantics; Unix permission filters and special device namespaces remain outside
+this native subset.
 
 `test` and `[` share the POSIX expression parser, including parentheses, boolean
 combinations and precise integer comparisons. File and terminal predicates use

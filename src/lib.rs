@@ -14,6 +14,7 @@ pub(crate) mod argparse;
 pub(crate) mod commandline_extent;
 pub(crate) mod function_options;
 pub mod history_core;
+pub(crate) mod path_lexical;
 pub(crate) mod string_regex;
 pub(crate) mod test_expression;
 pub(crate) mod universal_variables;

@@ -7,6 +7,7 @@ pub mod printf;
 pub mod wcstod;
 pub mod wcstoi;
 
+pub use crate::path_lexical::{normalize_path, wbasename, wdirname};
 pub use errors::*;
 pub use fileid::*;
 pub use printf::{eprintf, fprintf, printf, sprintf};
@@ -16,9 +17,8 @@ pub use wcstoi::{
 
 use crate::{fds::BorrowedFdFile, flog, signal::SigChecker};
 use fish_util::perror;
-use fish_wcstringutil::join_strings;
 use fish_widestring::{
-    IntoCharIter, L, WExt as _, WString, bytes2wcstring, fish_reserved_codepoint, osstr2wcstring,
+    IntoCharIter, WExt as _, WString, bytes2wcstring, fish_reserved_codepoint, osstr2wcstring,
     str2bytes_callback, wcs2osstring, wcs2zstring, wstr,
 };
 use nix::unistd::{self, AccessFlags};
@@ -150,54 +150,6 @@ pub fn wrealpath(pathname: &wstr) -> io::Result<WString> {
     Ok(bytes2wcstring(&real_path))
 }
 
-/// Given an input path, "normalize" it:
-/// 1. Collapse multiple /s into a single /, except maybe at the beginning.
-/// 2. .. goes up a level.
-/// 3. Remove /./ in the middle.
-pub fn normalize_path(path: &wstr, allow_leading_double_slashes: bool) -> WString {
-    // Count the leading slashes.
-    let sep = '/';
-    let mut leading_slashes: usize = 0;
-    for c in path.chars() {
-        if c != sep {
-            break;
-        }
-        leading_slashes += 1;
-    }
-
-    let comps: Vec<&wstr> = path.split(sep).collect();
-    let mut new_comps = Vec::new();
-    for comp in comps {
-        if comp.is_empty() || comp == "." {
-            continue;
-        } else if comp != ".." {
-            new_comps.push(comp);
-        } else if !new_comps.is_empty() && new_comps.last().unwrap() != ".." {
-            // '..' with a real path component, drop that path component.
-            new_comps.pop();
-        } else if leading_slashes == 0 {
-            // We underflowed the .. and are a relative (not absolute) path.
-            new_comps.push(L!(".."));
-        }
-    }
-    let mut result = join_strings(&new_comps, sep);
-    // If we don't allow leading double slashes, collapse them to 1 if there are any.
-    let mut numslashes = if leading_slashes > 0 { 1 } else { 0 };
-    // If we do, prepend one or two leading slashes.
-    // Yes, three+ slashes are collapsed to one. (!)
-    if allow_leading_double_slashes && leading_slashes == 2 {
-        numslashes = 2;
-    }
-    for _ in 0..numslashes {
-        result.insert(0, sep);
-    }
-    // Ensure ./ normalizes to . and not empty.
-    if result.is_empty() {
-        result.push('.');
-    }
-    result
-}
-
 /// Given an input path `path` and a working directory `wd`, do a "normalizing join" in a way
 /// appropriate for cd. That is, return effectively wd + path while resolving leading ../s from
 /// path. The intent here is to allow 'cd' out of a directory which may no longer exist, without
@@ -252,74 +204,6 @@ pub fn path_normalize_for_cd(wd: &wstr, path: &wstr) -> WString {
         result.push(SEP);
     }
     result
-}
-
-/// Wide character version of dirname().
-pub fn wdirname(mut path: &wstr) -> &wstr {
-    // Do not use system-provided dirname (#7837).
-    // On Mac it's not thread safe, and will error for paths exceeding PATH_MAX.
-    // This follows OpenGroup dirname recipe.
-
-    // 1: Double-slash stays.
-    if path == "//" {
-        return path;
-    }
-
-    // 2: All slashes => return slash.
-    if !path.is_empty() && path.chars().all(|c| c == '/') {
-        return L!("/");
-    }
-
-    // 3: Trim trailing slashes.
-    while path.as_char_slice().last() == Some(&'/') {
-        path = path.slice_to(path.char_count() - 1);
-    }
-
-    // 4: No slashes left => return period.
-    let Some(last_slash) = path.chars().rposition(|c| c == '/') else {
-        return L!(".");
-    };
-
-    // 5: Remove trailing non-slashes.
-    path = path.slice_to(last_slash + 1);
-
-    // 6: Skip as permitted.
-    // 7: Remove trailing slashes again.
-    while path.as_char_slice().last() == Some(&'/') {
-        path = path.slice_to(path.char_count() - 1);
-    }
-
-    // 8: Empty => return slash.
-    if path.is_empty() {
-        return L!("/");
-    }
-    path
-}
-
-/// Wide character version of basename().
-pub fn wbasename(mut path: &wstr) -> &wstr {
-    // This follows OpenGroup basename recipe.
-    // 1: empty => allowed to return ".". This is what system impls do.
-    if path.is_empty() {
-        return L!(".");
-    }
-
-    // 2: Skip as permitted.
-    // 3: All slashes => return slash.
-    if !path.is_empty() && path.chars().all(|c| c == '/') {
-        return L!("/");
-    }
-
-    // 4: Remove trailing slashes.
-    while path.as_char_slice().last() == Some(&'/') {
-        path = path.slice_to(path.char_count() - 1);
-    }
-
-    // 5: Remove up to and including last slash.
-    if let Some(last_slash) = path.chars().rposition(|c| c == '/') {
-        path = path.slice_from(last_slash + 1);
-    }
-    path
 }
 
 /// Write a wide string to a file descriptor. This avoids doing any additional allocation.
@@ -449,10 +333,8 @@ pub fn wstr_offset_in(cursor: &wstr, base: &wstr) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        normalize_path, unescape_bytes_and_write_to_fd, wbasename, wdirname, wstr_offset_in,
-    };
-    use crate::{prelude::*, tests::prelude::*};
+    use super::{unescape_bytes_and_write_to_fd, wstr_offset_in};
+    use crate::tests::prelude::*;
     use fish_widestring::bytes2wcstring;
     use rand::RngExt as _;
     use std::{
@@ -574,85 +456,6 @@ mod tests {
                 "Normalized path for ({wd}, {path})"
             );
         }
-    }
-
-    #[test]
-    fn test_normalize_path() {
-        fn norm_path(path: &wstr) -> WString {
-            normalize_path(path, true)
-        }
-        assert_eq!(norm_path(L!("")), ".");
-        assert_eq!(norm_path(L!("..")), "..");
-        assert_eq!(norm_path(L!("./")), ".");
-        assert_eq!(norm_path(L!("./.")), ".");
-        assert_eq!(norm_path(L!("/")), "/");
-        assert_eq!(norm_path(L!("//")), "//");
-        assert_eq!(norm_path(L!("///")), "/");
-        assert_eq!(norm_path(L!("////")), "/");
-        assert_eq!(norm_path(L!("/.///")), "/");
-        assert_eq!(norm_path(L!(".//")), ".");
-        assert_eq!(norm_path(L!("/.//../")), "/");
-        assert_eq!(norm_path(L!("////abc")), "/abc");
-        assert_eq!(norm_path(L!("/abc")), "/abc");
-        assert_eq!(norm_path(L!("/abc/")), "/abc");
-        assert_eq!(norm_path(L!("/abc/..def/")), "/abc/..def");
-        assert_eq!(norm_path(L!("//abc/../def/")), "//def");
-        assert_eq!(norm_path(L!("abc/../abc/../abc/../abc")), "abc");
-        assert_eq!(norm_path(L!("../../")), "../..");
-        assert_eq!(norm_path(L!("foo/./bar")), "foo/bar");
-        assert_eq!(norm_path(L!("foo/../")), ".");
-        assert_eq!(norm_path(L!("foo/../foo")), "foo");
-        assert_eq!(norm_path(L!("foo/../foo/")), "foo");
-        assert_eq!(norm_path(L!("foo/././bar/.././baz")), "foo/baz");
-    }
-
-    #[test]
-    fn test_wdirname_wbasename() {
-        // path, dir, base
-        struct Test(&'static wstr, &'static wstr, &'static wstr);
-        let testcases: &[Test] = &[
-            Test(L!(""), L!("."), L!(".")),
-            Test(L!("foo//"), L!("."), L!("foo")),
-            Test(L!("foo//////"), L!("."), L!("foo")),
-            Test(L!("/////foo"), L!("/"), L!("foo")),
-            Test(L!("//foo/////bar"), L!("//foo"), L!("bar")),
-            Test(L!("foo/////bar"), L!("foo"), L!("bar")),
-            // Examples given in XPG4.2.
-            Test(L!("/usr/lib"), L!("/usr"), L!("lib")),
-            Test(L!("usr"), L!("."), L!("usr")),
-            Test(L!("/"), L!("/"), L!("/")),
-            Test(L!("."), L!("."), L!(".")),
-            Test(L!(".."), L!("."), L!("..")),
-        ];
-
-        for tc in testcases {
-            let Test(path, tc_dir, tc_base) = *tc;
-            let dir = wdirname(path);
-            assert_eq!(
-                dir, tc_dir,
-                "\npath: {:?}, dir: {:?}, tc.dir: {:?}",
-                path, dir, tc_dir
-            );
-
-            let base = wbasename(path);
-            assert_eq!(
-                base, tc_base,
-                "\npath: {:?}, base: {:?}, tc.base: {:?}",
-                path, base, tc_base
-            );
-        }
-
-        // Ensure strings which greatly exceed PATH_MAX still work (#7837).
-        const PATH_MAX: usize = libc::PATH_MAX as usize;
-        let mut longpath = WString::new();
-        longpath.reserve(PATH_MAX * 2 + 10);
-        while longpath.char_count() <= PATH_MAX * 2 {
-            longpath.push_str("/overlong");
-        }
-        let last_slash = longpath.chars().rposition(|c| c == '/').unwrap();
-        let longpath_dir = &longpath[..last_slash];
-        assert_eq!(wdirname(&longpath), longpath_dir);
-        assert_eq!(wbasename(&longpath), L!("overlong"));
     }
 
     #[test]

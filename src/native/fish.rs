@@ -24,6 +24,8 @@ mod expand;
 mod functions;
 #[path = "fish_history.rs"]
 mod history_builtin;
+#[path = "fish_path.rs"]
+mod path_builtin;
 #[path = "fish_source.rs"]
 mod source_builtin;
 #[path = "fish_test.rs"]

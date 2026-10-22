@@ -35,6 +35,8 @@ pub(super) fn is_builtin(name: &str) -> bool {
             | "eval"
             | "printf"
             | "math"
+            | "path"
+            | "realpath"
             | "string"
             | "contains"
             | "argparse"
@@ -86,6 +88,7 @@ impl Session {
             return Ok(());
         }
         match name {
+            "path" | "realpath" => self.path_builtin(name, args, host, output)?,
             "fish_input_mode" => {
                 if args.len() == 1 && matches!(args[0].as_str(), "-h" | "--help") {
                     self.write(
