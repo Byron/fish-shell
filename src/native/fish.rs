@@ -264,6 +264,18 @@ impl Session {
         )
     }
 
+    pub fn completion_environment(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+        self.exports()
+            .into_iter()
+            .filter_map(|(name, value)| {
+                Some((
+                    rash::os::from_bytes(&name).ok()?,
+                    rash::os::from_bytes(&value).ok()?,
+                ))
+            })
+            .collect()
+    }
+
     fn variable_names(&self) -> Vec<String> {
         let mut names: std::collections::BTreeSet<String> =
             self.variables.keys().cloned().collect();

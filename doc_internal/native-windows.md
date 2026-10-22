@@ -210,6 +210,21 @@ prefixes, then substring/subsequence matches. Executable names normally omit
 Directories remain open for further completion, while finished arguments gain
 a separating space. Completion never executes the text being edited.
 
+Git completion queries local branches, remote branches, tags and `HEAD` for
+revision arguments to `reset`, `checkout`, `switch`, `merge`, `rebase`, `diff`,
+`log`, `show`, and `restore --source`. For example, `git reset fea<Tab>` offers
+matching branches as well as paths; `git reset --hard fea<Tab>` offers refs only,
+and `git reset -- <Tab>` offers paths only. New branch names and message/strategy
+arguments do not receive revision suggestions. Literal `-C`, `--git-dir`,
+`--work-tree`, `--namespace` and `--bare` routing is supported, including packed
+refs and linked worktrees. Fixed read-only Git queries use the session's exported
+environment and `git.exe` from its `PATH`, with a short cache, a 500 ms deadline
+and bounded output. Missing Git or an unavailable repository yields no refs.
+Typed configuration overrides and routing requiring shell expansion are not
+evaluated. This native provider does not load the full POSIX `git.fish` script;
+Git aliases, all option combinations, revision expressions and tracked-file
+filtering remain outside its current scope.
+
 Register literal options and choices in `config.fish` or at the prompt:
 
 ```fish

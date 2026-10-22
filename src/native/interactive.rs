@@ -86,6 +86,11 @@ impl Editor {
         let _ = (commands, path, variables);
     }
 
+    #[cfg(windows)]
+    pub fn set_completion_environment(&mut self, environment: Vec<(OsString, OsString)>) {
+        self.inner.set_completion_environment(environment);
+    }
+
     pub fn read_line(&mut self, prompt: &str) -> Result<ReadEvent> {
         #[cfg(windows)]
         return self.inner.read_line(prompt);
@@ -399,6 +404,19 @@ mod windows {
                 .lock()
                 .unwrap()
                 .set_context(commands, path, variables);
+        }
+
+        pub(super) fn set_completion_environment(
+            &mut self,
+            environment: Vec<(OsString, OsString)>,
+        ) {
+            self.editor
+                .helper_mut()
+                .unwrap()
+                .engine
+                .lock()
+                .unwrap()
+                .set_environment(environment);
         }
 
         pub(super) fn read_line(&mut self, prompt: &str) -> Result<ReadEvent> {

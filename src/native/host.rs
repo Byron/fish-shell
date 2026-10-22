@@ -17,6 +17,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod jobs;
 #[path = "process/mod.rs"]
 mod process;
+#[cfg(windows)]
+pub(super) use process::Group as CompletionProcessGroup;
 
 pub struct NativeHost {
     jobs: BTreeMap<u32, jobs::Job>,

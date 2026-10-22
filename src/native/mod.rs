@@ -15,6 +15,10 @@ mod interactive_colors;
 #[cfg(windows)]
 mod interactive_completion;
 #[cfg(windows)]
+mod interactive_git;
+#[cfg(windows)]
+mod interactive_git_context;
+#[cfg(windows)]
 mod interactive_highlight;
 #[cfg(windows)]
 mod interactive_keys;
@@ -508,6 +512,7 @@ fn execute(options: Options) -> Result<i32> {
                 editor.set_completion_context(commands, path, variables);
                 #[cfg(windows)]
                 if let Engine::Fish(session) = &engine {
+                    editor.set_completion_environment(session.completion_environment());
                     editor.set_input_language(session.input_language);
                     editor.set_registrations(session.completions.clone());
                     editor.set_variables(&session.editor_variables());

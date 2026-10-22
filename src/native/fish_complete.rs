@@ -73,6 +73,8 @@ impl Session {
             let mut engine = CompletionEngine::new("fish");
             let (commands, path, variables) = self.completion_context();
             engine.set_context(commands, path, variables);
+            engine.set_environment(self.completion_environment());
+            engine.set_input_language(self.input_language);
             engine.set_registrations(self.completions.clone());
             for candidate in engine
                 .complete(&line, line.len(), &std::env::current_dir()?)

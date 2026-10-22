@@ -1,10 +1,12 @@
-//! Native, side-effect-free command-line completion.
+//! Native command-line completion without evaluating shell source.
 //!
 //! Keep terminal handling out of this module. Completion consumes a snapshot of
-//! the evaluator's functions, variables and declarative registrations; it never
-//! evaluates the command line or launches a program to produce suggestions.
+//! the evaluator's functions, variables and declarative registrations. Git refs
+//! come from bounded, fixed read-only queries; typed source is never executed.
 
 use super::InputLanguage;
+use super::interactive_git::{GitRef, GitRefs, RefKind as GitRefKind};
+use super::interactive_git_context::{self as git_context, RefFilter, Target};
 use rustyline::completion::Pair;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
@@ -32,6 +34,7 @@ pub(super) struct CompletionEngine {
     executables: BTreeSet<String>,
     variables: Vec<String>,
     registrations: Vec<CompletionSpec>,
+    git: GitRefs,
 }
 
 impl CompletionEngine {
@@ -109,6 +112,7 @@ impl CompletionEngine {
             executables: BTreeSet::new(),
             variables: Vec::new(),
             registrations: Vec::new(),
+            git: GitRefs::new(),
         };
         engine.set_context(
             Vec::new(),
@@ -154,6 +158,10 @@ impl CompletionEngine {
 
     pub(super) fn set_registrations(&mut self, registrations: Vec<CompletionSpec>) {
         self.registrations = registrations;
+    }
+
+    pub(super) fn set_environment(&mut self, environment: Vec<(OsString, OsString)>) {
+        self.git.set_environment(environment);
     }
 
     pub(super) fn set_input_language(&mut self, language: InputLanguage) {
@@ -239,7 +247,7 @@ impl CompletionEngine {
         if !word.redirect {
             if let Some(command) = command {
                 if self.fish {
-                    files = self.contextual(command, &word, &mut matches);
+                    files = self.contextual(command, &word, cwd, &mut matches);
                 }
             } else if !prefix.contains(['/', '\\']) {
                 for name in &self.builtins {
@@ -288,14 +296,28 @@ impl CompletionEngine {
         (word.start, result)
     }
 
-    fn contextual(&self, command: &str, word: &Word, matches: &mut Candidates) -> bool {
+    fn contextual(&self, command: &str, word: &Word, cwd: &Path, matches: &mut Candidates) -> bool {
         let command = command_name(command.rsplit(['/', '\\']).next().unwrap_or(command));
         let args = word.arguments();
         let positional = args.iter().filter(|arg| !arg.starts_with('-')).count();
         let options = word.value.starts_with('-') && !args.iter().any(|arg| arg == "--");
         let mut files = true;
 
-        if options {
+        if command == "git" {
+            if let Some(context) = git_context::context(args, &word.value) {
+                files = context.files;
+                match context.target {
+                    Target::Subcommand => add_choices(matches, subcommand_choices("git").unwrap()),
+                    Target::Options(choices) => add_choices(matches, choices),
+                    Target::Refs(filter) if word.literal_command() => {
+                        for reference in self.git.query(cwd, &context.globals) {
+                            add_git_ref(matches, reference, filter, &context.prefix);
+                        }
+                    }
+                    Target::Refs(_) | Target::Files | Target::None => {}
+                }
+            }
+        } else if options {
             if let Some(entries) = option_choices(command) {
                 add_choices(matches, entries);
             }
@@ -451,6 +473,48 @@ fn fish_only_keyword(name: &str) -> bool {
         name,
         "begin" | "end" | "switch" | "case" | "and" | "or" | "not"
     )
+}
+
+fn add_git_ref(matches: &mut Candidates, reference: GitRef, filter: RefFilter, prefix: &str) {
+    if filter == RefFilter::LocalBranches && reference.kind != GitRefKind::LocalBranch
+        || filter == RefFilter::Branches
+            && !matches!(
+                reference.kind,
+                GitRefKind::LocalBranch | GitRefKind::RemoteBranch
+            )
+    {
+        return;
+    }
+    let (namespace, description) = match reference.kind {
+        GitRefKind::LocalBranch => ("refs/heads/", "Local branch"),
+        GitRefKind::RemoteBranch => ("refs/remotes/", "Remote branch"),
+        GitRefKind::Tag => ("refs/tags/", "Tag"),
+        GitRefKind::Head => ("", "HEAD"),
+    };
+    let short = reference
+        .name
+        .strip_prefix(namespace)
+        .unwrap_or(&reference.name);
+    // `switch` expects a branch name; a same-named tag is irrelevant there.
+    let name = if filter == RefFilter::LocalBranches {
+        short
+    } else {
+        &reference.name
+    };
+    let value = format!("{prefix}{name}");
+    // Disambiguating a branch/tag collision must not make a matching file
+    // outrank both refs merely because their replacements need qualification.
+    let alias = format!("{prefix}{short}");
+    if let Some(rank) = [
+        match_rank(&value, &matches.prefix),
+        match_rank(&alias, &matches.prefix),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    {
+        matches.add_ranked(&value, &value, description, true, rank);
+    }
 }
 
 fn preserve_suffix(candidates: &mut Vec<Pair>, suffix: &str) {
@@ -641,11 +705,20 @@ struct Word {
     braced_variable: bool,
     bash: bool,
     expansion: bool,
+    /// A preceding argument needs shell expansion, so repository routing is unknown.
+    expanded_words: bool,
     redirect: bool,
     comment: bool,
 }
 
 impl Word {
+    fn literal_command(&self) -> bool {
+        !self.expanded_words
+            && self
+                .command_index()
+                .is_some_and(|index| !self.words[..index].iter().any(|word| word.contains('=')))
+    }
+
     fn command_index(&self) -> Option<usize> {
         self.words.iter().position(|word| {
             !matches!(
@@ -775,7 +848,8 @@ fn completion_word(line: &str, pos: usize, fish: bool) -> Word {
             };
             active = false;
         } else if word.quote.is_none() && matches!(character, '<' | '>') {
-            if active && !word.value.chars().all(|c| c.is_ascii_digit()) {
+            if active && (word.expansion || !word.value.chars().all(|c| c.is_ascii_digit())) {
+                word.expanded_words |= word.expansion;
                 word.words.push(std::mem::take(&mut word.value));
             }
             word.value.clear();
@@ -789,6 +863,7 @@ fn completion_word(line: &str, pos: usize, fish: bool) -> Word {
                 if word.redirect {
                     word.redirect = false;
                 } else {
+                    word.expanded_words |= word.expansion;
                     word.words.push(std::mem::take(&mut word.value));
                 }
             }
@@ -799,6 +874,12 @@ fn completion_word(line: &str, pos: usize, fish: bool) -> Word {
             active = false;
         } else {
             active = true;
+            if word.quote.is_none()
+                && (matches!(character, '*' | '?' | '[' | '{')
+                    || character == '~' && word.value.is_empty())
+            {
+                word.expansion = true;
+            }
             if character == '$' && word.quote != Some('\'') {
                 word.variable = Some(at + 1);
                 word.braced_variable = false;
@@ -887,6 +968,7 @@ fn subcommand_choices(command: &str) -> Option<Choices> {
             ("switch", "Switch branches"),
             ("checkout", "Switch branches or restore files"),
             ("restore", "Restore files"),
+            ("reset", "Reset the index or current branch"),
             ("fetch", "Download remote history"),
             ("pull", "Fetch and integrate"),
             ("push", "Update remote refs"),
@@ -1317,6 +1399,79 @@ mod tests {
         assert_eq!(word.command(), Some("cargo"));
         assert!(word.arguments().is_empty());
         assert_eq!(word.value, "bu");
+    }
+
+    #[test]
+    fn git_routing_requires_literal_preceding_arguments() {
+        for (line, fish) in [
+            ("git -C (pwd) reset fea", true),
+            ("git -C \"$REPO\" reset fea", true),
+            ("git -C $(pwd) reset fea", false),
+            ("git -C ~/project reset fea", true),
+            ("git -C project* reset fea", false),
+            ("GIT_DIR=elsewhere git reset fea", false),
+            ("git -C (pwd)>log reset fea", true),
+        ] {
+            assert!(
+                !completion_word(line, line.len(), fish).literal_command(),
+                "{line}"
+            );
+        }
+        for (line, fish) in [
+            ("git -C 'literal repo' reset fea", true),
+            ("git -C 'literal$repo' reset fea", false),
+            ("git -C \"literal repo\" reset fea", true),
+            ("echo (git reset fea", true),
+            ("echo $(git reset fea", false),
+            ("echo $variable; git reset fea", true),
+        ] {
+            assert!(
+                completion_word(line, line.len(), fish).literal_command(),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn colliding_git_names_still_match_alongside_paths_and_switch_uses_branch_names() {
+        let reference = |kind, name: &str| GitRef {
+            kind,
+            name: name.into(),
+        };
+        let mut candidates = Candidates::new("top");
+        candidates.add("topic-file", "topic-file", "", true);
+        add_git_ref(
+            &mut candidates,
+            reference(GitRefKind::LocalBranch, "refs/heads/topic"),
+            RefFilter::All,
+            "",
+        );
+        add_git_ref(
+            &mut candidates,
+            reference(GitRefKind::Tag, "refs/tags/topic"),
+            RefFilter::All,
+            "",
+        );
+        assert_eq!(candidates.finish(false, false).len(), 3);
+        let mut candidates = Candidates::new("top");
+        add_git_ref(
+            &mut candidates,
+            reference(GitRefKind::LocalBranch, "refs/heads/topic"),
+            RefFilter::LocalBranches,
+            "",
+        );
+        assert_eq!(candidates.finish(false, false)[0].replacement, "topic");
+        let mut candidates = Candidates::new("--onto=top");
+        add_git_ref(
+            &mut candidates,
+            reference(GitRefKind::Tag, "refs/tags/topic"),
+            RefFilter::All,
+            "--onto=",
+        );
+        assert_eq!(
+            candidates.finish(false, false)[0].replacement,
+            "--onto=refs/tags/topic"
+        );
     }
 
     #[test]
