@@ -69,8 +69,8 @@ string parsing is needed.
 
 ## Native command and script execution
 
-Native `fish` uses the existing Fish AST and tokenizer with an initial native
-evaluator. Ordinary `fish -c`, script files and the prompt evaluate Fish syntax.
+Native `fish` uses the existing Fish AST and tokenizer with a native evaluator.
+Ordinary `fish -c`, script files and the prompt evaluate Fish syntax.
 `fish -n` checks Fish syntax without executing it. Unsupported execution features
 produce diagnostics.
 
@@ -453,34 +453,22 @@ prefixes, then substring/subsequence matches. Executable names normally omit
 Directories remain open for further completion, while finished arguments gain
 a separating space. Completion never executes the text being edited.
 
-Git completion queries local branches, remote branches, tags and `HEAD` for
-revision arguments to `reset`, `checkout`, `switch`, `merge`, `rebase`, `diff`,
-`log`, `show`, and `restore --source`. For example, `git reset fea<Tab>` offers
-matching branches as well as paths; `git reset --hard fea<Tab>` offers refs only,
-and `git reset -- <Tab>` offers paths only. New branch names and message/strategy
-arguments do not receive revision suggestions. Literal `-C`, `--git-dir`,
-`--work-tree`, `--namespace` and `--bare` routing is supported, including packed
-refs and linked worktrees. Repository discovery and reference reads use the
-`gix` library, so completion works without `git.exe` on `PATH`. Queries use the
-session's exported repository-routing environment, with a short cache and
-bounded output. A 500 ms budget is checked between library calls; a blocked
-filesystem read cannot be interrupted. Unavailable repositories and unsupported
-reference storage (including reftable) yield no refs. Nonempty `GIT_COMMON_DIR`
-or `GIT_CONFIG_PARAMETERS`, and nonzero `GIT_CONFIG_COUNT`, currently disable
-repository queries. Typed configuration overrides and routing requiring shell
-expansion are not evaluated. This native provider does not load the full POSIX
-`git.fish` script;
-Git aliases, all option combinations, revision expressions and tracked-file
-filtering remain outside its current scope.
+Native Fish autoloads the bundled `git.fish` and `cargo.fish` scripts, including
+conditions, aliases, repository queries, and project-specific generators. Git
+branch and option completion uses the same helpers as POSIX Fish. Cargo package,
+feature and target suggestions query the installed Cargo and Python tools.
+Saved aliases inherit these completions on their first query. An editor provider
+with a smaller static option and Git-reference set remains available when no
+script registrations apply; it does not limit the normally autoloaded scripts.
 
 The default-enabled `gix` Cargo feature enables the underlying `git` feature,
 which controls repository integration on both Windows and POSIX and the Git
 revision/dirty suffix in Cargo build version metadata. Both evaluators expose the
 same internal `__fish_git` query builtin, sharing status, history, configuration,
-repository routing and regex handling. POSIX completion and prompt scripts use
-this builtin; the native editor retains the bounded reference provider described
-above. The shared shell helper uses an installed Git executable for queries without
-a suitable API: installed help, tool and configuration
+repository routing and regex handling. Completion and prompt scripts on both
+backends use this builtin through `__fish_git_query`. The shared shell helper
+uses an installed Git executable for queries without a suitable API: installed
+help, tool and configuration
 catalogs, and queries with nonempty `GIT_COMMON_DIR`, `GIT_CONFIG_PARAMETERS`,
 `GIT_OBJECT_DIRECTORY` or `GIT_ALTERNATE_OBJECT_DIRECTORIES` overrides. Errors
 from gix and unsupported repository storage do not trigger a retry. Status uses
@@ -489,8 +477,9 @@ discover its Windows shell environment when a filter needs one.
 Build with `--no-default-features` to disable gix integration, adding
 `--features embed-manpages,localize-messages` to retain the other defaults if
 desired. Such builds report the package version and use Git for queries through
-the shared helper when it is installed. Native Windows builds retain static Git command, option and
-ordinary file completion but omit repository suggestions when gix is disabled.
+the shared helper when it is installed. Without either provider, static options
+and ordinary file completion remain available, but repository queries cannot
+supply suggestions.
 CMake builds enable the same gix integration by default; `-DWITH_GIT=OFF`
 selects the Git executable for queries through the shared helper.
 
@@ -498,8 +487,9 @@ Native configuration lookup uses the session's exported environment, matching
 Windows variable names without case sensitivity. `HOME` (or `USERPROFILE`) selects
 user Git configuration; `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` select explicit
 files. Native queries do not discover an installed Git distribution to locate its
-system configuration. Shared query support does not supply the remaining builtin
-and event features required by every POSIX prompt or completion script.
+system configuration. Gix follows `main`, with the tested revision retained in
+`Cargo.lock`. Concrete library limitations and upstream follow-ups are recorded
+in [gix-follow-ups.md](gix-follow-ups.md).
 
 Register options and choices in `config.fish` or at the prompt:
 
@@ -517,7 +507,7 @@ requirements (`-r`, `-x`), file policies (`-f`, `-F`) and source ordering (`-k`)
 Repeated aliases, attached arguments, grouped short options and abbreviated long
 options work as on POSIX Fish. File policies apply to the matching argument;
 `--keep-order` preserves choices within each registration, newest groups first.
-Explicit registrations replace the editor's built-in Git/Cargo suggestions.
+Script registrations replace the editor's built-in Git/Cargo suggestions.
 `complete` lists registrations as reusable Fish source, optionally filtered by
 command and colored with `--color`. `complete -C 'mytool --m'` prints choices with
 tab-separated descriptions; `--escape` produces shell-escaped choices.
@@ -555,7 +545,23 @@ commands; explicit whole-command erasure can suppress automatic loading.
 Pipeline workers retain loader state. Script execution uses the same protected
 input and status handling as completion generators. Dynamic suggestions still
 depend on the evaluator features and programs required by each script.
-Path completion through `$VARIABLE/` remains separate work.
+
+The isolated corpus audit loads every bundled completion script with an empty
+PATH, private configuration/data/cache directories, and packaged utilities:
+
+```powershell
+python tests/native_completion_audit.py target/debug/fish.exe target/native-completion-audit.json
+```
+
+The current 1,099-script corpus has 1,023 scripts registering completions, 59
+loading successfully without registrations, and 17 returning nonzero when their
+target programs are absent. Some successful scripts also report missing optional
+programs. These counts measure source loading, not every dynamic completion
+query. Scripts that ask Docker, Pip, Ruff, or another application to generate
+completions still need that application. POSIX service databases, FIFOs, process
+exit handlers and reader-editing commands remain platform or evaluator limits.
+Installed-tool checks separately exercise Git branches/options, Cargo
+packages/features/targets, Rustup lists, and saved alias wrappers.
 
 Completion evaluation receives empty standard input by default. During Tab,
 Ctrl-C interrupts running generators before returning to the edited line.
@@ -919,7 +925,7 @@ or running tmuxx settings. A terminal still configured to use
    behavior checks against the POSIX implementation.
 2. Extend descriptor handling, traps, pipeline state sharing and Windows
    foreground/background input behavior beyond the current owned-job support.
-3. Extend the native editor and completion toward full Fish behavior, including
-   bundled completion-script coverage and reader customization.
+3. Extend native reader customization and dynamic completion compatibility for
+   programs and POSIX services not covered by the current checks.
 4. Add native installation and packaging, and qualify additional Windows targets
    and terminal environments.
