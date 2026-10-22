@@ -1,5 +1,12 @@
-The POSIX integration uses gix 0.89.0 from main at
+The shared integration follows gitoxide's `main` branch. `Cargo.lock` keeps builds
+reproducible; use `cargo update -p gix` to advance it, then run the Git query and
+native completion checks before committing the new lockfile. Both the default
+`gix` feature and its underlying `git` feature select this same dependency; the
+feature name does not update the locked revision automatically.
+
+The current lockfile uses gix 0.89.0 at
 [`b8ef9ea94ba69302981c56e16d52b696a00d4c98`](https://github.com/GitoxideLabs/gitoxide/commit/b8ef9ea94ba69302981c56e16d52b696a00d4c98).
+It requires Rust 1.88, reflected in the workspace minimum.
 These upstream changes would simplify the integration and improve correctness.
 The POSIX integration uses gix wherever its APIs cover the query. Errors returned
 by gix, including unsupported repository storage, never trigger a Git CLI retry.
