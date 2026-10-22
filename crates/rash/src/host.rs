@@ -132,6 +132,12 @@ pub trait Host {
         interrupt_for_traps: bool,
     ) -> Result<ReadResult>;
 
+    /// Inspect a resolved descriptor, including redirections, without I/O.
+    /// Hosts without terminal streams may retain the default.
+    fn fd_is_terminal(&mut self, _fd: i32, _redirects: &[Redirection]) -> Result<bool> {
+        Ok(false)
+    }
+
     fn cancelled(&self) -> bool;
 
     fn jobs(&self) -> Vec<Vec<u8>>;

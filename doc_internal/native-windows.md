@@ -114,6 +114,13 @@ counts, and validation commands. It writes local `_flag_*`, `argv_opts`, and
 remaining `argv` values for the caller. The `path` builtin still needs further
 shared implementation work.
 
+`source FILE [ARGS...]`, `source - [ARGS...]`, and piped `source` load Fish code
+into the current session. Source-local variables and `argv` disappear afterward;
+functions and global changes remain. Input is read and parsed before evaluation.
+`status filename` reports the current script, sourced file, or function's
+definition file, including after autoloading and pipeline execution. It reports
+`-` for sourced stdin and `Standard input` for commands entered without a file.
+
 Function declarations use the same option parser as POSIX Fish. Native functions
 support `--description`/`-d`, `--wraps`/`-w`, `--argument-names`/`-a`,
 `--inherit-variable`/`-V`, and `--no-scope-shadowing`/`-S`. Captured values are

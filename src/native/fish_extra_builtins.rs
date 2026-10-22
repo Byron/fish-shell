@@ -183,6 +183,14 @@ impl Session {
                         output,
                     )?,
                     "current-command" => self.write(b"fish\n", host, output)?,
+                    "filename" | "current-filename" | "--filename" | "--current-filename"
+                    | "-f" => {
+                        if args.len() != 1 {
+                            return Err(Error::new("status filename: expected no arguments"));
+                        }
+                        let filename = self.source_origin.as_deref().unwrap_or("Standard input");
+                        self.write(format!("{filename}\n").as_bytes(), host, output)?;
+                    }
                     "" => self.write(b"This is native Windows Fish.\n", host, output)?,
                     _ => return Err(unsupported("this status query")),
                 }

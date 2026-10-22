@@ -382,6 +382,13 @@ impl Host for CompletionHost<'_> {
         )
     }
 
+    fn fd_is_terminal(&mut self, fd: i32, redirects: &[Redirection]) -> Result<bool> {
+        self.host.fd_is_terminal(
+            fd,
+            &self.io.redirects(redirects, true, true, self.buffer_output),
+        )
+    }
+
     fn cancelled(&self) -> bool {
         self.host.cancelled()
     }
@@ -408,6 +415,7 @@ mod tests {
         let mut io = CompletionIo::new().unwrap();
         {
             let mut host = CompletionHost::new(&mut native, &io);
+            assert!(!host.fd_is_terminal(0, &[]).unwrap());
             let ReadResult::Line(input) = host.read_line(&[], false).unwrap() else {
                 panic!("null input cannot be interrupted");
             };

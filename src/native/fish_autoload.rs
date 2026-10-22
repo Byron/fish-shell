@@ -132,31 +132,25 @@ impl Session {
             self.flow = Flow::Normal;
             self.functions.remove(name);
             self.autoloaded_functions.insert(name.to_owned());
-            self.scopes.push(BTreeMap::from([(
-                "argv".into(),
-                Variable {
-                    values: Vec::new(),
-                    exported: false,
-                    pathvar: false,
-                },
-            )]));
-            self.source_depth += 1;
             let result = (|| {
-                let source = match path {
-                    AutoloadPath::OnDisk(path) => std::fs::read_to_string(path.to_string())?,
+                let (origin, source) = match path {
+                    AutoloadPath::OnDisk(path) => {
+                        let origin = path.to_string();
+                        let source = std::fs::read_to_string(&origin)?;
+                        (origin, source)
+                    }
                     AutoloadPath::Embedded(path) => {
                         let asset = Asset::get(&path).ok_or_else(|| {
                             Error::new(format!("function source missing: {path}"))
                         })?;
-                        std::str::from_utf8(&asset.data)
+                        let source = std::str::from_utf8(&asset.data)
                             .map_err(|_| Error::new("function source must be UTF-8"))?
-                            .to_owned()
+                            .to_owned();
+                        (format!("embedded:{path}"), source)
                     }
                 };
-                self.eval_source(&source, host, output)
+                self.eval_sourced(&source, origin, &[], true, host, output)
             })();
-            self.source_depth -= 1;
-            self.scopes.pop();
             self.function_autoload.mark_autoload_finished(&wide);
             if self.flow != Flow::Exit {
                 self.status = status;

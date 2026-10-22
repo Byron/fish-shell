@@ -291,28 +291,7 @@ impl Session {
                 self.status = i32::from(!test(args)?);
             }
             "source" | "." => {
-                let path = args
-                    .first()
-                    .ok_or_else(|| Error::new("source: expected a path"))?;
-                let source = std::fs::read_to_string(path)?;
-                let mut scope = BTreeMap::new();
-                scope.insert(
-                    "argv".into(),
-                    Variable {
-                        values: args[1..].to_vec(),
-                        exported: false,
-                        pathvar: false,
-                    },
-                );
-                self.scopes.push(scope);
-                self.source_depth += 1;
-                let result = self.eval_source(&source, host, output);
-                self.source_depth -= 1;
-                self.scopes.pop();
-                if self.flow == Flow::Return {
-                    self.flow = Flow::Normal;
-                }
-                return result;
+                return self.source_builtin(args, host, output);
             }
             "eval" => return self.eval_source(&args.join(" "), host, output),
             // Keep Fish builtins reserved while their native implementations are pending.

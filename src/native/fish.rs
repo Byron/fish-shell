@@ -24,6 +24,8 @@ mod expand;
 mod functions;
 #[path = "fish_history.rs"]
 mod history_builtin;
+#[path = "fish_source.rs"]
+mod source_builtin;
 #[path = "fish_universal.rs"]
 mod universal;
 pub(crate) use expand::unescape_literal;
@@ -111,6 +113,8 @@ pub struct Session {
     function_depth: usize,
     function_frames: Vec<functions::FunctionFrame>,
     source_depth: usize,
+    #[serde(default)]
+    source_origin: Option<String>,
     #[serde(default)]
     worker_pipeline_input: bool,
 }
@@ -263,6 +267,7 @@ impl Session {
             function_depth: 0,
             function_frames: vec![],
             source_depth: 0,
+            source_origin: None,
             worker_pipeline_input: false,
         };
         session.initialize_function_paths();
@@ -354,22 +359,14 @@ impl Session {
 
     pub fn load_config(&mut self, path: &std::path::Path, host: &mut impl Host) -> Result<()> {
         let source = std::fs::read_to_string(path)?;
-        self.scopes.push(BTreeMap::from([(
-            "argv".into(),
-            Variable {
-                values: Vec::new(),
-                exported: false,
-                pathvar: false,
-            },
-        )]));
-        self.source_depth += 1;
-        let result = self.eval_source(&source, host, &mut Output::default());
-        self.source_depth -= 1;
-        self.scopes.pop();
-        if self.flow == Flow::Return {
-            self.flow = Flow::Normal;
-        }
-        result
+        self.eval_sourced(
+            &source,
+            path.to_string_lossy().into_owned(),
+            &[],
+            true,
+            host,
+            &mut Output::default(),
+        )
     }
 
     pub(super) fn editor_variables(&self) -> BTreeMap<String, Vec<String>> {
@@ -658,6 +655,7 @@ impl Session {
                 updated.refreshing_universals = self.refreshing_universals;
                 updated.completion_line = self.completion_line.clone();
                 updated.completion_depth = self.completion_depth;
+                updated.source_origin = self.source_origin.clone();
                 *self = updated;
             }
         }

@@ -378,6 +378,19 @@ impl Host for NativeHost {
         Ok(ReadResult::Line(line))
     }
 
+    fn fd_is_terminal(&mut self, fd: i32, redirects: &[Redirection]) -> Result<bool> {
+        use std::io::IsTerminal;
+        match &targets(redirects, false)?[descriptor(fd)?] {
+            Target::Inherited(0) => Ok(io::stdin().is_terminal()),
+            Target::Inherited(1) => Ok(io::stdout().is_terminal()),
+            Target::Inherited(2) => Ok(io::stderr().is_terminal()),
+            Target::File(file) => Ok(file.is_terminal()),
+            _ => Err(Error::new(format!(
+                "descriptor {fd} is closed or unavailable"
+            ))),
+        }
+    }
+
     fn cancelled(&self) -> bool {
         self.interrupted || process::controls().interrupt != self.controls.interrupt
     }

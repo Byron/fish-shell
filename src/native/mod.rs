@@ -351,9 +351,11 @@ impl Engine {
         source: &[u8],
         host: &mut host::NativeHost,
         syntax_only: bool,
+        origin: Option<String>,
     ) -> Result<i32> {
         match self {
             Self::Rash(session) => {
+                let _ = origin;
                 if syntax_only {
                     let (status, message) = session.check_syntax(source);
                     if status == 0 {
@@ -373,7 +375,7 @@ impl Engine {
                     fish::check_syntax(source)?;
                     Ok(0)
                 } else {
-                    session.eval(source, host)
+                    session.eval_with_origin(source, origin, host)
                 }
             }
         }
@@ -388,7 +390,7 @@ impl Engine {
                 .map_err(|_| Error::new("native Fish source must be UTF-8"))?;
             return session.eval_input(source, host);
         }
-        self.evaluate(source, host, false)
+        self.evaluate(source, host, false, None)
     }
 
     fn completion_context(&self) -> (Vec<String>, Option<OsString>, Vec<String>) {
@@ -647,16 +649,28 @@ fn execute(options: Options) -> Result<i32> {
                 }
             }
         } else {
-            let source = if let Some(command) = options.command {
-                command
+            let (source, origin) = if let Some(command) = options.command {
+                (command, None)
             } else if let Some(path) = options.script.filter(|p| p != "-") {
-                std::fs::read(path)?
+                #[cfg(windows)]
+                let origin = if options.language == Language::Fish {
+                    Some(
+                        path.to_str()
+                            .ok_or_else(|| Error::new("script filename must be Unicode"))?
+                            .to_owned(),
+                    )
+                } else {
+                    None
+                };
+                #[cfg(not(windows))]
+                let origin = None;
+                (std::fs::read(path)?, origin)
             } else {
                 let mut source = Vec::new();
                 io::stdin().read_to_end(&mut source)?;
-                source
+                (source, None)
             };
-            status = engine.evaluate(&source, &mut host, options.syntax_only)?;
+            status = engine.evaluate(&source, &mut host, options.syntax_only, origin)?;
         }
     }
     if !options.syntax_only {

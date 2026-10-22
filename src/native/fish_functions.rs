@@ -6,6 +6,8 @@ use crate::parser_keywords::parser_keywords_is_reserved;
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct Function {
     pub(super) body: String,
+    #[serde(default)]
+    pub(super) origin: Option<String>,
     pub(super) description: String,
     pub(super) named_arguments: Vec<String>,
     pub(super) inherit_vars: BTreeMap<String, Vec<String>>,
@@ -183,6 +185,7 @@ impl Session {
             name.to_string(),
             Function {
                 body,
+                origin: self.source_origin.clone(),
                 description: options.description.to_string(),
                 named_arguments: options
                     .named_arguments
@@ -258,7 +261,9 @@ impl Session {
         self.function_depth += 1;
         let saved_loops = std::mem::replace(&mut self.loops, 0);
         let saved_sources = std::mem::replace(&mut self.source_depth, 0);
+        let saved_origin = std::mem::replace(&mut self.source_origin, function.origin);
         let result = self.eval_source(&function.body, host, output);
+        self.source_origin = saved_origin;
         self.source_depth = saved_sources;
         self.loops = saved_loops;
         self.function_depth -= 1;
