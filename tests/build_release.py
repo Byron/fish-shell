@@ -76,7 +76,7 @@ try {
     if ($Mode -eq 'locked') {
         $held = [IO.File]::Open((Join-Path $published 'rash.exe'), 'Open', 'Read', 'Read')
     }
-    if ($Mode -eq 'missing-target') { & $ReleaseScript }
+    if ($Mode -eq 'default-target') { & $ReleaseScript }
     else { & $ReleaseScript -Target 'x86_64-pc-windows-msvc' }
     exit $LASTEXITCODE
 } finally {
@@ -163,17 +163,23 @@ class ReleasePublication(unittest.TestCase):
             self.assertFalse((self.output / name).exists())
             self.assertEqual(len(list(self.output.glob(Path(name).stem + ".previous-*.pdb"))), 1)
 
-    def test_target_is_required_by_script_and_recipe(self):
-        result = self.run_build("missing-target")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Specify a Rust target explicitly", result.stderr)
-        self.assertFalse((self.root / "build-args.json").exists())
-        self.assert_old_bundle()
+    def test_default_target_and_explicit_release_recipe(self):
+        result = self.run_build("default-target")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = json.loads((self.root / "build-args.json").read_text(encoding="utf-8-sig"))
+        self.assertEqual(args[args.index("--target") + 1], TARGET)
         just = shutil.which("just")
         if just:
-            result = subprocess.run([just, "--dry-run", "release"], cwd=REPO, capture_output=True)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn(b"target", result.stderr)
+            # A copied recipe file prevents a regression from rebuilding the
+            # actual checkout when testing a bare invocation.
+            shutil.copy2(REPO / "justfile", self.root / "justfile")
+            result = subprocess.run([just], cwd=self.root, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(b"Available recipes:", result.stdout)
+            self.assertIn(b"release", result.stdout)
+            result = subprocess.run([just, "--dry-run", "release"], cwd=self.root, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(b"build-release.ps1", result.stderr)
 
 
 if __name__ == "__main__":

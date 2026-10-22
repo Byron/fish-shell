@@ -30,11 +30,11 @@ cargo build --locked --release --bins --target x86_64-pc-windows-msvc
 .\target\x86_64-pc-windows-msvc\release\rash.exe -c 'printf "%s\n" "native Rash"'
 ```
 
-With [Just](https://just.systems/) and PowerShell 7 installed, use
-`just release x86_64-pc-windows-msvc` to rebuild all four native release binaries.
-The target argument is required on both Windows and Unix; `just release` alone
-reports a missing argument. Direct PowerShell invocation likewise requires
-`./build_tools/build-release.ps1 -Target x86_64-pc-windows-msvc`.
+With [Just](https://just.systems/) and PowerShell 7 installed, use `just release`
+to rebuild all four native release binaries. Bare `just` lists the available
+recipes without starting a build. On Windows the release target defaults to
+`x86_64-pc-windows-msvc`; direct PowerShell invocation can override it with
+`./build_tools/build-release.ps1 -Target <target-triple>`.
 
 On Windows, Cargo first builds in `.release-build` under its configured target
 directory, with any separate Cargo build directory redirected into that cache.
@@ -48,9 +48,9 @@ could not be restored. Replacement of multiple files is not atomic.
 
 Published binaries remain in `<target-directory>/<target>/release`. Earlier
 backups are kept, and the separate build cache is reused on subsequent runs.
-On Unix, the recipe passes the explicit target to Cargo and uses its ordinary
-release output paths. `python tests/build_release.py` checks Windows publication
-and rollback with isolated fake Cargo artifacts.
+On Unix, the recipe uses the current Cargo toolchain and target configuration
+with its ordinary release output paths. `python tests/build_release.py` checks
+Windows publication and rollback with isolated fake Cargo artifacts.
 
 With an MSVC host toolchain, `cargo build --locked --release --bins` selects the
 native backend automatically and writes optimized executables to `target/release`.

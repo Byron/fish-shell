@@ -2,11 +2,11 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^[A-Za-z0-9_][A-Za-z0-9_.-]*$')]
-    [string]$Target
+    [string]$Target = 'x86_64-pc-windows-msvc'
 )
 
 $ErrorActionPreference = 'Stop'
-if (!$Target) { throw 'Specify a Rust target explicitly with -Target <target-triple>.' }
+if (!$Target) { throw 'The Rust target cannot be empty.' }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 
 Push-Location -LiteralPath $projectRoot
