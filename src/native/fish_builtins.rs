@@ -175,11 +175,20 @@ impl Session {
                 self.write(value.as_bytes(), host, output)?;
                 self.status = 0;
             }
-            "set" => {
-                if !self.set(args, host, output)? {
+            "set" => match self.set(args, host, output) {
+                Ok(true) => (),
+                Ok(false) => self.pipeline = vec![self.status],
+                Err(error) => {
+                    self.status = error.status;
                     self.pipeline = vec![self.status];
+                    output.bytes.extend(host.write(
+                        2,
+                        format!("{}\n", error.message).as_bytes(),
+                        &output.redirects,
+                        output.capture,
+                    )?);
                 }
-            }
+            },
             "emit" => {
                 if let Err(error) = self.emit(args, host, output) {
                     self.status = error.status;
@@ -219,6 +228,7 @@ impl Session {
                                 .map_err(|_| Error::new("working directory is not Unicode"))?,
                         ],
                         exported: true,
+                        pathvar: false,
                     },
                 );
                 self.fire_variable_event("PWD", false, host)?;
@@ -285,6 +295,7 @@ impl Session {
                     Variable {
                         values: args[1..].to_vec(),
                         exported: false,
+                        pathvar: false,
                     },
                 );
                 self.scopes.push(scope);
@@ -321,21 +332,7 @@ impl Session {
         host: &mut impl Host,
         output: &mut Output,
     ) -> Result<()> {
-        let mut env = BTreeMap::new();
-        let mut merged = self.variables.clone();
-        for scope in &self.scopes[self.scope_start()..] {
-            merged.extend(scope.clone());
-        }
-        for (name, var) in merged {
-            if var.exported {
-                env.insert(
-                    name.as_bytes().to_vec(),
-                    var.values
-                        .join(if name.ends_with("PATH") { ";" } else { " " })
-                        .into_bytes(),
-                );
-            }
-        }
+        let env = self.exports();
         let command = Command {
             argv: std::iter::once(name.as_bytes().to_vec())
                 .chain(args.iter().map(|arg| arg.as_bytes().to_vec()))
@@ -351,17 +348,12 @@ impl Session {
         Ok(())
     }
 
-    /// Return whether this was an assignment, which preserves the preceding
-    /// command's complete status (including every pipeline stage).
+    /// Return whether this was an assignment, preserving the preceding status.
     fn set(&mut self, args: &[String], host: &mut impl Host, output: &mut Output) -> Result<bool> {
-        let mut local = false;
-        let mut global = false;
-        let mut exported = None;
-        let mut query = false;
-        let mut erase = false;
-        let mut append = false;
-        let mut prepend = false;
-        let mut no_event = false;
+        let (mut local, mut global, mut universal) = (false, false, false);
+        let (mut exported, mut pathvar) = (None, None);
+        let (mut query, mut erase, mut append, mut prepend, mut no_event, mut names) =
+            (false, false, false, false, false, false);
         let mut index = 0;
         while let Some(arg) = args.get(index) {
             if arg == "--" {
@@ -374,24 +366,30 @@ impl Session {
             match arg.as_str() {
                 "--local" => local = true,
                 "--global" => global = true,
+                "--universal" => universal = true,
                 "--export" => exported = Some(true),
                 "--unexport" => exported = Some(false),
+                "--path" => pathvar = Some(true),
+                "--unpath" => pathvar = Some(false),
                 "--query" => query = true,
                 "--erase" => erase = true,
                 "--append" => append = true,
                 "--prepend" => prepend = true,
                 "--no-event" => no_event = true,
+                "--names" => names = true,
                 _ if !arg.starts_with("--") => {
                     for flag in arg[1..].chars() {
                         match flag {
                             'l' => local = true,
                             'g' => global = true,
+                            'U' => universal = true,
                             'x' => exported = Some(true),
                             'u' => exported = Some(false),
                             'q' => query = true,
                             'e' => erase = true,
                             'a' => append = true,
                             'p' => prepend = true,
+                            'n' => names = true,
                             _ => return Err(unsupported(&format!("set -{flag}"))),
                         }
                     }
@@ -400,12 +398,14 @@ impl Session {
             }
             index += 1;
         }
-        if local && global {
-            return Err(Error::new("set: local and global scopes conflict"));
+        if usize::from(local) + usize::from(global) + usize::from(universal) > 1 {
+            return Err(Error::new(
+                "set: local, global and universal scopes conflict",
+            ));
         }
         let args = &args[index..];
         if query {
-            if erase || append || prepend {
+            if erase || append || prepend || names {
                 return Err(Error::new("set: incompatible options"));
             }
             for name in args {
@@ -414,7 +414,9 @@ impl Session {
             self.status = args
                 .iter()
                 .filter(|name| {
-                    let variable = if global {
+                    let variable = if universal {
+                        self.universals.vars.get(*name)
+                    } else if global {
                         self.variables.get(*name)
                     } else if local {
                         self.scopes[self.scope_start()..]
@@ -425,37 +427,54 @@ impl Session {
                         self.variable(name)
                     };
                     if !local
+                        && !universal
                         && exported != Some(true)
                         && matches!(name.as_str(), "status" | "fish_pid")
                     {
                         return false;
                     }
                     variable.is_none_or(|variable| {
-                        exported.is_some_and(|exported| exported != variable.exported)
+                        exported.is_some_and(|flag| flag != variable.exported)
+                            || pathvar.is_some_and(|flag| flag != variable.pathvar)
                     })
                 })
                 .count()
                 .min(255) as i32;
             return Ok(false);
         }
-        if erase && (append || prepend || exported.is_some()) {
+        if erase && (append || prepend || exported.is_some() || pathvar.is_some() || names) {
             return Err(Error::new("set: incompatible erase options"));
         }
-        let Some(name) = args.first() else {
-            let mut merged = self.variables.clone();
-            for scope in &self.scopes[self.scope_start()..] {
-                merged.extend(scope.clone());
+        if args.is_empty() || names {
+            let mut merged = BTreeMap::new();
+            if universal || (!global && !local) {
+                merged.extend(self.universals.vars.clone());
             }
-            for (name, var) in merged {
-                self.write(
-                    format!("{name} {}\n", var.values.join(" ")).as_bytes(),
-                    host,
-                    output,
-                )?;
+            if global || (!universal && !local) {
+                merged.extend(self.variables.clone());
+            }
+            if local || (!global && !universal) {
+                for scope in &self.scopes[self.scope_start()..] {
+                    merged.extend(scope.clone());
+                }
+            }
+            for (name, variable) in merged {
+                if exported.is_some_and(|flag| flag != variable.exported)
+                    || pathvar.is_some_and(|flag| flag != variable.pathvar)
+                {
+                    continue;
+                }
+                let line = if names {
+                    format!("{name}\n")
+                } else {
+                    format!("{name} {}\n", variable.values.join(" "))
+                };
+                self.write(line.as_bytes(), host, output)?;
             }
             self.status = 0;
             return Ok(false);
-        };
+        }
+        let name = &args[0];
         valid_name(name)?;
         if matches!(
             name.as_str(),
@@ -463,23 +482,76 @@ impl Session {
         ) {
             return Err(Error::new(format!("set: {name} is read-only")));
         }
-        let mut values = args[1..].to_vec();
-        let old = self.variable(name).cloned();
-        if append || prepend {
-            let mut combined = Vec::new();
-            if prepend {
-                combined.extend(values.clone());
-            }
-            combined.extend(old.as_ref().map(|v| v.values.clone()).unwrap_or_default());
-            if append {
-                combined.extend(values);
-            }
-            values = combined;
+        if erase && args.len() != 1 {
+            return Err(Error::new("set --erase: expected one variable"));
         }
         let visible_scope = self.scopes[self.scope_start()..]
             .iter()
             .rposition(|scope| scope.contains_key(name))
             .map(|index| index + self.scope_start());
+        let implicit_universal = !local
+            && !global
+            && !universal
+            && visible_scope.is_none()
+            && !self.variables.contains_key(name)
+            && self.universals.vars.contains_key(name);
+        // Explicit universal append/prepend starts with the visible list when
+        // another scope shadows it, as on POSIX. Without a shadow the locked
+        // transaction must fetch the latest universal list to avoid lost writes.
+        let shadow_values = (universal
+            && (visible_scope.is_some() || self.variables.contains_key(name)))
+        .then(|| self.variable(name).unwrap().values.clone());
+        let assign = |old: Option<&Variable>| {
+            if erase {
+                return None;
+            }
+            let pathvar = pathvar
+                .or_else(|| old.map(|var| var.pathvar))
+                .unwrap_or_else(|| name.ends_with("PATH"));
+            let mut values = args[1..].to_vec();
+            if append || prepend {
+                let mut combined = Vec::new();
+                if prepend {
+                    combined.extend(values.clone());
+                }
+                combined.extend(
+                    shadow_values
+                        .clone()
+                        .or_else(|| old.map(|value| value.values.clone()))
+                        .unwrap_or_default(),
+                );
+                if append {
+                    combined.extend(values);
+                }
+                values = combined;
+            }
+            if pathvar {
+                values = values
+                    .into_iter()
+                    .flat_map(|value| value.split(';').map(str::to_owned).collect::<Vec<_>>())
+                    .collect();
+            }
+            Some(Variable {
+                values,
+                exported: exported
+                    .or_else(|| old.map(|var| var.exported))
+                    .unwrap_or(false),
+                pathvar,
+            })
+        };
+        if implicit_universal || (universal && self.universals.enabled()) {
+            return self.set_universal(name, assign, erase, no_event, host);
+        }
+        if universal {
+            // POSIX --no-config redirects universal assignments to globals;
+            // explicit universal queries and erases still see the empty scope.
+            if erase {
+                self.status = 4;
+                return Ok(false);
+            }
+            global = true;
+        }
+        let value = assign(self.variable(name));
         let function_scope = self.function_frames.last().map(|frame| frame.local_scope);
         let scope = if global {
             &mut self.variables
@@ -501,30 +573,25 @@ impl Session {
         } else {
             &mut self.variables
         };
-        let erased = if erase {
-            if args.len() != 1 {
-                return Err(Error::new("set --erase: expected one variable"));
-            }
-            Some(scope.remove(name).is_some())
+        let existed = if let Some(mut value) = value {
+            // Export state belongs to the target scope. A new local/global
+            // shadow does not inherit export merely because its parent did.
+            value.exported = exported
+                .or_else(|| scope.get(name).map(|variable| variable.exported))
+                .unwrap_or(false);
+            scope.insert(name.clone(), value);
+            true
         } else {
-            scope.insert(
-                name.clone(),
-                Variable {
-                    values,
-                    exported: exported.unwrap_or_else(|| old.is_some_and(|v| v.exported)),
-                },
-            );
-            // Fish assignment preserves the preceding command's status.
-            None
+            scope.remove(name).is_some()
         };
         if name == "fish_function_path" {
             self.refresh_function_paths();
         }
-        if !no_event && erased != Some(false) {
+        if !no_event && existed {
             self.fire_variable_event(name, erase, host)?;
         }
-        if let Some(erased) = erased {
-            self.status = i32::from(!erased);
+        if erase {
+            self.status = i32::from(!existed);
         }
         Ok(!erase)
     }

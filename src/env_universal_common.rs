@@ -1,20 +1,15 @@
-use crate::common::valid_var_name;
 use crate::env::{EnvVar, EnvVarFlags, VarTable};
 use crate::flog::{flog, flogf};
 use crate::fs::{PotentialUpdate, lock_and_load, rewrite_via_temporary_file};
 use crate::path::{ValidatedPath, path_get_config};
 use crate::prelude::*;
 use crate::wutil::{FileId, file_id_for_file, file_id_for_path_narrow, wrealpath};
-use fish_common::{UnescapeFlags, UnescapeStringStyle, unescape_string};
-use fish_wcstringutil::{LineIterator, join_strings};
-use fish_widestring::{decode_byte_from_char, wcs2zstring};
-use itertools::Itertools as _;
+use fish_widestring::wcs2zstring;
 use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{Read as _, Write as _};
-use std::mem::MaybeUninit;
 
 /// Callback data, reflecting a change in universal variables.
 #[derive(Clone, Debug, PartialEq)]
@@ -28,14 +23,7 @@ pub struct CallbackData {
 
 pub type CallbackDataList = Vec<CallbackData>;
 
-// List of fish universal variable formats.
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[allow(non_camel_case_types)]
-enum UvarFormat {
-    Fish_2_x,
-    Fish_3_0,
-    Future,
-}
+use crate::universal_variables::{Format as UvarFormat, MAX_READ_SIZE};
 
 /// Class representing universal variables.
 pub struct EnvUniversal {
@@ -229,105 +217,51 @@ impl EnvUniversal {
         }
     }
 
-    /// Populate a variable table `out_vars` from a `s` string.
-    /// Return the format of the file that we read.
     fn populate_variables(s: &[u8], out_vars: &mut VarTable) -> UvarFormat {
-        // Decide on the format.
-        let format = Self::format_for_contents(s);
-
-        let iter = LineIterator::new(s);
-        let mut wide_line = WString::new();
-        let mut storage = WString::new();
-        for line in iter {
-            // Skip empties and constants.
-            if line.is_empty() || line[0] == b'#' {
-                continue;
-            }
-
-            // Convert to UTF8.
-            wide_line.clear();
-            let Ok(line) = std::str::from_utf8(line) else {
-                continue;
-            };
-            // TODO: investigate whether this should use str2wcstring
-            wide_line = WString::from_str(line);
-
-            match format {
-                UvarFormat::Fish_2_x => {
-                    Self::parse_message_2x_internal(&wide_line, out_vars, &mut storage);
-                }
-                UvarFormat::Fish_3_0 => {
-                    Self::parse_message_30_internal(&wide_line, out_vars, &mut storage);
-                }
-                // For future formats, just try with the most recent one.
-                UvarFormat::Future => {
-                    Self::parse_message_30_internal(&wide_line, out_vars, &mut storage);
-                }
-            }
-        }
+        let mut parsed = crate::universal_variables::Table::new();
+        let format =
+            crate::universal_variables::Codec::populate_variables(s, &mut parsed, |message| {
+                flogf!(
+                    warning,
+                    "Unable to parse universal variable message: '%s'",
+                    message
+                );
+            });
+        out_vars.extend(parsed.into_iter().map(|(name, entry)| {
+            (
+                name,
+                EnvVar::new_vec(
+                    entry.values,
+                    EnvVarFlags {
+                        exported: entry.flags.exported,
+                        pathvar: entry.flags.pathvar,
+                        ..Default::default()
+                    },
+                ),
+            )
+        }));
         format
     }
 
-    /// Guess a file format.
-    /// Return the format corresponding to file contents `s`.
-    fn format_for_contents(s: &[u8]) -> UvarFormat {
-        // Walk over leading comments, looking for one like '# version'
-        let iter = LineIterator::new(s);
-        for line in iter {
-            if line.is_empty() {
-                continue;
-            }
-            if line[0] != b'#' {
-                // Exhausted leading comments.
-                break;
-            }
-            // Note scanf %s is max characters to write; add 1 for null terminator.
-            let mut versionbuf: MaybeUninit<[u8; 64 + 1]> = MaybeUninit::uninit();
-            // Safety: test-only
-            let cstr = CString::new(line).unwrap();
-            if unsafe {
-                libc::sscanf(
-                    cstr.as_ptr(),
-                    c"# VERSION: %64s".as_ptr().cast(),
-                    versionbuf.as_mut_ptr(),
-                )
-            } != 1
-            {
-                continue;
-            }
-
-            // Try reading the version.
-            let versionbuf = unsafe { versionbuf.assume_init() };
-            return if versionbuf.starts_with(UVARS_VERSION_3_0)
-                && versionbuf[UVARS_VERSION_3_0.len()] == b'\0'
-            {
-                UvarFormat::Fish_3_0
-            } else {
-                UvarFormat::Future
-            };
-        }
-        // No version found, assume 2.x
-        UvarFormat::Fish_2_x
-    }
-
-    /// Serialize a variable list.
     fn serialize_with_vars(vars: &VarTable) -> Vec<u8> {
-        let mut contents = vec![];
-        contents.extend_from_slice(SAVE_MSG);
-        contents.extend_from_slice(b"# VERSION: ");
-        contents.extend_from_slice(UVARS_VERSION_3_0);
-        contents.push(b'\n');
-
-        vars.iter()
-            // Preserve legacy behavior by sorting the values first
-            .sorted_by_key(|(k, _)| *k)
-            .for_each(|(k, v)| {
-                // Append the entry. Note that append_file_entry may fail,
-                // but that only affects one variable; soldier on.
-                append_file_entry(v.flags(), k, &encode_serialized(v.as_list()), &mut contents);
-            });
-
-        contents
+        let vars = vars
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.clone(),
+                    crate::universal_variables::Entry {
+                        values: value.as_list().to_vec(),
+                        flags: crate::universal_variables::Flags {
+                            exported: value.exports(),
+                            pathvar: value.is_pathvar(),
+                        },
+                    },
+                )
+            })
+            .collect();
+        crate::universal_variables::Codec::serialize_with_vars(&vars, |name| {
+            flogf!(error, "Illegal variable name: '%s'", name);
+        })
     }
 
     #[cfg(test)]
@@ -513,93 +447,6 @@ impl EnvUniversal {
         }
     }
 
-    fn populate_1_variable(
-        input: &wstr,
-        flags: EnvVarFlags,
-        vars: &mut VarTable,
-        storage: &mut WString,
-    ) -> bool {
-        let s = skip_spaces(input);
-        let Some(colon) = s.chars().position(|c| c == ':') else {
-            return false;
-        };
-
-        // Parse out the value into storage, and decode it into a variable.
-        storage.clear();
-        let Some(unescaped) = unescape_string(
-            &s[colon + 1..],
-            UnescapeStringStyle::Script(UnescapeFlags::default()),
-        ) else {
-            return false;
-        };
-        *storage = unescaped;
-        let var = EnvVar::new_vec(decode_serialized(&*storage), flags);
-
-        // Parse out the key and write into the map.
-        *storage = s[..colon].to_owned();
-        let key = &*storage;
-        (*vars).insert(key.clone(), var);
-        true
-    }
-    /// Parse message msg per fish 3.0 format.
-    fn parse_message_30_internal(msg: &wstr, vars: &mut VarTable, storage: &mut WString) {
-        use fish3_uvars as f3;
-        if msg.starts_with(L!("#")) {
-            return;
-        }
-
-        let mut cursor = msg;
-        if !r#match(&mut cursor, f3::SETUVAR) {
-            flogf!(warning, PARSE_ERR, msg);
-            return;
-        }
-        // Parse out flags.
-        let mut flags = EnvVarFlags::default();
-        loop {
-            cursor = skip_spaces(cursor);
-            if cursor.char_at(0) != '-' {
-                break;
-            }
-            if r#match(&mut cursor, f3::EXPORT) {
-                flags.exported = true;
-            } else if r#match(&mut cursor, f3::PATH) {
-                flags.pathvar = true;
-            } else {
-                // Skip this unknown flag, for future proofing.
-                while !cursor.is_empty() && !matches!(cursor.char_at(0), ' ' | '\t') {
-                    cursor = &cursor[1..];
-                }
-            }
-        }
-
-        // Populate the variable with these flags.
-        if !Self::populate_1_variable(cursor, flags, vars, storage) {
-            flogf!(warning, PARSE_ERR, msg);
-        }
-    }
-
-    /// Parse message msg per fish 2.x format.
-    fn parse_message_2x_internal(msg: &wstr, vars: &mut VarTable, storage: &mut WString) {
-        use fish2x_uvars as f2x;
-        let mut cursor = msg;
-
-        if cursor.char_at(0) == '#' {
-            return;
-        }
-        let mut flags = EnvVarFlags::default();
-        if r#match(&mut cursor, f2x::SET_EXPORT) {
-            flags.exported = true;
-        } else if r#match(&mut cursor, f2x::SET) {
-        } else {
-            flogf!(warning, PARSE_ERR, msg);
-            return;
-        }
-
-        if !Self::populate_1_variable(cursor, flags, vars, storage) {
-            flogf!(warning, PARSE_ERR, msg);
-        }
-    }
-
     fn read_message_internal(file: &File, vars: &mut VarTable) -> UvarFormat {
         let mut contents = vec![];
         // Read everything from the file. Put a sane limit on it.
@@ -634,188 +481,17 @@ pub fn default_vars_path() -> WString {
     path
 }
 
-/// Error message.
-const PARSE_ERR: &wstr = L!("Unable to parse universal variable message: '%s'");
-
-/// Small note about not editing ~/.fishd manually. Inserted at the top of all .fishd files.
-const SAVE_MSG: &[u8] = b"# This file contains fish universal variable definitions.\n";
-
-/// Version for fish 3.0
-const UVARS_VERSION_3_0: &[u8] = b"3.0";
-
-// Maximum file size we'll read.
-const MAX_READ_SIZE: usize = 16 * 1024 * 1024;
-
-// Fields used in fish 2.x uvars.
-
-mod fish2x_uvars {
-    pub const SET: &[u8] = b"SET";
-    pub const SET_EXPORT: &[u8] = b"SET_EXPORT";
-}
-// Fields used in fish 3.0 uvars
-mod fish3_uvars {
-    pub const SETUVAR: &[u8] = b"SETUVAR";
-    pub const EXPORT: &[u8] = b"--export";
-    pub const PATH: &[u8] = b"--path";
-}
-
-/// Test if the message msg contains the command cmd.
-/// On success, updates the cursor to just past the command.
-fn r#match(inout_cursor: &mut &wstr, cmd: &[u8]) -> bool {
-    let cursor = *inout_cursor;
-    if !cmd
-        .iter()
-        .copied()
-        .map(char::from)
-        .eq(cursor.chars().take(cmd.len()))
-    {
-        return false;
-    }
-    let len = cmd.len();
-    if cursor.len() != len && !matches!(cursor.char_at(len), ' ' | '\t') {
-        return false;
-    }
-    *inout_cursor = &cursor[len..];
-    true
-}
-
-/// The universal variable format has some funny escaping requirements; here we try to be safe.
-fn is_universal_safe_to_encode_directly(c: char) -> bool {
-    if !(32..=128).contains(&u32::from(c)) {
-        return false;
-    }
-
-    c.is_alphanumeric() || matches!(c, '/' | '_')
-}
-
-/// Escape specified string.
-fn full_escape(input: &wstr) -> WString {
-    let mut out = WString::new();
-    for c in input.chars() {
-        if is_universal_safe_to_encode_directly(c) {
-            out.push(c);
-        } else if c.is_ascii() {
-            sprintf!(=> &mut out, "\\x%.2x", u32::from(c));
-        } else if let Some(encoded_byte) = decode_byte_from_char(c) {
-            sprintf!(=> &mut out, "\\x%.2x", u32::from(encoded_byte));
-        } else if u32::from(c) < 65536 {
-            sprintf!(=> &mut out, "\\u%.4x", u32::from(c));
-        } else {
-            sprintf!(=> &mut out, "\\U%.8x", u32::from(c));
-        }
-    }
-    out
-}
-
-/// Converts input to UTF-8 and appends it to receiver.
-fn append_utf8(input: &wstr, receiver: &mut Vec<u8>) {
-    // Notably we convert between wide and narrow strings without decoding our private-use
-    // characters.
-    receiver.extend_from_slice(input.to_string().as_bytes());
-}
-
-/// Creates a file entry like "SET fish_color_cwd:FF0". Appends the result to *result (as UTF8).
-/// Returns true on success. storage may be used for temporary storage, to avoid allocations.
-fn append_file_entry(
-    flags: EnvVarFlags,
-    key_in: &wstr,
-    val_in: &wstr,
-    result: &mut Vec<u8>,
-) -> bool {
-    use fish3_uvars as f3;
-
-    // Record the length on entry, in case we need to back up.
-    let mut success = true;
-    let result_length_on_entry = result.len();
-
-    // Append SETVAR header.
-    result.extend_from_slice(f3::SETUVAR);
-    result.push(b' ');
-
-    // Append flags.
-    if flags.exported {
-        result.extend_from_slice(f3::EXPORT);
-        result.push(b' ');
-    }
-    if flags.pathvar {
-        result.extend_from_slice(f3::PATH);
-        result.push(b' ');
-    }
-
-    // Append variable name like "fish_color_cwd".
-    if !valid_var_name(key_in) {
-        flogf!(error, "Illegal variable name: '%s'", key_in);
-        success = false;
-    }
-    if success {
-        append_utf8(key_in, result);
-    }
-
-    // Append ":".
-    if success {
-        result.push(b':');
-    }
-
-    // Append value.
-    if success {
-        append_utf8(&full_escape(val_in), result);
-    }
-
-    // Append newline.
-    if success {
-        result.push(b'\n');
-    }
-
-    // Don't modify result on failure. It's sufficient to simply resize it since all we ever did was
-    // append to it.
-    if !success {
-        result.truncate(result_length_on_entry);
-    }
-
-    success
-}
-
-/// Encoding of a null string.
-const ENV_NULL: &wstr = L!("\x1d");
-
-/// Character used to separate arrays in universal variables file.
-/// This is 30, the ASCII record separator.
-const UVAR_ARRAY_SEP: char = '\x1e';
-
-/// Decode a serialized universal variable value into a list.
-fn decode_serialized(val: &wstr) -> Vec<WString> {
-    if val == ENV_NULL {
-        return vec![];
-    }
-    val.split(UVAR_ARRAY_SEP).map(|v| v.to_owned()).collect()
-}
-
-/// Decode a a list into a serialized universal variable value.
-fn encode_serialized(vals: &[WString]) -> WString {
-    if vals.is_empty() {
-        return ENV_NULL.to_owned();
-    }
-    join_strings(vals, UVAR_ARRAY_SEP)
-}
-
-fn skip_spaces(mut s: &wstr) -> &wstr {
-    while s.starts_with(L!(" ")) || s.starts_with(L!("\t")) {
-        s = &s[1..];
-    }
-    s
-}
-
 #[cfg(test)]
 mod tests {
     use crate::{
-        env::{EnvVar, EnvVarFlags, VarTable},
-        env_universal_common::{EnvUniversal, UvarFormat},
+        env::{EnvVar, EnvVarFlags},
+        env_universal_common::EnvUniversal,
         prelude::*,
         tests::prelude::*,
         wutil::file_id_for_path,
     };
     use fish_tempfile::TempDir;
-    use fish_widestring::{ENCODE_DIRECT_BASE, char_offset, osstr2wcstring, wcs2osstring};
+    use fish_widestring::{osstr2wcstring, wcs2osstring};
 
     const UVARS_PER_THREAD: usize = 8;
 
@@ -891,172 +567,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
-    fn test_universal_output() {
-        test_init();
-        let flag_export = EnvVarFlags {
-            exported: true,
-            ..Default::default()
-        };
-        let flag_pathvar = EnvVarFlags {
-            pathvar: true,
-            ..Default::default()
-        };
-        let flag_export_pathvar = EnvVarFlags {
-            exported: true,
-            pathvar: true,
-            ..Default::default()
-        };
-
-        let mut vars = VarTable::new();
-        vars.insert(
-            L!("varA").to_owned(),
-            EnvVar::new_vec(
-                vec![L!("ValA1").to_owned(), L!("ValA2").to_owned()],
-                EnvVarFlags::default(),
-            ),
-        );
-        vars.insert(
-            L!("varB").to_owned(),
-            EnvVar::new_vec(vec![L!("ValB1").to_owned()], flag_export),
-        );
-        vars.insert(
-            L!("varC").to_owned(),
-            EnvVar::new_vec(vec![L!("ValC1").to_owned()], EnvVarFlags::default()),
-        );
-        vars.insert(
-            L!("varD").to_owned(),
-            EnvVar::new_vec(vec![L!("ValD1").to_owned()], flag_export_pathvar),
-        );
-        vars.insert(
-            L!("varE").to_owned(),
-            EnvVar::new_vec(
-                vec![L!("ValE1").to_owned(), L!("ValE2").to_owned()],
-                flag_pathvar,
-            ),
-        );
-        vars.insert(
-            L!("varF").to_owned(),
-            EnvVar::new_vec(
-                vec![WString::from_chars([char_offset(ENCODE_DIRECT_BASE, 0xfc)])],
-                EnvVarFlags::default(),
-            ),
-        );
-
-        let text = EnvUniversal::serialize_with_vars(&vars);
-        let expected = concat!(
-            "# This file contains fish universal variable definitions.\n",
-            "# VERSION: 3.0\n",
-            "SETUVAR varA:ValA1\\x1eValA2\n",
-            "SETUVAR --export varB:ValB1\n",
-            "SETUVAR varC:ValC1\n",
-            "SETUVAR --export --path varD:ValD1\n",
-            "SETUVAR --path varE:ValE1\\x1eValE2\n",
-            "SETUVAR varF:\\xfc\n",
-        )
-        .as_bytes();
-        assert_eq!(text, expected);
-    }
-
-    #[test]
-    #[serial]
-    fn test_universal_parsing() {
-        test_init();
-        let input = concat!(
-            "# This file contains fish universal variable definitions.\n",
-            "# VERSION: 3.0\n",
-            "SETUVAR varA:ValA1\\x1eValA2\n",
-            "SETUVAR --export varB:ValB1\n",
-            "SETUVAR --nonsenseflag varC:ValC1\n",
-            "SETUVAR --export --path varD:ValD1\n",
-            "SETUVAR --path --path varE:ValE1\\x1eValE2\n",
-        )
-        .as_bytes();
-
-        let flag_export = EnvVarFlags {
-            exported: true,
-            ..Default::default()
-        };
-        let flag_pathvar = EnvVarFlags {
-            pathvar: true,
-            ..Default::default()
-        };
-        let flag_export_pathvar = EnvVarFlags {
-            exported: true,
-            pathvar: true,
-            ..Default::default()
-        };
-
-        let mut vars = VarTable::new();
-
-        vars.insert(
-            L!("varA").to_owned(),
-            EnvVar::new_vec(
-                vec![L!("ValA1").to_owned(), L!("ValA2").to_owned()],
-                EnvVarFlags::default(),
-            ),
-        );
-        vars.insert(
-            L!("varB").to_owned(),
-            EnvVar::new_vec(vec![L!("ValB1").to_owned()], flag_export),
-        );
-        vars.insert(
-            L!("varC").to_owned(),
-            EnvVar::new_vec(vec![L!("ValC1").to_owned()], EnvVarFlags::default()),
-        );
-        vars.insert(
-            L!("varD").to_owned(),
-            EnvVar::new_vec(vec![L!("ValD1").to_owned()], flag_export_pathvar),
-        );
-        vars.insert(
-            L!("varE").to_owned(),
-            EnvVar::new_vec(
-                vec![L!("ValE1").to_owned(), L!("ValE2").to_owned()],
-                flag_pathvar,
-            ),
-        );
-
-        let mut parsed_vars = VarTable::new();
-        EnvUniversal::populate_variables(input, &mut parsed_vars);
-        assert_eq!(vars, parsed_vars);
-    }
-
-    #[test]
-    #[serial]
-    fn test_universal_parsing_legacy() {
-        test_init();
-        let input = concat!(
-            "# This file contains fish universal variable definitions.\n",
-            "SET varA:ValA1\\x1eValA2\n",
-            "SET_EXPORT varB:ValB1\n",
-        )
-        .as_bytes();
-
-        let mut vars = VarTable::new();
-        vars.insert(
-            L!("varA").to_owned(),
-            EnvVar::new_vec(
-                vec![L!("ValA1").to_owned(), L!("ValA2").to_owned()],
-                EnvVarFlags::default(),
-            ),
-        );
-        vars.insert(
-            L!("varB").to_owned(),
-            EnvVar::new(
-                L!("ValB1").to_owned(),
-                EnvVarFlags {
-                    exported: true,
-                    ..Default::default()
-                },
-            ),
-        );
-
-        let mut parsed_vars = VarTable::new();
-        EnvUniversal::populate_variables(input, &mut parsed_vars);
-        assert_eq!(vars, parsed_vars);
-    }
-
-    #[test]
     fn test_universal_callbacks() {
         test_init();
         let (_test_dir, test_path) = make_test_uvar_path().unwrap();
@@ -1125,28 +635,6 @@ mod tests {
         assert_eq!(callbacks[1].val.as_ref().unwrap().as_string(), L!("1"));
         assert_eq!(callbacks[2].key, L!("delta"));
         assert_eq!(callbacks[2].val, None);
-    }
-
-    #[test]
-    #[serial]
-    fn test_universal_formats() {
-        test_init();
-        macro_rules! validate {
-            ( $version_line:literal, $expected_format:expr ) => {
-                assert_eq!(
-                    EnvUniversal::format_for_contents($version_line),
-                    $expected_format
-                );
-            };
-        }
-        validate!(b"# VERSION: 3.0", UvarFormat::Fish_3_0);
-        validate!(b"# version: 3.0", UvarFormat::Fish_2_x);
-        validate!(b"# blah blahVERSION: 3.0", UvarFormat::Fish_2_x);
-        validate!(b"stuff\n# blah blahVERSION: 3.0", UvarFormat::Fish_2_x);
-        validate!(b"# blah\n# VERSION: 3.0", UvarFormat::Fish_3_0);
-        validate!(b"# blah\n#VERSION: 3.0", UvarFormat::Fish_3_0);
-        validate!(b"# blah\n#VERSION:3.0", UvarFormat::Fish_3_0);
-        validate!(b"# blah\n#VERSION:3.1", UvarFormat::Future);
     }
 
     #[test]

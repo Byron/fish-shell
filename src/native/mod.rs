@@ -31,6 +31,11 @@ mod interactive_terminal;
 #[cfg(windows)]
 mod startup;
 #[cfg(windows)]
+mod storage;
+#[cfg(windows)]
+mod universal_variables;
+
+#[cfg(windows)]
 pub mod syntax;
 pub mod worker;
 
@@ -479,6 +484,10 @@ fn execute(options: Options) -> Result<i32> {
     if !options.no_config && !options.syntax_only {
         #[cfg(windows)]
         if let Engine::Fish(session) = &mut engine {
+            if let Some(directory) = interactive::config_directory("fish") {
+                session
+                    .initialize_universals(directory.join("native_fish_variables"), &mut host)?;
+            }
             for path in startup::files() {
                 if let Err(error) = session.load_config(&path, &mut host) {
                     report(

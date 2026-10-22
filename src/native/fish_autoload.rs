@@ -38,6 +38,7 @@ impl Session {
                 Variable {
                     values: vec![directory.to_string_lossy().into_owned()],
                     exported: false,
+                    pathvar: false,
                 },
             );
             self.variables
@@ -45,6 +46,7 @@ impl Session {
                 .or_insert_with(|| Variable {
                     values: vec![directory.join("functions").to_string_lossy().into_owned()],
                     exported: false,
+                    pathvar: false,
                 });
         }
     }
@@ -135,6 +137,7 @@ impl Session {
                 Variable {
                     values: Vec::new(),
                     exported: false,
+                    pathvar: false,
                 },
             )]));
             self.source_depth += 1;

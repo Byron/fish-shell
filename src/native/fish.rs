@@ -22,12 +22,22 @@ mod expand;
 mod functions;
 #[path = "fish_history.rs"]
 mod history_builtin;
+#[path = "fish_universal.rs"]
+mod universal;
 pub(crate) use expand::unescape_literal;
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct Variable {
-    values: Vec<String>,
-    exported: bool,
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(super) struct Variable {
+    pub(super) values: Vec<String>,
+    pub(super) exported: bool,
+    #[serde(default)]
+    pub(super) pathvar: bool,
+}
+
+impl Variable {
+    fn exported_value(&self) -> String {
+        self.values.join(if self.pathvar { ";" } else { " " })
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -50,6 +60,10 @@ struct Output {
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Session {
+    #[serde(default)]
+    universals: super::universal_variables::Store,
+    #[serde(skip)]
+    refreshing_universals: bool,
     variables: BTreeMap<String, Variable>,
     scopes: Vec<BTreeMap<String, Variable>>,
     functions: BTreeMap<String, functions::Function>,
@@ -189,10 +203,11 @@ impl Session {
                 vec![value]
             };
             variables.insert(
-                name,
+                name.clone(),
                 Variable {
                     values,
                     exported: true,
+                    pathvar: name.ends_with("PATH"),
                 },
             );
         }
@@ -206,9 +221,12 @@ impl Session {
             Variable {
                 values: vec![std::env::current_dir()?.to_string_lossy().into_owned()],
                 exported: true,
+                pathvar: false,
             },
         );
         let mut session = Self {
+            universals: Default::default(),
+            refreshing_universals: false,
             variables,
             scopes: vec![BTreeMap::new()],
             functions: BTreeMap::new(),
@@ -265,7 +283,8 @@ impl Session {
     }
 
     fn exports(&self) -> BTreeMap<Vec<u8>, Vec<u8>> {
-        let mut merged = self.variables.clone();
+        let mut merged = self.universals.vars.clone();
+        merged.extend(self.variables.clone());
         for scope in &self.scopes[self.scope_start()..] {
             merged.extend(scope.clone());
         }
@@ -273,9 +292,7 @@ impl Session {
             .into_iter()
             .filter(|(_, var)| var.exported)
             .map(|(name, var)| {
-                let value = var
-                    .values
-                    .join(if name.ends_with("PATH") { ";" } else { " " });
+                let value = var.exported_value();
                 (name.into_bytes(), value.into_bytes())
             })
             .collect()
@@ -313,8 +330,12 @@ impl Session {
     }
 
     fn variable_names(&self) -> Vec<String> {
-        let mut names: std::collections::BTreeSet<String> =
-            self.variables.keys().cloned().collect();
+        let mut names: std::collections::BTreeSet<String> = self
+            .variables
+            .keys()
+            .chain(self.universals.vars.keys())
+            .cloned()
+            .collect();
         for scope in &self.scopes[self.scope_start()..] {
             names.extend(scope.keys().cloned());
         }
@@ -329,6 +350,7 @@ impl Session {
             Variable {
                 values: Vec::new(),
                 exported: false,
+                pathvar: false,
             },
         )]));
         self.source_depth += 1;
@@ -353,6 +375,7 @@ impl Session {
     }
 
     pub fn prompt(&mut self, host: &mut impl Host) -> Result<Option<String>> {
+        self.refresh_universals(host)?;
         if !self.ensure_function("fish_prompt", host, &mut Output::default())? {
             return Ok(None);
         }
@@ -376,6 +399,7 @@ impl Session {
             Variable {
                 values: args,
                 exported: false,
+                pathvar: false,
             },
         );
     }
@@ -526,6 +550,10 @@ impl Session {
         host: &mut impl Host,
         output: &mut Output,
     ) -> Result<()> {
+        self.refresh_universals(host)?;
+        if self.flow != Flow::Normal || host.cancelled() {
+            return Ok(());
+        }
         if node.bg.is_some() || !node.continuation.is_empty() {
             return self.eval_pipeline(node, source, host, output);
         }
@@ -618,6 +646,7 @@ impl Session {
                 // Evaluation depth belongs to the parent invocation, not its worker.
                 updated.depth = self.depth;
                 updated.input_mode_blocked = self.input_mode_blocked;
+                updated.refreshing_universals = self.refreshing_universals;
                 *self = updated;
             }
         }
@@ -631,7 +660,29 @@ impl Session {
             self.last_pid = result.last_pid;
         }
         output.bytes.extend(result.stdout);
-        Ok(())
+        self.refresh_universals(host)
+    }
+
+    /// Implicit bindings inherit the visible path metadata, including explicit
+    /// --unpath, and default new PATH-suffixed names to native path lists.
+    fn binding(&self, name: &str, values: Vec<String>, exported: bool) -> Variable {
+        let pathvar = self
+            .variable(name)
+            .map(|variable| variable.pathvar)
+            .unwrap_or_else(|| name.ends_with("PATH"));
+        let values = if pathvar {
+            values
+                .into_iter()
+                .flat_map(|value| value.split(';').map(str::to_owned).collect::<Vec<_>>())
+                .collect()
+        } else {
+            values
+        };
+        Variable {
+            values,
+            exported,
+            pathvar,
+        }
     }
 
     fn assignments(
@@ -655,13 +706,11 @@ impl Session {
                     return Err(Error::new(format!("{name} is read-only")));
                 }
                 let values = self.expand(value, host)?;
-                self.scopes.last_mut().unwrap().insert(
-                    name.to_owned(),
-                    Variable {
-                        values,
-                        exported: true,
-                    },
-                );
+                let variable = self.binding(name, values, true);
+                self.scopes
+                    .last_mut()
+                    .unwrap()
+                    .insert(name.to_owned(), variable);
                 self.fire_variable_event(name, false, host)?;
                 if self.flow != Flow::Normal || host.cancelled() {
                     break;
@@ -767,13 +816,11 @@ impl Session {
                 self.loops += 1;
                 let result = (|| {
                     for value in values {
-                        self.scopes.last_mut().unwrap().insert(
-                            name.clone(),
-                            Variable {
-                                values: vec![value],
-                                exported: false,
-                            },
-                        );
+                        let variable = self.binding(&name, vec![value], false);
+                        self.scopes
+                            .last_mut()
+                            .unwrap()
+                            .insert(name.clone(), variable);
                         self.fire_variable_event(&name, false, host)?;
                         self.eval_jobs(&node.jobs, source, host, output)?;
                         if self.flow == Flow::Continue {
@@ -889,6 +936,7 @@ impl Session {
             .rev()
             .find_map(|scope| scope.get(name))
             .or_else(|| self.variables.get(name))
+            .or_else(|| self.universals.vars.get(name))
     }
     fn scope_start(&self) -> usize {
         self.function_frames
@@ -917,6 +965,14 @@ impl Session {
     fn expand(&mut self, word: &str, host: &mut impl Host) -> Result<Vec<String>> {
         expand::word_with(word, |request| match request {
             expand::Request::Variable(name) => Ok(self.values(name)),
+            expand::Request::VariableSeparator(name) => Ok(vec![
+                if self.variable(name).is_some_and(|variable| variable.pathvar) {
+                    ";"
+                } else {
+                    " "
+                }
+                .into(),
+            ]),
             expand::Request::Command { source, quoted } => {
                 let saved_flow = self.flow;
                 self.flow = Flow::Normal;

@@ -101,8 +101,8 @@ indices, repeated matches and replacement references. Named match groups set
 session variables. String escaping is also shared, including
 `string escape --style=regex` for completion helpers.
 
-The full builtin set is not implemented. Universal variables (`set -U`),
-advanced read options and locale-specific numeric formatting remain unavailable;
+The full builtin set is not implemented. Advanced read options and
+locale-specific numeric formatting remain unavailable;
 unsupported options produce diagnostics.
 The native evaluator also lacks `argparse`, `commandline` and the `path`
 builtin, so bundled functions that depend on them still need further shared
@@ -125,6 +125,27 @@ command; a handler in a pipeline worker uses that worker's inherited stdout.
 Signal, process/job exit and automatic reader lifecycle
 events remain unsupported. An untaken branch can guard a POSIX-only declaration
 with `status is-native-windows`.
+
+`set --universal` (`-U`) stores variables across native sessions, including export
+and path-variable flags. Local and global variables shadow universal values;
+an unscoped assignment updates an existing universal variable when no closer
+scope defines it. `set --path` and `--unpath` control whether a variable splits
+and exports using Windows' semicolon path separator.
+
+Native universal variables use `fish/native_fish_variables` under the selected
+configuration home. Their encoding is shared with POSIX Fish, but their file and
+locking are separate; POSIX `fish_variables` is not imported automatically.
+Each change merges with the latest stored values while locked, then replaces the
+file atomically. Other sessions' changes become visible at command and prompt
+boundaries, with variable events delivered after unlocking. Idle shells do not
+receive push notifications. Startup storage errors are diagnosed without blocking
+configuration; failed writes leave the file and session values intact. Malformed
+files are diagnosed and preserved. Files from an unknown future format can be
+read but are not overwritten.
+
+With `-N`/`--no-config`, universal files are neither read nor written. As in POSIX
+Fish, `set -U` then creates a global variable; explicit universal queries and
+erasures still address only universal scope.
 
 Use `rash`, `fish --rash-shell`, or `fish --script-language=bash` for Bash syntax:
 

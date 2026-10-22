@@ -232,7 +232,12 @@ pub(super) enum Item {
 
 pub(super) enum Request<'a> {
     Variable(&'a str),
-    Command { source: &'a str, quoted: bool },
+    /// The one-character delimiter used by this variable's quoted expansion.
+    VariableSeparator(&'a str),
+    Command {
+        source: &'a str,
+        quoted: bool,
+    },
 }
 
 pub(super) fn split_substitution(bytes: &[u8], quoted: bool) -> Result<Vec<String>> {
@@ -254,6 +259,9 @@ pub(super) fn word(
 ) -> Result<Vec<String>> {
     word_with(input, |request| match request {
         Request::Variable(name) => variable(name),
+        Request::VariableSeparator(name) => {
+            Ok(vec![if name.ends_with("PATH") { ";" } else { " " }.into()])
+        }
         Request::Command { .. } => Err(unsupported("command substitutions in literal expansion")),
     })
 }
@@ -348,6 +356,11 @@ fn expand_chars(
                     return Err(Error::new("expected a Fish variable name after '$'"));
                 }
                 let name: String = chars[start..index].iter().collect();
+                if quote == Quote::Double {
+                    let value = quoted_variable(&name, levels, chars, &mut index, expand, depth)?;
+                    append(&mut results, vec![literal(&value)])?;
+                    continue;
+                }
                 let mut values = expand(Request::Variable(&name))?;
                 for level in 0..levels {
                     if level > 0 {
@@ -360,9 +373,6 @@ fn expand_chars(
                     if chars.get(index) == Some(&'[') {
                         values = slice(chars, &mut index, values, expand, depth)?;
                     }
-                }
-                if quote == Quote::Double {
-                    values = vec![values.join(if name.ends_with("PATH") { ";" } else { " " })];
                 }
                 append(
                     &mut results,
@@ -458,6 +468,51 @@ fn expand_chars(
         return Err(Error::new("unterminated quote"));
     }
     Ok(results)
+}
+
+/// Quoted indirection joins each variable before the next dereference. The
+/// following name ends at its first non-name character; the remaining joined
+/// text stays literal. This also ensures the final variable's own delimiter is
+/// used, rather than the delimiter of the variable holding its name.
+fn quoted_variable(
+    name: &str,
+    levels: usize,
+    chars: &[char],
+    index: &mut usize,
+    expand: &mut impl FnMut(Request<'_>) -> Result<Vec<String>>,
+    depth: usize,
+) -> Result<String> {
+    let mut name = name.to_owned();
+    let mut suffix = String::new();
+    for level in 0..levels {
+        let mut values = if name.is_empty() {
+            Vec::new()
+        } else {
+            expand(Request::Variable(&name))?
+        };
+        if suffix.is_empty() && chars.get(*index) == Some(&'[') {
+            values = slice(chars, index, values, expand, depth)?;
+        }
+        let separators = expand(Request::VariableSeparator(&name))?;
+        let separator = separators.first().map_or(" ", String::as_str);
+        let mut joined = values.join(separator);
+        joined.push_str(&suffix);
+        if level + 1 == levels {
+            return Ok(joined);
+        }
+        let end = joined
+            .char_indices()
+            .find(|(_, character)| !crate::common::valid_var_name_char(*character))
+            .map_or(joined.len(), |(index, _)| index);
+        // Fish protects an empty first value during recursive quoted expansion;
+        // other values that do not begin with a name are invalid dereferences.
+        if end == 0 && values.first().is_some_and(|value| !value.is_empty()) {
+            return Err(Error::new("expected a Fish variable name after '$'"));
+        }
+        name = joined[..end].to_owned();
+        suffix = joined[end..].to_owned();
+    }
+    unreachable!("a variable expansion has at least one level")
 }
 
 struct BraceExpansion {
@@ -602,6 +657,50 @@ mod tests {
             Vec::<String>::new()
         );
         assert_eq!(word("\"$missing\"", |_| Ok(vec![])).unwrap(), [""]);
+    }
+
+    #[test]
+    fn quoted_variables_use_path_metadata_after_slicing_and_indirection() {
+        let expand = |request: Request<'_>| {
+            Ok(match request {
+                Request::Variable(name) => match name {
+                    "custom" | "UNPATH" => vec!["one".into(), "two".into()],
+                    "ref" => vec!["custom".into()],
+                    "refs" | "pathrefs" => vec!["custom".into(), "ordinary".into()],
+                    "ordinary" => vec!["x".into(), "y".into()],
+                    "empty_first" => vec!["".into(), "ordinary".into()],
+                    _ => Vec::new(),
+                },
+                Request::VariableSeparator(name) => vec![
+                    if matches!(name, "custom" | "pathrefs") {
+                        ";"
+                    } else {
+                        " "
+                    }
+                    .into(),
+                ],
+                Request::Command { .. } => unreachable!(),
+            })
+        };
+        for (source, expected) in [
+            ("\"$custom\"", "one;two"),
+            ("\"$UNPATH\"", "one two"),
+            ("\"$custom[2..1]\"", "two;one"),
+            ("\"$$ref\"", "one;two"),
+            ("\"$$ref[1][2]\"", "two"),
+            ("\"$$refs\"", "one;two ordinary"),
+            ("\"$$pathrefs\"", "one;two;ordinary"),
+            ("\"$$refs[2]\"", "x y"),
+            ("\"$$missing\"", ""),
+            ("\"$$empty_first\"", " ordinary"),
+        ] {
+            assert_eq!(word_with(source, expand).unwrap(), [expected], "{source}");
+        }
+        assert_eq!(word_with("$custom", expand).unwrap(), ["one", "two"]);
+        assert_eq!(
+            word_with("$$refs", expand).unwrap(),
+            ["one", "two", "x", "y"]
+        );
     }
 
     #[test]

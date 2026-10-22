@@ -228,21 +228,13 @@ impl Session {
             overwrite_argv |= name == "argv";
             scope.insert(
                 name.clone(),
-                Variable {
-                    values: args.get(index).cloned().into_iter().collect(),
-                    exported: false,
-                },
+                self.binding(name, args.get(index).cloned().into_iter().collect(), false),
             );
         }
         for (name, values) in function.inherit_vars {
             overwrite_argv |= name == "argv";
-            scope.insert(
-                name,
-                Variable {
-                    values,
-                    exported: false,
-                },
-            );
+            let variable = self.binding(&name, values, false);
+            scope.insert(name, variable);
         }
         if !overwrite_argv {
             scope.insert(
@@ -250,6 +242,7 @@ impl Session {
                 Variable {
                     values: args.to_vec(),
                     exported: false,
+                    pathvar: false,
                 },
             );
         }

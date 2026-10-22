@@ -4,7 +4,7 @@
 use crate::history_core::{HistoryItem, PersistenceMode, Timestamps, time_to_seconds, yaml};
 use fish_widestring::WString;
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File, OpenOptions};
+use std::fs::File;
 use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -371,31 +371,7 @@ fn bound(entries: &mut Vec<Entry>) {
     }
 }
 
-fn peer(path: &Path, suffix: &str) -> PathBuf {
-    let mut name = path.as_os_str().to_os_string();
-    name.push(suffix);
-    PathBuf::from(name)
-}
-
-fn locked<T>(path: &Path, action: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)?;
-    }
-    // Lock a stable sidecar: locking the history file itself would release the
-    // name during atomic replacement and let concurrent writers lose updates.
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(peer(path, ".lock"))?;
-    let mut lock = fd_lock::RwLock::new(file);
-    let _guard = lock.write()?;
-    action()
-}
+use super::storage::locked;
 
 fn read_bytes(path: &Path) -> io::Result<Option<Vec<u8>>> {
     let file = match File::open(path) {
@@ -507,58 +483,21 @@ fn valid_legacy_escapes(bytes: &[u8]) -> bool {
 }
 
 fn rewrite(path: &Path, entries: &[Entry]) -> io::Result<()> {
-    let temporary = peer(path, &format!(".tmp.{}", unique_id()));
-    // Only clean up a temporary file after this process successfully created it.
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)?;
-    let written = (|| {
+    super::storage::rewrite(path, |file| {
         for entry in entries {
-            entry.item(PersistenceMode::Disk).write_to(&mut file)?;
+            entry.item(PersistenceMode::Disk).write_to(file)?;
             if let Some(id) = &entry.id {
                 writeln!(file, "  native_id: {id}")?;
             }
         }
-        file.sync_all()
-    })();
-    drop(file);
-    let result = written.and_then(|()| replace(&temporary, path));
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
-}
-
-fn replace(source: &Path, destination: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
-    let source: Vec<_> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let destination: Vec<_> = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    // SAFETY: both paths are valid NUL-terminated UTF-16 buffers and remain alive.
-    if unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } == 0
-    {
-        Err(io::Error::last_os_error())
-    } else {
         Ok(())
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     struct Directory(PathBuf);
     impl Directory {
