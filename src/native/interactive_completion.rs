@@ -147,7 +147,7 @@ impl CompletionEngine {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let Some(name) = name.to_str() else { continue };
-                if executable_name(name) && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                if executable_name(name) && entry.path().is_file() {
                     self.commands.insert(command_name(name).into());
                     self.executables.insert(name.into());
                     self.executable_paths
@@ -2124,6 +2124,40 @@ mod tests {
             ["./native-probe.exe "]
         );
         assert!(engine.command_exists("./native-probe.exe", &directory.0));
+    }
+
+    #[test]
+    fn command_inventory_includes_executable_symlink_targets() {
+        let directory = Directory::new();
+        let target = directory.0.join("native-target.exe");
+        let link = directory.0.join("native-link.exe");
+        std::fs::write(&target, "").unwrap();
+        #[cfg(windows)]
+        if let Err(error) = std::os::windows::fs::symlink_file(&target, &link) {
+            if error.raw_os_error() == Some(1314) {
+                // Windows requires developer mode or the symlink privilege.
+                return;
+            }
+            panic!("cannot create executable symlink: {error}");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let mut engine = engine();
+        engine.set_context(
+            Vec::new(),
+            Some(directory.0.clone().into_os_string()),
+            Vec::new(),
+        );
+        assert!(engine.command_exists("native-link", &directory.0));
+        assert_eq!(
+            replacements(&engine, "native-l", &directory.0),
+            ["native-link "]
+        );
+        assert_eq!(engine.executable_paths.get("native-link"), Some(&link));
+        assert_eq!(
+            engine.autoload_commands("native-link ", 12, &directory.0)[0].0,
+            "native-link"
+        );
     }
 
     #[test]

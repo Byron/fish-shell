@@ -148,6 +148,8 @@ is empty. Bare executable completions follow PATH; files in the current director
 need an explicit `./` unless PATH includes that directory. An empty PATH list
 searches no directories, while an empty element explicitly includes the current
 directory.
+Executable symlinks on PATH, including Rustup's Cargo links, also participate in
+command discovery and completion autoloading.
 Disable the feature with `--no-default-features` and explicitly select the other
 desired Cargo features.
 
