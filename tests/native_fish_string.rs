@@ -426,13 +426,13 @@ fn quiet_basic_stream_operations_leave_input_for_the_next_command() {
             string trim -q <&0
             string upper <&0
         end
-        printf 'one\ntwo\nthree\n' | begin
+        printf 'one\ntwo\nthree\nfour\n' | begin
             string join -q , <&0
             string upper <&0
         end
     "#,
         ),
-        "SECOND\nLAST\nTHREE\n"
+        "SECOND\nLAST\nFOUR\n"
     );
 }
 

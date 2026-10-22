@@ -530,6 +530,19 @@ pub fn split_about<'haystack>(
     max: usize,     /*=usize::MAX*/
     no_empty: bool, /*=false*/
 ) -> Vec<&'haystack wstr> {
+    split_about_bounded(haystack, needle, max, no_empty, usize::MAX).unwrap()
+}
+
+/// Split with the same rules as `split_about`, rejecting an excessive number of
+/// returned fields before allocating them. Empty fields skipped by `no_empty`
+/// do not count against this limit or change the requested number of splits.
+pub fn split_about_bounded<'haystack>(
+    haystack: &'haystack wstr,
+    needle: &wstr,
+    max: usize,
+    no_empty: bool,
+    field_limit: usize,
+) -> Option<Vec<&'haystack wstr>> {
     let mut output = vec![];
     let mut remaining = max;
     let mut haystack = haystack.as_char_slice();
@@ -552,6 +565,9 @@ pub fn split_about<'haystack>(
         }
 
         if !no_empty || split_point != 0 {
+            if output.len() >= field_limit {
+                return None;
+            }
             output.push(wstr::from_char_slice(&haystack[..split_point]));
         }
         remaining -= 1;
@@ -560,9 +576,12 @@ pub fn split_about<'haystack>(
     }
     // Trailing component, possibly empty.
     if !no_empty || !haystack.is_empty() {
+        if output.len() >= field_limit {
+            return None;
+        }
         output.push(wstr::from_char_slice(haystack));
     }
-    output
+    Some(output)
 }
 
 // TODO: This should work on render width rather than the number of codepoints.
@@ -662,6 +681,26 @@ pub fn fish_wcwidth_visible(c: char) -> isize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn split_field_limit_preserves_delimiter_and_empty_field_rules() {
+        use super::split_about_bounded;
+        use fish_widestring::L;
+        assert_eq!(
+            split_about_bounded(L!(",,,x"), L!(","), usize::MAX, true, 1),
+            Some(vec![L!("x")])
+        );
+        assert_eq!(
+            split_about_bounded(L!(",,,x"), L!(","), 1, true, 1),
+            Some(vec![L!(",,x")])
+        );
+        assert!(split_about_bounded(L!("a,b"), L!(","), usize::MAX, false, 1).is_none());
+        assert_eq!(
+            split_about_bounded(L!(",,,"), L!(","), usize::MAX, true, 0),
+            Some(vec![])
+        );
+        assert!(split_about_bounded(L!(""), L!(","), usize::MAX, false, 0).is_none());
+    }
+
     use super::{
         CaseSensitivity, ContainType, LineIterator, count_newlines, ifind, join_strings,
         split_string_tok, string_fuzzy_match_string, string_prefixes_string_case_insensitive,

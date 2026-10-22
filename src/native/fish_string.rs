@@ -1,5 +1,5 @@
 //! Common Fish string operations, including streamed input from native pipelines.
-use fish_wcstringutil::split_about;
+use fish_wcstringutil::split_about_bounded;
 use fish_wgetopt::{ArgType::*, WGetopter, WOption, wopt};
 use fish_widestring::prelude::*;
 use rash::host::{Host, ReadResult, Redirection};
@@ -86,6 +86,10 @@ struct Options {
 }
 
 const QUIET_OPTIONS: &[WOption] = &[wopt(L!("quiet"), NoArgument, 'q')];
+const COLLECT_OPTIONS: &[WOption] = &[
+    wopt(L!("allow-empty"), NoArgument, 'a'),
+    wopt(L!("no-trim-newlines"), NoArgument, 'N'),
+];
 const JOIN_OPTIONS: &[WOption] = &[
     wopt(L!("quiet"), NoArgument, 'q'),
     wopt(L!("no-empty"), NoArgument, 'n'),
@@ -120,8 +124,9 @@ const SUB_OPTIONS: &[WOption] = &[
 fn option_spec(command: &str) -> Result<(&'static wstr, &'static [WOption<'static>])> {
     Ok(match command {
         "length" | "lower" | "upper" => (L!("q"), QUIET_OPTIONS),
-        "join" => (L!("qn"), JOIN_OPTIONS),
-        "split" => (L!("qrm:nf:a"), SPLIT_OPTIONS),
+        "collect" => (L!("Na"), COLLECT_OPTIONS),
+        "join" | "join0" => (L!("qn"), JOIN_OPTIONS),
+        "split" | "split0" => (L!("qrm:nf:a"), SPLIT_OPTIONS),
         "repeat" => (L!("n:m:qN"), REPEAT_OPTIONS),
         "trim" => (L!("c:lrq"), TRIM_OPTIONS),
         "sub" => (L!("l:qs:e:"), SUB_OPTIONS),
@@ -238,7 +243,7 @@ fn run_basic(
             "string sub: --end and --length are mutually exclusive",
         ));
     }
-    if options.allow_empty && options.fields.is_empty() {
+    if command != "collect" && options.allow_empty && options.fields.is_empty() {
         return Err(Error::new(
             "string split: --allow-empty is only valid with --fields",
         ));
@@ -251,7 +256,11 @@ fn run_basic(
     if args.len() < index + parameter_count {
         return Err(Error::new(format!("string {command}: missing operand")));
     }
-    let parameter = args.get(index).copied();
+    let parameter = if matches!(command.as_str(), "split0" | "join0") {
+        Some(L!("\0"))
+    } else {
+        args.get(index).copied()
+    };
     if command == "repeat" && parameter_count == 1 {
         options.count = Some(nonnegative(command, parameter.unwrap(), "count")?);
     }
@@ -273,15 +282,32 @@ fn run_basic(
     let mut split_fields = 0;
     let mut missing_field = false;
     let mut final_newline = true;
-    for_each_input(
+    for_each_input_mode(
         inputs,
         host,
         redirects,
         stdin_is_directly_redirected,
+        matches!(command.as_str(), "collect" | "split0"),
         |input, newline| {
             match command.as_str() {
-                "join" => {
-                    if options.no_empty && input.is_empty() {
+                "collect" => {
+                    let input = if options.no_newline {
+                        input
+                    } else {
+                        let end =
+                            input.len() - input.chars().rev().take_while(|&c| c == '\n').count();
+                        &input[..end]
+                    };
+                    success |= !input.is_empty();
+                    output.append_field(input, newline)?;
+                }
+                "join" | "join0" => {
+                    // Match POSIX join's quiet probe, including its third-input
+                    // early return and counting empty inputs in quiet mode.
+                    if options.quiet && emitted > 1 {
+                        return Ok(true);
+                    }
+                    if !options.quiet && options.no_empty && input.is_empty() {
                         return Ok(false);
                     }
                     if !options.quiet {
@@ -310,14 +336,19 @@ fn run_basic(
                     emitted += 1;
                 }
                 _ => {
-                    let (lines, changed) = transform(command, parameter, input, &options)?;
-                    if command == "split" {
+                    let split = matches!(command.as_str(), "split" | "split0");
+                    let operation = if split { "split" } else { command.as_str() };
+                    let (mut lines, changed) = transform(operation, parameter, input, &options)?;
+                    if split {
                         split_inputs += 1;
                         split_fields += lines.len();
                     }
+                    if command == "split0" && lines.last().is_some_and(|line| line.is_empty()) {
+                        lines.pop();
+                    }
                     success |= changed;
                     if !options.quiet {
-                        let selected: Box<dyn Iterator<Item = &WString>> = if command == "split"
+                        let selected: Box<dyn Iterator<Item = &WString>> = if split
                             && !options.fields.is_empty()
                         {
                             if !options.allow_empty
@@ -331,7 +362,7 @@ fn run_basic(
                             Box::new(lines.iter())
                         };
                         for line in selected {
-                            if command == "split" {
+                            if split {
                                 output.append_field(line, true)?;
                             } else {
                                 append(&mut output.bytes, line, newline || command == "length")?;
@@ -340,13 +371,20 @@ fn run_basic(
                     }
                 }
             }
-            Ok(options.quiet && success)
+            Ok(options.quiet && success && !matches!(command.as_str(), "join" | "join0"))
         },
     )?;
-    if !options.quiet && emitted > 0 && final_newline && !options.no_newline {
-        append(&mut output.bytes, L!(""), true)?;
+    if !options.quiet && emitted > 0 {
+        if command == "join0" {
+            append(&mut output.bytes, L!("\0"), false)?;
+        } else if final_newline && !options.no_newline {
+            append(&mut output.bytes, L!(""), true)?;
+        }
     }
-    if command == "split" && !options.quiet {
+    if command == "collect" && options.allow_empty && !success {
+        output.append_field(L!(""), true)?;
+    }
+    if matches!(command.as_str(), "split" | "split0") && !options.quiet {
         success = !missing_field && split_fields > split_inputs;
     }
     output.status = i32::from(!success);
@@ -414,20 +452,25 @@ fn transform(
         }
         "split" => {
             let separator = parameter.unwrap();
+            // Bound the split list before allocating owned fields, including
+            // when a stream consists entirely of delimiters.
+            let limit = super::super::capture::ELEMENT_LIMIT;
             let max = options.max.unwrap_or(usize::MAX);
             let values: Vec<WString> = if options.right {
                 let reversed: WString = input.chars().rev().collect();
                 let separator: WString = separator.chars().rev().collect();
-                split_about(&reversed, &separator, max, options.no_empty)
+                let fields =
+                    split_about_bounded(&reversed, &separator, max, options.no_empty, limit)
+                        .ok_or_else(|| Error::new("string split: field limit exceeded"))?;
+                fields
                     .into_iter()
                     .rev()
                     .map(|value| value.chars().rev().collect())
                     .collect()
             } else {
-                split_about(input, separator, max, options.no_empty)
-                    .into_iter()
-                    .map(wstr::to_owned)
-                    .collect()
+                let fields = split_about_bounded(input, separator, max, options.no_empty, limit)
+                    .ok_or_else(|| Error::new("string split: field limit exceeded"))?;
+                fields.into_iter().map(wstr::to_owned).collect()
             };
             let changed = values.len() > 1;
             (values, changed)
@@ -469,6 +512,24 @@ fn for_each_input(
     host: &mut impl Host,
     redirects: &[Redirection],
     stdin_is_directly_redirected: bool,
+    consume: impl FnMut(&wstr, bool) -> Result<bool>,
+) -> Result<()> {
+    for_each_input_mode(
+        args,
+        host,
+        redirects,
+        stdin_is_directly_redirected,
+        false,
+        consume,
+    )
+}
+
+fn for_each_input_mode(
+    args: &[&wstr],
+    host: &mut impl Host,
+    redirects: &[Redirection],
+    stdin_is_directly_redirected: bool,
+    whole_stream: bool,
     mut consume: impl FnMut(&wstr, bool) -> Result<bool>,
 ) -> Result<()> {
     if !stdin_is_directly_redirected {
@@ -476,6 +537,20 @@ fn for_each_input(
             if consume(arg, true)? {
                 break;
             }
+        }
+        return Ok(());
+    }
+    if whole_stream {
+        let ReadResult::Line(bytes) = host.read_record(redirects, None, None, false)? else {
+            return Err(Error {
+                message: "string: input interrupted".into(),
+                status: 130,
+            });
+        };
+        if !bytes.is_empty() {
+            let input =
+                String::from_utf8(bytes).map_err(|_| Error::new("string: input must be UTF-8"))?;
+            consume(&WString::from(input), false)?;
         }
         return Ok(());
     }
@@ -549,6 +624,9 @@ mod tests {
     #[test]
     fn inherited_input_is_never_read_when_arguments_are_empty() {
         let commands: &[&[&str]] = &[
+            &["collect"],
+            &["split0"],
+            &["join0"],
             &["length"],
             &["lower"],
             &["upper"],
@@ -577,6 +655,9 @@ mod tests {
     #[test]
     fn direct_input_and_operands_conflict_before_any_read() {
         let commands: &[&[&str]] = &[
+            &["collect", "x"],
+            &["split0", "x"],
+            &["join0", "x"],
             &["length", "x"],
             &["trim", "x"],
             &["split", ":", "x"],

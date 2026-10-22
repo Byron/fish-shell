@@ -114,6 +114,11 @@ output still renders the usual line separators. Native captures are bounded to
 16 MiB and 100,000 fields or worker output records. Cancelled or stopped captures
 are discarded; resuming a stopped pipeline does not restore its original
 substitution result.
+`string collect` retains whole input records, with `--allow-empty` and
+`--no-trim-newlines`; `string split0` splits NUL-delimited input while preserving
+embedded newlines. `string join0` writes ordinary NUL-separated bytes, including
+a terminal NUL, for pipelines and files. Substitution slices select fields before
+quoted results are joined, so `"$(printf 'a\nb\n')[2]"` expands to `b`.
 Native filesystem globbing expands unquoted `*` and recursive
 `**` directory components. Quoted stars and stars from variable values stay
 literal. Unmatched globs are empty lists for `set`, `count`, and `for`, and produce

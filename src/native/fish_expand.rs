@@ -237,11 +237,7 @@ pub(super) fn split_separated_substitution(
             fields.extend(split_substitution(&element.contents, false)?);
         }
     }
-    if quoted {
-        Ok(vec![fields.join("\n").trim_end_matches('\n').to_owned()])
-    } else {
-        Ok(fields)
-    }
+    Ok(fields)
 }
 
 pub(super) fn word(
@@ -477,6 +473,9 @@ fn expand_chars(
                 index = end;
                 if chars.get(index) == Some(&'[') {
                     values = slice(chars, &mut index, values, expand, depth, limits)?;
+                }
+                if quote == Quote::Double {
+                    values = vec![values.join("\n").trim_end_matches('\n').to_owned()];
                 }
                 append(
                     &mut results,

@@ -386,6 +386,30 @@ impl Host for NativeHost {
             _ => return Err(Error::new("descriptor is not available for reading")),
         };
         let mut line = Vec::new();
+        if delimiter.is_none() && max_chars.is_none() {
+            // Whole-stream consumers can read in blocks without taking bytes
+            // intended for a later read command from the same descriptor.
+            let mut block = [0; 16 * 1024];
+            loop {
+                if self.cancelled() {
+                    return Ok(ReadResult::Interrupted(line));
+                }
+                match input.read(&mut block) {
+                    Ok(0) => return Ok(ReadResult::Line(line)),
+                    Ok(count) => {
+                        if line.len().saturating_add(count) > 16 * 1024 * 1024 {
+                            return Err(Error {
+                                message: "input record limit exceeded".into(),
+                                status: 122,
+                            });
+                        }
+                        line.extend_from_slice(&block[..count]);
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
         let mut byte = [0];
         let mut characters = 0;
         let mut continuation = 0;
