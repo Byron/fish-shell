@@ -15,7 +15,6 @@ use std::time::{Duration, Instant};
 
 use log::{debug, warn};
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 use windows_sys::Win32::Foundation::{self as foundation, BOOL, FALSE, HANDLE, TRUE};
 use windows_sys::Win32::System::Console as console;
 use windows_sys::Win32::System::Threading as threading;
@@ -608,12 +607,16 @@ impl Renderer for ConsoleRenderer {
     /// Characters with 2 column width are correctly handled (not split).
     fn calculate_position(&self, s: &str, orig: Position) -> Position {
         let mut pos = orig;
+        // Use the same visible widths as wrap_at_eol. Counting the characters
+        // inside SGR sequences shifts the cursor and can invent wrapped rows;
+        // the next refresh would then erase output above the actual prompt.
+        let mut esc_seq = 0;
         for c in s.graphemes(true) {
             if c == "\n" {
                 pos.col = 0;
                 pos.row += 1;
             } else {
-                let cw = c.width();
+                let cw = width(c, &mut esc_seq);
                 pos.col += cw;
                 if pos.col > self.cols {
                     pos.row += 1;

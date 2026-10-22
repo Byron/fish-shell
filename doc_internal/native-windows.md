@@ -240,7 +240,9 @@ when that variable is not set. Without either location it uses
 runs in the native evaluator and must use its supported Fish syntax and builtins.
 Native Fish calls a defined `fish_prompt` function before each new command and
 uses its output as the prompt, preserving the previous command's `$status` and
-`$pipestatus`. Without that function it displays `fish>`. Function autoloading
+`$pipestatus`. ANSI colors in multiline prompts, including native Starship output,
+do not contribute to cursor columns or wrapped rows, so editing preserves output
+above the prompt. Without that function it displays `fish>`. Function autoloading
 and vendor configuration are not provided. Native Fish reports cwd with OSC 7
 and accepted-command lifecycle/status with OSC 133. Rustty/tmuxx can track cwd,
 command text and exit status without an MSYS wrapper or injected startup script.
@@ -267,6 +269,7 @@ Run the isolated Windows editor check with native Windows Python:
 ```powershell
 python tests/native_interactive_tmuxx.py .\target\x86_64-pc-windows-msvc\release\fish.exe C:/Apps/Rustty/tmuxx.exe
 python tests/native_fish_feel_tmuxx.py .\target\x86_64-pc-windows-msvc\release\fish.exe C:/Apps/Rustty/tmuxx.exe
+python tests/native_prompt_tmuxx.py .\target\x86_64-pc-windows-msvc\release\fish.exe C:/Apps/Rustty/tmuxx.exe
 ```
 
 It uses a fresh tmuxx owner and private configuration/history directories, leaving
@@ -274,6 +277,11 @@ existing terminal sessions and user files unchanged. The check covers Unicode
 editing, filename/command/PATH completion, multiline input, Ctrl-C/Ctrl-Z recovery,
 history reload and private mode, Fish configuration and `fish_prompt` status,
 function completion, and separate Rash history.
+
+The prompt check verifies physical cursor coordinates and preservation of
+preceding output during typing, multiline editing and resizing. It always tests
+ANSI-colored prompts and also runs native Starship when found on `PATH`; pass
+`--starship C:/path/to/starship.exe` to select an explicit installation.
 
 ## Bash-style interactive input
 
