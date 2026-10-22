@@ -312,6 +312,87 @@ def main():
             keys("Enter")
             expect("FEEL_pager_result:東京")
 
+            # Ctrl-N/P belong to the open menu in either input dialect, then
+            # resume normal history navigation without losing the edited draft.
+            send("set -g fish_autosuggestion_enabled 0")
+            expect_input("")
+            for input_mode in ("fish", "bash"):
+                send(f"fish_input_mode {input_mode}")
+                expect_input("")
+                older = f"echo FEEL_ctrl_history_{input_mode}_older"
+                newer = f"echo FEEL_ctrl_history_{input_mode}_newer"
+                send(older)
+                expect(older.removeprefix("echo "))
+                send(newer)
+                expect(newer.removeprefix("echo "))
+                result = "FEEL_pager_result:zebra"
+                before = capture().splitlines().count(result)
+
+                def expect_menu(query, selected, count):
+                    def matches(text):
+                        # Inspect only the active menu, never stale scrollback.
+                        active = text.rsplit("FEEL> ", 1)[-1].splitlines()
+                        return (bool(active) and active[0].rstrip() == "FEEL_pager"
+                                and any(f"Search: {query}_  ({count}/4)" in line
+                                        for line in active)
+                                and f"> {selected}" in active)
+
+                    text = wait_for(
+                        matches,
+                        f"{input_mode}: Ctrl-N/P did not select {selected!r} "
+                        f"in completion menu filtered by {query!r}",
+                    )
+                    assert text.splitlines().count(result) == before, \
+                        "menu navigation executed the command"
+
+                literal("FEEL_pager ")
+                keys("Tab", "C-n")
+                expect_menu("", "alpha", 4)
+                keys("C-n")
+                expect_menu("", "beta", 4)
+                keys("C-p")
+                expect_menu("", "alpha", 4)
+                keys("C-p")
+                expect_menu("", "東京", 4)
+                literal("a")
+                expect_menu("a", "alpha", 3)
+                keys("C-n")
+                expect_menu("a", "beta", 3)
+                keys("C-n")
+                expect_menu("a", "zebra", 3)
+                keys("C-n")
+                expect_menu("a", "alpha", 3)
+                keys("C-p")
+                expect_menu("a", "zebra", 3)
+                keys("Enter")
+                expect_input("FEEL_pager zebra ")
+                assert capture().splitlines().count(result) == before, \
+                    "accepting a completion executed the command"
+
+                keys("C-p")
+                expect_input(newer)
+                keys("C-p")
+                expect_input(older)
+                keys("C-n")
+                expect_input(newer)
+                keys("C-n")
+                expect_input("FEEL_pager zebra ")
+                keys("Enter")
+                expect(result, count=before + 1)
+
+                literal("FEEL_pager ")
+                keys("Tab", "C-n", "Escape")
+                expect_input("FEEL_pager ")
+                keys("C-p")
+                expect_input("FEEL_pager zebra ")
+                keys("C-n")
+                expect_input("FEEL_pager ")
+                keys("C-c")
+                expect_input("")
+            send("fish_input_mode fish")
+            send("set -e fish_autosuggestion_enabled")
+            expect_input("")
+
             # Menu cancellation preserves the exact cursor and suffix.
             literal("FEEL_pager  tail")
             keys("Home", *("Right" for _ in "FEEL_pager "), "Tab")
@@ -541,7 +622,8 @@ def main():
                 raise AssertionError(f"native Fish did not exit:\n{capture()}")
             coverage = ("visible/color hints, full/word acceptance, substring history/draft restore, "
                         "editable multiline/cancellation, variable/command/cd/declarative "
-                        "completion and searchable menu, bracketed paste/undo/resize, "
+                        "completion and searchable menu with Ctrl-N/P in Fish/Bash modes, "
+                        "bracketed paste/undo/resize, "
                         "abbreviations, custom bindings and vi, "
                         "custom colors/prompts, terminal metadata")
             print("PASS native Fish feel: " + coverage)

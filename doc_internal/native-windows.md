@@ -227,9 +227,12 @@ supported. Dynamic registrations report a diagnostic instead of silently
 running as static choices.
 
 When multiple completions match, Tab opens a searchable menu under the input.
-Type to filter choices; Tab/Shift-Tab or arrows select, Page Up/Down move by a
-page, and Backspace edits the filter. Enter inserts the selected completion
-without executing the command. Escape or Ctrl-G cancels and preserves the
+Type to filter choices; Tab/Shift-Tab, arrows or Ctrl-N/Ctrl-P select, Page Up/Down
+move by a page, and Backspace edits the filter. Ctrl-N selects the next match and
+Ctrl-P the previous one, wrapping at either end of the filtered list. Outside
+the menu, Ctrl-N/Ctrl-P retain their next/previous history behavior.
+Enter inserts the selected completion without executing the command.
+Escape or Ctrl-G cancels and preserves the
 original text and cursor. Selection stays in the menu until accepted. Menu
 rows are never command text or autosuggestions, and Unicode widths and terminal
 resizing use the same renderer as the editable input.

@@ -216,8 +216,10 @@ impl PagerBindings {
             return Some(Cmd::Repaint);
         }
         match key {
-            KeyEvent(KeyCode::Down | KeyCode::Right, Modifiers::NONE) => pager.navigate(1),
-            KeyEvent(KeyCode::Up | KeyCode::Left, Modifiers::NONE) => pager.navigate(-1),
+            KeyEvent(KeyCode::Down | KeyCode::Right, Modifiers::NONE)
+            | KeyEvent(KeyCode::Char('N'), Modifiers::CTRL) => pager.navigate(1),
+            KeyEvent(KeyCode::Up | KeyCode::Left, Modifiers::NONE)
+            | KeyEvent(KeyCode::Char('P'), Modifiers::CTRL) => pager.navigate(-1),
             KeyEvent(KeyCode::PageDown, Modifiers::NONE) => {
                 pager.navigate(page_size(terminal_size().1) as isize);
             }
@@ -358,7 +360,7 @@ impl Pager {
         let width = columns.saturating_sub(1).max(1);
         let count = self.matches.len();
         let header = format!(
-            "Search: {}_  ({}/{})  Tab/arrows select, Enter accept, Esc cancel",
+            "Search: {}_  ({}/{})  Tab/arrows/Ctrl-N/P select, Enter accept, Esc cancel",
             self.query,
             count,
             self.candidates.len()
