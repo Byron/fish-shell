@@ -7,6 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+fish-wcstringutil.workspace = true
 fish-feature-flags.workspace = true
 fish-widestring.workspace = true
 libc.workspace = true

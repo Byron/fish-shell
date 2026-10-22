@@ -32,3 +32,13 @@ pub fn string_test(mut args: Vec<&wstr>) -> (WString, libc::c_int) {
 
     (outs.contents().to_owned(), rc.builtin_status_code())
 }
+
+#[path = "../../../tests/string_cases/mod.rs"]
+pub(super) mod cases;
+
+pub(super) fn validate_case(args: &[&str], expected_rc: i32, expected_out: &str) {
+    let args: Vec<WString> = args.iter().map(|arg| WString::from(*arg)).collect();
+    let (actual_out, actual_rc) = string_test(args.iter().map(WString::as_utfstr).collect());
+    assert_eq!(actual_out.to_string(), expected_out, "{args:?}");
+    assert_eq!(actual_rc, expected_rc, "{args:?}");
+}

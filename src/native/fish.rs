@@ -39,6 +39,8 @@ enum Flow {
 
 #[derive(Default)]
 struct Output {
+    pipeline_input: bool,
+    stdin_is_directly_redirected: bool,
     redirects: Vec<Redirection>,
     capture: bool,
     bytes: Vec<u8>,
@@ -84,6 +86,8 @@ pub struct Session {
     function_depth: usize,
     function_frames: Vec<functions::FunctionFrame>,
     source_depth: usize,
+    #[serde(default)]
+    worker_pipeline_input: bool,
 }
 
 fn unsupported(what: &str) -> Error {
@@ -227,6 +231,7 @@ impl Session {
             function_depth: 0,
             function_frames: vec![],
             source_depth: 0,
+            worker_pipeline_input: false,
         };
         session.initialize_function_paths();
         Ok(session)
@@ -377,7 +382,11 @@ impl Session {
     }
 
     pub fn eval(&mut self, source: &str, host: &mut impl Host) -> Result<i32> {
-        let result = self.eval_source(source, host, &mut Output::default());
+        let mut output = Output {
+            pipeline_input: std::mem::take(&mut self.worker_pipeline_input),
+            ..Default::default()
+        };
+        let result = self.eval_source(source, host, &mut output);
         if let Err(error) = &result {
             self.status = error.status;
         } else if host.cancelled() {
@@ -566,7 +575,9 @@ impl Session {
             let return_path = (index == node.continuation.len())
                 .then(|| result_file.as_ref().map(|file| file.path().to_owned()))
                 .flatten();
-            let state = super::worker::encode(&(self.clone(), &stage_source, return_path))?;
+            let mut worker = self.clone();
+            worker.worker_pipeline_input = index > 0;
+            let state = super::worker::encode(&(worker, &stage_source, return_path))?;
             let mut stage =
                 host.prepare_worker("fish", state, self.exports(), stage_source.into_bytes())?;
             stage.redirects.clone_from(&output.redirects);
@@ -657,6 +668,14 @@ impl Session {
         host: &mut impl Host,
         output: &mut Output,
     ) -> Result<()> {
+        // Input inherited by a compound statement is not a direct redirection
+        // of the individual builtins inside its body.
+        if !matches!(
+            statement,
+            ast::Statement::Decorated(_) | ast::Statement::Not(_)
+        ) {
+            output.pipeline_input = false;
+        }
         match statement {
             ast::Statement::Decorated(node) => self.eval_command(node, source, host, output),
             ast::Statement::Not(node) => {
@@ -820,10 +839,19 @@ impl Session {
                 }
             }
         }
+        let stdin_is_directly_redirected = std::mem::take(&mut output.pipeline_input)
+            || redirects[output.redirects.len()..].iter().any(|redirect| {
+                redirect.fd == 0 && !matches!(redirect.action, RedirectAction::Close)
+            });
+        let saved_stdin = std::mem::replace(
+            &mut output.stdin_is_directly_redirected,
+            stdin_is_directly_redirected,
+        );
         let redirects = host.prepare_redirects(&redirects)?;
         let saved = std::mem::replace(&mut output.redirects, redirects);
         let result = self.dispatch(&name, &args, node.decoration(), host, output);
         output.redirects = saved;
+        output.stdin_is_directly_redirected = saved_stdin;
         self.pipeline = vec![self.status];
         result
     }

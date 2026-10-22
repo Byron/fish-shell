@@ -151,18 +151,7 @@ enum StringError<'a> {
     UnknownOption,
 }
 
-enum RegexError {
-    Compile {
-        pattern: WString,
-        error: pcre2::Error,
-    },
-    InvalidCaptureGroupName {
-        name: WString,
-    },
-    InvalidEscape {
-        replacement: WString,
-    },
-}
+use crate::string_regex::RegexError;
 
 impl RegexError {
     fn print_error(&self, args: &[&wstr], streams: &mut IoStreams) {

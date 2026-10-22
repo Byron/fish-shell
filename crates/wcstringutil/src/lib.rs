@@ -1,5 +1,7 @@
 //! Helper functions for working with wcstring.
 
+pub mod escape;
+
 use fish_fallback::{fish_wcwidth, lowercase, lowercase_rev, wcscasecmp, wcscasecmp_fuzzy};
 use fish_widestring::{ANY_CHAR, ANY_STRING, ANY_STRING_RECURSIVE, ELLIPSIS_CHAR, prelude::*};
 

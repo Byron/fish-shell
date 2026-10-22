@@ -2,13 +2,48 @@
 use rash::host::{Host, ReadResult, Redirection};
 use rash::{Error, Result};
 
+#[path = "fish_string_matching.rs"]
+mod matching;
+
+#[derive(Default)]
+pub(super) struct StringOutput {
+    pub bytes: Vec<u8>,
+    pub status: i32,
+    pub captures: std::collections::HashMap<String, Vec<String>>,
+    pub diagnostic: Option<String>,
+}
+
+pub(super) fn run(
+    args: &[String],
+    host: &mut impl Host,
+    redirects: &[Redirection],
+    stdin_is_directly_redirected: bool,
+) -> Result<StringOutput> {
+    if args.first().is_some_and(|command| {
+        matches!(
+            command.as_str(),
+            "match" | "replace" | "escape" | "unescape"
+        )
+    }) {
+        return Ok(matching::run(
+            args,
+            host,
+            redirects,
+            stdin_is_directly_redirected,
+        ));
+    }
+    let (bytes, status) = run_basic(args, host, redirects)?;
+    Ok(StringOutput {
+        bytes,
+        status,
+        ..Default::default()
+    })
+}
+
 #[derive(Default)]
 struct Options {
     quiet: bool,
     no_empty: bool,
-    insensitive: bool,
-    invert: bool,
-    all: bool,
     left: bool,
     right: bool,
     no_newline: bool,
@@ -18,43 +53,7 @@ struct Options {
     chars: Option<String>,
 }
 
-pub(super) fn wildcard_match(pattern: &str, value: &str, insensitive: bool) -> bool {
-    let pattern = if insensitive {
-        pattern.to_lowercase()
-    } else {
-        pattern.to_owned()
-    };
-    let value = if insensitive {
-        value.to_lowercase()
-    } else {
-        value.to_owned()
-    };
-    let pattern: Vec<_> = pattern.chars().collect();
-    let value: Vec<_> = value.chars().collect();
-    let (mut p, mut v, mut star, mut backtrack) = (0, 0, None, 0);
-    while v < value.len() {
-        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == value[v]) {
-            p += 1;
-            v += 1;
-        } else if p < pattern.len() && pattern[p] == '*' {
-            star = Some(p);
-            p += 1;
-            backtrack = v;
-        } else if let Some(star) = star {
-            backtrack += 1;
-            v = backtrack;
-            p = star + 1;
-        } else {
-            return false;
-        }
-    }
-    while p < pattern.len() && pattern[p] == '*' {
-        p += 1;
-    }
-    p == pattern.len()
-}
-
-pub(super) fn run(
+fn run_basic(
     args: &[String],
     host: &mut impl Host,
     redirects: &[Redirection],
@@ -72,9 +71,6 @@ pub(super) fn run(
             }
             "-q" | "--quiet" => options.quiet = true,
             "-n" | "--no-empty" if command != "repeat" => options.no_empty = true,
-            "-i" | "--ignore-case" => options.insensitive = true,
-            "-v" | "--invert" => options.invert = true,
-            "-a" | "--all" => options.all = true,
             "-l" | "--left" if command == "trim" => options.left = true,
             "-r" | "--right" if command == "trim" || command == "split" => options.right = true,
             "-N" | "--no-newline" => options.no_newline = true,
@@ -116,11 +112,6 @@ pub(super) fn run(
                     }
                 }
             }
-            "-r" | "--regex" => {
-                return Err(Error::new(
-                    "native string: regular expression operations are not available yet",
-                ));
-            }
             _ if arg.starts_with('-') => {
                 return Err(Error::new(format!(
                     "string {command}: unknown option {arg}"
@@ -131,8 +122,7 @@ pub(super) fn run(
         index += 1;
     }
     let operands = match command.as_str() {
-        "join" | "split" | "match" => 1,
-        "replace" => 2,
+        "join" | "split" => 1,
         "repeat" if options.count.is_none() => 1,
         _ => 0,
     };
@@ -263,28 +253,6 @@ fn transform(
                 }
                 output.extend(values);
             }
-            "replace" => {
-                if options.insensitive {
-                    return Err(Error::new(
-                        "native string replace: case-insensitive replacement is not available yet",
-                    ));
-                }
-                let value = if options.all {
-                    input.replace(parameters[0], parameters[1])
-                } else {
-                    input.replacen(parameters[0], parameters[1], 1)
-                };
-                success |= input.contains(parameters[0]);
-                output.push(value);
-            }
-            "match" => {
-                let matches =
-                    wildcard_match(parameters[0], input, options.insensitive) != options.invert;
-                if matches {
-                    success = true;
-                    output.push(input.clone());
-                }
-            }
             "repeat" => {
                 let count = options.count.unwrap_or(1);
                 if input.len().saturating_mul(count) > 16 * 1024 * 1024 {
@@ -316,24 +284,6 @@ fn transform(
                 let value: String = chars[start..end].iter().collect();
                 success = true;
                 output.push(value);
-            }
-            "escape" => {
-                let mut escaped = String::new();
-                if input.is_empty() {
-                    escaped.push_str("''");
-                }
-                for c in input.chars() {
-                    if c.is_whitespace() || "\\'\"$();&|<>*?{}[]#~".contains(c) {
-                        escaped.push('\\');
-                    }
-                    escaped.push(c);
-                }
-                success = true;
-                output.push(escaped);
-            }
-            "unescape" => {
-                output.push(super::super::expand::unescape_literal(input)?);
-                success = true;
             }
             _ => {
                 return Err(Error::new(format!(
@@ -371,8 +321,6 @@ mod tests {
             .0,
             ["文b"]
         );
-        assert!(wildcard_match("a*?", "alpha", false));
-        assert!(!wildcard_match("a?", "alpha", false));
         assert_eq!(
             transform("trim", &[], &["  word\t".into()], &Options::default())
                 .unwrap()

@@ -42,11 +42,39 @@ impl Session {
                 self.write(&numeric::math(args)?, host, output)?;
                 self.status = 0;
             }
-            "string" => {
-                let (bytes, status) = string::run(args, host, &output.redirects)?;
-                self.write(&bytes, host, output)?;
-                self.status = status;
-            }
+            "string" => match string::run(
+                args,
+                host,
+                &output.redirects,
+                output.stdin_is_directly_redirected,
+            ) {
+                Ok(result) => {
+                    self.write(&result.bytes, host, output)?;
+                    for (name, values) in result.captures {
+                        let mut assignment = vec![name];
+                        assignment.extend(values);
+                        self.set(&assignment, host, output)?;
+                    }
+                    self.status = result.status;
+                    if let Some(diagnostic) = result.diagnostic {
+                        output.bytes.extend(host.write(
+                            2,
+                            format!("{diagnostic}\n").as_bytes(),
+                            &output.redirects,
+                            output.capture,
+                        )?);
+                    }
+                }
+                Err(error) => {
+                    self.status = error.status;
+                    output.bytes.extend(host.write(
+                        2,
+                        format!("{}\n", error.message).as_bytes(),
+                        &output.redirects,
+                        output.capture,
+                    )?);
+                }
+            },
             "contains" => {
                 let mut args = args;
                 let index = args

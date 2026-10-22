@@ -95,9 +95,15 @@ case; quote wildcard patterns, for example `case '*.txt'`. Blocks support standa
 redirections, with a shared file position across their commands: `while read line;
 echo $line; end < input.txt > output.txt` reads and writes each line in order.
 Nested redirections are restored when a block finishes, including `return` and
-`break`. The full builtin set is not implemented. Universal variables (`set -U`),
-regular-expression string operations, advanced read options and locale-specific
-numeric formatting remain unavailable; unsupported options produce diagnostics.
+`break`. Regular-expression `string match` and `string replace` use the same
+UTF-32 PCRE2 implementation as POSIX Fish, including capture groups, character
+indices, repeated matches and replacement references. Named match groups set
+session variables. String escaping is also shared, including
+`string escape --style=regex` for completion helpers.
+
+The full builtin set is not implemented. Universal variables (`set -U`),
+advanced read options and locale-specific numeric formatting remain unavailable;
+unsupported options produce diagnostics.
 The native evaluator also lacks `argparse`, `commandline`, `emit` and the `path`
 builtin, so bundled functions that depend on them still need further shared
 implementation work.

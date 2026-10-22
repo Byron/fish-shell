@@ -641,6 +641,7 @@ version = "0.0.0"
 dependencies = [
  "fish-build-helper",
  "fish-feature-flags",
+ "fish-wcstringutil",
  "fish-widestring",
  "libc",
  "nix 0.31.3",
@@ -770,6 +771,7 @@ version = "0.0.0"
 dependencies = [
  "fish-build-helper",
  "fish-fallback",
+ "fish-feature-flags",
  "fish-widestring",
  "rsconf",
 ]
