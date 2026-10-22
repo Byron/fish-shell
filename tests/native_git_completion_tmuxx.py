@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check native Git ref completion in private repositories and tmuxx panes.
 
-Usage: python tests/native_git_completion_tmuxx.py FISH_EXE TMUXX_EXE
+Usage: python tests/native_git_completion_tmuxx.py [--no-git] FISH_EXE TMUXX_EXE
 
 All Git setup uses private configuration and repositories. Interactive reset
 inputs are inspected and cancelled; they are never submitted for execution.
@@ -10,7 +10,6 @@ inputs are inspected and cancelled; they are never submitted for execution.
 import argparse
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import tempfile
@@ -27,12 +26,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("fish", type=Path)
     parser.add_argument("tmuxx", type=Path)
+    parser.add_argument("--no-git", action="store_true",
+                        help="expect a Fish binary built without the git Cargo feature")
     args = parser.parse_args()
     if os.name != "nt":
         parser.error("this test requires native Windows and tmuxx ConPTY")
-    git_exe = shutil.which("git")
-    if not git_exe:
+    git_command = shutil.which("git")
+    if not git_command:
         parser.error("Git is required to create the private completion fixtures")
+    git_exe = str(Path(git_command).resolve())
     tmuxx = str(args.tmuxx.resolve())
     label = "fish-git-refs-" + uuid.uuid4().hex
     with tempfile.TemporaryDirectory(prefix="fish-git-refs-") as temporary:
@@ -48,6 +50,8 @@ def main():
         )
         hooks = root / "no-hooks"
         hooks.mkdir()
+        empty_path = root / "empty-path"
+        empty_path.mkdir()
         git_config = root / "gitconfig"
         git_config.write_text(
             '[user]\n name = Completion Fixture\n email = completion@example.invalid\n'
@@ -69,10 +73,11 @@ def main():
         )
         for name in ("TMUX", "TMUXX_ENDPOINT"):
             env.pop(name, None)
+        fixture_env = env.copy()
 
         def git(directory, *arguments):
             result = subprocess.run(
-                [git_exe, "-C", str(directory), *arguments], env=env, cwd=root,
+                [git_exe, "-C", str(directory), *arguments], env=fixture_env, cwd=root,
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 timeout=15, check=True, creationflags=subprocess.CREATE_NO_WINDOW,
             )
@@ -103,8 +108,8 @@ def main():
         original = {directory: (git(directory, "rev-parse", "HEAD"),
                                 git(directory, "status", "--porcelain=v1"))
                     for directory in (repository, alternate, worktree)}
-        # Trace only the shell/completion phase. This also detects an accidental
-        # Enter that submits reset instead of merely accepting a menu candidate.
+        # Fixture setup and oracle commands use a separate environment. Any
+        # trace output here therefore means a shell/completion probe invoked Git.
         trace = root / "git-trace.log"
         env["GIT_TRACE"] = str(trace)
         tmux_config = root / "tmuxx.conf"
@@ -183,6 +188,18 @@ def main():
             expect_input(expected)
             cancel()
 
+        def finish_pane():
+            send("exit 0")
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                state = call("display-message", "-pt", pane,
+                             "#{pane_dead}|#{pane_dead_status}").strip()
+                if state.startswith("1|"):
+                    assert state == "1|0", (state, capture())
+                    return
+                time.sleep(0.03)
+            raise AssertionError(f"shell did not exit:\n{capture()}")
+
         owner = subprocess.Popen(
             base + ["-D", "-f", str(tmux_config)], env=env, cwd=root,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -203,6 +220,51 @@ def main():
                 ).strip()
                 assert pane.startswith("%"), pane
                 expect_input("")
+                # Change the exported session PATH after startup. Completion
+                # must use gix and must not require a discoverable git.exe.
+                execute("set -gx PATH " + quote(empty_path.as_posix()))
+                path_query = root / f"path-{language}.txt"
+                execute("type -q git; printf '%s\\n' $status > " + quote(path_query.as_posix()))
+                assert path_query.read_text(encoding="utf-8").strip() == "1", (
+                    "Git unexpectedly resolves from the shell's empty PATH"
+                )
+
+                # The static command/option and file providers remain available
+                # regardless of whether dynamic Git ref support was compiled in.
+                require(complete("git rese"), "reset")
+                require(complete("git reset --ha"), "--hard")
+                assert names(complete("git reset -- fea")) == {"feature-file.txt"}
+                tab("git rese", "git reset")
+                tab("git reset --ha", "git reset --hard")
+                tab("git reset -- feature-f", "git reset -- feature-file.txt")
+
+                if args.no_git:
+                    # Make Git available again so a subprocess fallback could
+                    # succeed. The feature-disabled build must still omit refs.
+                    execute("set -gx PATH " + quote(Path(git_exe).parent.as_posix()))
+                    execute("type -q git; printf '%s\\n' $status > " + quote(path_query.as_posix()))
+                    assert path_query.read_text(encoding="utf-8").strip() == "0", (
+                        "Git did not resolve for the feature-disabled fallback check"
+                    )
+                    assert names(complete("git reset fea")) == {"feature-file.txt"}
+                    assert names(complete("git reset duplicate")) == {"duplicate-file.txt"}
+                    for source in ("git reset --hard fea", "git reset feature/al",
+                                   "git reset origin/", "git reset v-pa", "git reset HE",
+                                   "git switch duplicate"):
+                        assert complete(source) == [], f"refs offered without git feature: {source}"
+                    tab("git reset feature/al", "git reset feature/al")
+                    tab("git reset --hard feature/be", "git reset --hard feature/be")
+                    alternate_prefix = "git -C " + quote(alternate.as_posix()) + " reset "
+                    assert complete(alternate_prefix + "alternate/") == []
+                    execute("cd " + quote(outside.as_posix())
+                            + "; set -gx GIT_DIR " + quote((repository / ".git").as_posix())
+                            + "; set -gx GIT_WORK_TREE " + quote(repository.as_posix()))
+                    assert complete("git reset feature/al") == []
+                    finish_pane()
+                    print(f"PASS native Git feature disabled ({language}): static commands/options, "
+                          "files, no refs despite available git.exe and exported Git environment")
+                    continue
+
                 candidates = complete("git reset fea")
                 require(candidates, "feature/alpha", "branch")
                 require(candidates, "feature/beta", "branch")
@@ -279,23 +341,12 @@ def main():
                 tab("git reset feature/al", "git reset feature/alpha")
                 execute("set -e GIT_DIR; set -e GIT_WORK_TREE")
                 assert complete("git reset feature/") == [], "cleared Git environment remained cached"
-                send("exit 0")
-                deadline = time.monotonic() + 10
-                while time.monotonic() < deadline:
-                    state = call("display-message", "-pt", pane,
-                                 "#{pane_dead}|#{pane_dead_status}").strip()
-                    if state.startswith("1|"):
-                        assert state == "1|0", (state, capture())
-                        break
-                    time.sleep(0.03)
-                else:
-                    raise AssertionError(f"shell did not exit:\n{capture()}")
+                finish_pane()
                 print(f"PASS native Git refs ({language}): complete -C, Tab/menu, labels/quoting, "
-                      "reset modes, -C, packed refs/worktree, exported environment, no repository")
+                      "reset modes, -C, packed refs/worktree, exported environment, empty PATH")
             if trace.exists():
-                assert not re.search(r"built-in: git (?:reset|switch)(?:\s|$)", trace.read_text(encoding="utf-8")), (
-                    "a completion probe executed git reset/switch"
-                )
+                raise AssertionError("a shell/completion probe invoked Git: "
+                                     + trace.read_text(encoding="utf-8"))
             for directory, expected in original.items():
                 actual = (git(directory, "rev-parse", "HEAD"), git(directory, "status", "--porcelain=v1"))
                 assert actual == expected, f"completion changed {directory}: {actual!r} != {expected!r}"

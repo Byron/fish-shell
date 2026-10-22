@@ -195,21 +195,12 @@ fn setup_paths() {
 }
 
 fn get_version() -> String {
-    use std::process::Command;
     let version = env!("CARGO_PKG_VERSION");
-    // Running a .sh file requires a POSIX host. Keep the same version format
-    // as git_version_gen.sh without needing sh, awk, or even Git installed.
-    let description = Command::new("git")
-        .args(["describe", "--always", "--dirty"])
-        .current_dir(workspace_root())
-        .env(
-            "GIT_CEILING_DIRECTORIES",
-            workspace_root().parent().unwrap(),
-        )
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok());
+    #[cfg(feature = "git")]
+    let description = git_version();
+    #[cfg(not(feature = "git"))]
+    let description: Option<String> = None;
+
     match description
         .as_deref()
         .map(str::trim)
@@ -218,5 +209,67 @@ fn get_version() -> String {
         Some(description) if description.starts_with(version) => description.to_owned(),
         Some(description) => format!("{version}-g{description}"),
         None => version.to_owned(),
+    }
+}
+
+#[cfg(feature = "git")]
+fn git_version() -> Option<String> {
+    // Open only this checkout: an unpacked source archive inside another
+    // repository must retain the package version. No Git executable is needed.
+    // Disable command-capable configuration, including clean filters used by
+    // the dirty check, so obtaining build metadata cannot launch subprocesses.
+    let mut repo = gix::open_opts(
+        workspace_root(),
+        gix::open::Options::isolated().filter_config_section(|_| false),
+    )
+    .ok()?;
+    // gix currently reads loose and packed refs, and does not reject reftable
+    // repositories itself. Never report stale loose refs after a migration.
+    if repo
+        .config_snapshot()
+        .string("extensions.refStorage")
+        .is_some_and(|storage| !storage.eq_ignore_ascii_case(b"files"))
+    {
+        return None;
+    }
+    repo.object_cache_size_if_unset(4 * 1024 * 1024);
+    watch_git_version_inputs(&repo);
+
+    repo.head_commit()
+        .ok()?
+        .describe()
+        .id_as_fallback(true)
+        .try_resolve()
+        .ok()??
+        .format_with_dirty_suffix("dirty".to_owned())
+        .ok()
+        .map(|description| description.to_string())
+}
+
+#[cfg(feature = "git")]
+fn watch_git_version_inputs(repo: &gix::Repository) {
+    fn watch(path: impl AsRef<std::path::Path>) {
+        let path = path.as_ref();
+        // Cargo treats a missing watched file as always changed. Watch existing
+        // ref directories as well so newly created loose refs are still seen.
+        if path.exists() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+
+    watch(repo.git_dir().join("HEAD"));
+    watch(repo.git_dir().join("config.worktree"));
+    watch(repo.common_dir().join("config"));
+    watch(repo.common_dir().join("packed-refs"));
+    watch(repo.common_dir().join("refs"));
+    watch(repo.common_dir().join("reftable"));
+    watch(repo.index_path());
+
+    // Track source changes for the dirty suffix without traversing untracked
+    // build output, caches, or unrelated files in the working directory.
+    if let (Some(worktree), Ok(index)) = (repo.workdir(), repo.index()) {
+        for entry in index.entries() {
+            watch(worktree.join(gix::path::from_bstr(entry.path(&index))));
+        }
     }
 }

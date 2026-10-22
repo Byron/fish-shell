@@ -2,11 +2,15 @@
 //!
 //! Keep terminal handling out of this module. Completion consumes a snapshot of
 //! the evaluator's functions, variables and declarative registrations. Git refs
-//! come from bounded, fixed read-only queries; typed source is never executed.
+//! come from in-process gix queries when the `git` feature is enabled; typed
+//! source is never executed.
 
 use super::InputLanguage;
+#[cfg(feature = "git")]
 use super::interactive_git::{GitRef, GitRefs, RefKind as GitRefKind};
-use super::interactive_git_context::{self as git_context, RefFilter, Target};
+#[cfg(feature = "git")]
+use super::interactive_git_context::RefFilter;
+use super::interactive_git_context::{self as git_context, Target};
 use rustyline::completion::Pair;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
@@ -34,6 +38,7 @@ pub(super) struct CompletionEngine {
     executables: BTreeSet<String>,
     variables: Vec<String>,
     registrations: Vec<CompletionSpec>,
+    #[cfg(feature = "git")]
     git: GitRefs,
 }
 
@@ -112,6 +117,7 @@ impl CompletionEngine {
             executables: BTreeSet::new(),
             variables: Vec::new(),
             registrations: Vec::new(),
+            #[cfg(feature = "git")]
             git: GitRefs::new(),
         };
         engine.set_context(
@@ -161,7 +167,10 @@ impl CompletionEngine {
     }
 
     pub(super) fn set_environment(&mut self, environment: Vec<(OsString, OsString)>) {
+        #[cfg(feature = "git")]
         self.git.set_environment(environment);
+        #[cfg(not(feature = "git"))]
+        let _ = environment;
     }
 
     pub(super) fn set_input_language(&mut self, language: InputLanguage) {
@@ -297,6 +306,8 @@ impl CompletionEngine {
     }
 
     fn contextual(&self, command: &str, word: &Word, cwd: &Path, matches: &mut Candidates) -> bool {
+        #[cfg(not(feature = "git"))]
+        let _ = cwd;
         let command = command_name(command.rsplit(['/', '\\']).next().unwrap_or(command));
         let args = word.arguments();
         let positional = args.iter().filter(|arg| !arg.starts_with('-')).count();
@@ -309,12 +320,16 @@ impl CompletionEngine {
                 match context.target {
                     Target::Subcommand => add_choices(matches, subcommand_choices("git").unwrap()),
                     Target::Options(choices) => add_choices(matches, choices),
+                    #[cfg(feature = "git")]
                     Target::Refs(filter) if word.literal_command() => {
                         for reference in self.git.query(cwd, &context.globals) {
                             add_git_ref(matches, reference, filter, &context.prefix);
                         }
                     }
-                    Target::Refs(_) | Target::Files | Target::None => {}
+                    Target::Refs(filter) => {
+                        let _ = (filter, &context.prefix);
+                    }
+                    Target::Files | Target::None => {}
                 }
             }
         } else if options {
@@ -475,6 +490,7 @@ fn fish_only_keyword(name: &str) -> bool {
     )
 }
 
+#[cfg(feature = "git")]
 fn add_git_ref(matches: &mut Candidates, reference: GitRef, filter: RefFilter, prefix: &str) {
     if filter == RefFilter::LocalBranches && reference.kind != GitRefKind::LocalBranch
         || filter == RefFilter::Branches
@@ -712,6 +728,7 @@ struct Word {
 }
 
 impl Word {
+    #[cfg(any(feature = "git", test))]
     fn literal_command(&self) -> bool {
         !self.expanded_words
             && self
@@ -1433,6 +1450,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "git")]
     #[test]
     fn colliding_git_names_still_match_alongside_paths_and_switch_uses_branch_names() {
         let reference = |kind, name: &str| GitRef {

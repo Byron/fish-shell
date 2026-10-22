@@ -14,7 +14,7 @@ mod interactive_bindings;
 mod interactive_colors;
 #[cfg(windows)]
 mod interactive_completion;
-#[cfg(windows)]
+#[cfg(all(windows, feature = "git"))]
 mod interactive_git;
 #[cfg(windows)]
 mod interactive_git_context;
