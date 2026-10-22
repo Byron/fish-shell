@@ -206,7 +206,14 @@ Building natively on Windows
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Install Rust's MSVC toolchain, the Visual C++ Build Tools and the Windows SDK.
-From PowerShell in the source directory:
+For a release build with Just and PowerShell 7 installed, run ``just release``
+from the source directory.
+This preserves existing Windows executables under unique names before building
+all binaries in ``target/x86_64-pc-windows-msvc/release`` (or Cargo's configured
+target directory), allowing running shells to keep working. See
+`Native Windows support <doc_internal/native-windows.md>`__ for details.
+
+For a direct Cargo development build, use PowerShell:
 
 .. code:: powershell
 

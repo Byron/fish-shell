@@ -30,6 +30,17 @@ cargo build --locked --release --bins --target x86_64-pc-windows-msvc
 .\target\x86_64-pc-windows-msvc\release\rash.exe -c 'printf "%s\n" "native Rash"'
 ```
 
+With [Just](https://just.systems/) and PowerShell 7 installed, use `just release`
+to rebuild all four release binaries. On Windows this selects
+`x86_64-pc-windows-msvc`, the target used by Rustty. Before building, it renames
+existing executables and PDBs in the release and Cargo `deps` directories to
+names such as `fish.previous-<UTC timestamp>-<GUID>.exe` in the same directory.
+Running shells can continue using those files while Cargo creates new binaries.
+Every invocation uses a new suffix; previous backups are kept, including when
+the build fails. Cargo's configured target and build directories are respected.
+On Unix, `just release` builds with the current toolchain and ordinary Cargo
+release output paths.
+
 With an MSVC host toolchain, `cargo build --locked --release --bins` selects the
 native backend automatically and writes optimized executables to `target/release`.
 This milestone supports native Cargo builds; CMake installation and
