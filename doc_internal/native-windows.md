@@ -819,6 +819,13 @@ descendants that remain after their launcher exits. It cannot escape an enclosin
 Windows Job Object or the terminal's own lifetime policy; disowning inside a
 pipeline worker does not detach a process from its parent pipeline.
 
+`kill -l`/`--list` lists the supported signals (`INT`, `KILL`, `TERM`, `CONT`,
+`STOP`, and `TSTP`) and converts their names, numbers, and signal exit statuses.
+Signals can also be selected with `-s`/`--signal`. Bundled `kill` completions offer
+these signals and owned job process IDs. Unsupported options return status 2,
+respect stderr redirection, and let the calling script continue; GNU signal
+queues, signal tables, and arbitrary system process selection remain unavailable.
+
 Windows has no POSIX terminal foreground process groups. Background jobs default
 to null input unless redirected; `fg` cannot replace input already inherited by
 a background process. Stopped foreground jobs retain their original input.

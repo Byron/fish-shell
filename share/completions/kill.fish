@@ -1,11 +1,23 @@
 __fish_make_completion_signals
 
+set -l signal_option -s s
+if status is-native-windows
+    set -a signal_option -l signal
+end
+
 for sig in $__kill_signals[-1..1]
     set -l number (string split ' ' $sig)[1]
     set -l name (string split ' ' $sig)[2]
     complete -c kill -o $number -d $name
     complete -c kill -o $name -d $number
-    complete -c kill -k -s s -x -a "$name\t$number"
+    complete -c kill -k $signal_option -x -a "$name\t$number"
+end
+
+if status is-native-windows
+    complete -c kill -xa '(jobs -p)'
+    complete -c kill -s s -l signal -d "Signal to send"
+    complete -c kill -s l -l list -d "List supported signal names or convert a name or number"
+    return
 end
 
 complete -c kill -xa '(__fish_complete_pids)'

@@ -5,6 +5,13 @@ function __fish_make_completion_signals --description 'Make list of kill signals
 
     set -g __kill_signals
 
+    if status is-native-windows
+        for name in (string split ' ' (builtin kill --list))
+            set -a __kill_signals "$(builtin kill --list $name) $name"
+        end
+        return
+    end
+
     # Cygwin's kill is special, and the documentation lies.
     # Just hardcode the signals.
     set -l os (uname)

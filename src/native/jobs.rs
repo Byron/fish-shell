@@ -759,60 +759,40 @@ impl NativeHost {
                     }
                 }
             }
-            b"kill" => {
-                let mut signal = process::Signal::Terminate;
-                if args.first().is_some_and(|arg| arg == b"-l") {
+            b"kill" => match parse_kill(args) {
+                Ok(KillAction::List(bytes)) => {
+                    self.builtin_write(1, &bytes, command, capture, &mut stdout)?;
+                }
+                Ok(KillAction::Send(signal, operands)) => {
+                    for name in operands {
+                        let result = self
+                            .resolve_job(name)
+                            .and_then(|id| self.jobs.get_mut(&id).unwrap().signal(signal));
+                        if let Err(error) = result {
+                            status = 1;
+                            self.builtin_write(
+                                2,
+                                format!("kill: {}\n", error.message).as_bytes(),
+                                command,
+                                capture,
+                                &mut stdout,
+                            )?;
+                        }
+                    }
+                }
+                Err(error) => {
+                    // Invalid options are command failures. Completion helpers
+                    // probe optional kill features behind redirected stderr.
+                    status = error.status;
                     self.builtin_write(
-                        1,
-                        b"INT TERM KILL STOP TSTP CONT\n",
+                        2,
+                        format!("kill: {}\n", error.message).as_bytes(),
                         command,
                         capture,
                         &mut stdout,
                     )?;
-                    return Ok(RunResult {
-                        status: 0,
-                        stopped: false,
-                        pipeline: vec![0],
-                        stdout,
-                        last_pid: None,
-                    });
                 }
-                if let Some(option) = args.first() {
-                    if option == b"-s" {
-                        signal = parse_signal(
-                            args.get(1)
-                                .ok_or_else(|| Error::new("kill -s requires a signal"))?,
-                        )?;
-                        args = &args[2..];
-                    } else if option != b"--" {
-                        if let Some(name) = option.strip_prefix(b"-") {
-                            signal = parse_signal(name)?;
-                            args = &args[1..];
-                        }
-                    }
-                }
-                if args.first().is_some_and(|arg| arg == b"--") {
-                    args = &args[1..];
-                }
-                if args.is_empty() {
-                    return Err(Error::new("kill: expected an owned job or process"));
-                }
-                for name in args {
-                    let result = self
-                        .resolve_job(name)
-                        .and_then(|id| self.jobs.get_mut(&id).unwrap().signal(signal));
-                    if let Err(error) = result {
-                        status = 1;
-                        self.builtin_write(
-                            2,
-                            format!("kill: {}\n", error.message).as_bytes(),
-                            command,
-                            capture,
-                            &mut stdout,
-                        )?;
-                    }
-                }
-            }
+            },
             b"disown" => {
                 let all = args.first().is_some_and(|arg| arg == b"-a");
                 if all {
@@ -899,19 +879,166 @@ fn parse_number(bytes: &[u8]) -> Result<u32> {
         .ok_or_else(|| Error::new("expected a positive owned job or process ID"))
 }
 
-fn parse_signal(bytes: &[u8]) -> Result<process::Signal> {
-    let name = bytes.strip_prefix(b"SIG").unwrap_or(bytes);
-    match name {
-        b"0" => Ok(process::Signal::Check),
-        b"INT" | b"2" => Ok(process::Signal::Interrupt),
-        b"TERM" | b"15" => Ok(process::Signal::Terminate),
-        b"KILL" | b"9" => Ok(process::Signal::Kill),
-        b"STOP" | b"TSTP" | b"19" | b"20" => Ok(process::Signal::Stop),
-        b"CONT" | b"18" => Ok(process::Signal::Continue),
-        _ => Err(Error::new(
-            "unsupported signal; use INT, TERM, KILL, STOP, TSTP or CONT",
-        )),
+struct NativeSignal {
+    number: u8,
+    name: &'static str,
+    signal: process::Signal,
+}
+
+const NATIVE_SIGNALS: &[NativeSignal] = &[
+    NativeSignal {
+        number: 2,
+        name: "INT",
+        signal: process::Signal::Interrupt,
+    },
+    NativeSignal {
+        number: 9,
+        name: "KILL",
+        signal: process::Signal::Kill,
+    },
+    NativeSignal {
+        number: 15,
+        name: "TERM",
+        signal: process::Signal::Terminate,
+    },
+    NativeSignal {
+        number: 18,
+        name: "CONT",
+        signal: process::Signal::Continue,
+    },
+    NativeSignal {
+        number: 19,
+        name: "STOP",
+        signal: process::Signal::Stop,
+    },
+    NativeSignal {
+        number: 20,
+        name: "TSTP",
+        signal: process::Signal::Stop,
+    },
+];
+
+fn signal_name(bytes: &[u8]) -> &[u8] {
+    if bytes
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"SIG"))
+    {
+        &bytes[3..]
+    } else {
+        bytes
     }
+}
+
+fn unsupported_signal() -> Error {
+    Error::new("unsupported signal; use INT, TERM, KILL, STOP, TSTP or CONT")
+}
+
+fn parse_signal(bytes: &[u8]) -> Result<process::Signal> {
+    let bytes = signal_name(bytes);
+    if bytes == b"0" {
+        return Ok(process::Signal::Check);
+    }
+    let number = std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|value| value.parse::<u8>().ok());
+    NATIVE_SIGNALS
+        .iter()
+        .find(|entry| {
+            number == Some(entry.number)
+                || entry
+                    .name
+                    .as_bytes()
+                    .eq_ignore_ascii_case(signal_name(bytes))
+        })
+        .map(|entry| entry.signal)
+        .ok_or_else(unsupported_signal)
+}
+
+enum KillAction<'a> {
+    List(Vec<u8>),
+    Send(process::Signal, &'a [Vec<u8>]),
+}
+
+fn parse_kill(mut args: &[Vec<u8>]) -> Result<KillAction<'_>> {
+    if args
+        .first()
+        .is_some_and(|arg| arg == b"-l" || arg == b"--list")
+    {
+        args = &args[1..];
+        if args.first().is_some_and(|arg| arg == b"--") {
+            args = &args[1..];
+        }
+        let mut output = String::new();
+        if args.is_empty() {
+            output.push_str(
+                &NATIVE_SIGNALS
+                    .iter()
+                    .map(|entry| entry.name)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+            output.push('\n');
+        } else {
+            for argument in args {
+                let number = std::str::from_utf8(argument)
+                    .ok()
+                    .and_then(|value| value.parse::<u32>().ok());
+                let entry = NATIVE_SIGNALS
+                    .iter()
+                    .find(|entry| {
+                        if let Some(number) = number {
+                            // Like POSIX kill, also decode a shell's 128+signal status.
+                            u32::from(entry.number)
+                                == if number >= 128 { number - 128 } else { number }
+                        } else {
+                            entry
+                                .name
+                                .as_bytes()
+                                .eq_ignore_ascii_case(signal_name(argument))
+                        }
+                    })
+                    .ok_or_else(unsupported_signal)?;
+                if number.is_some() {
+                    output.push_str(entry.name);
+                } else {
+                    output.push_str(&entry.number.to_string());
+                }
+                output.push('\n');
+            }
+        }
+        return Ok(KillAction::List(output.into_bytes()));
+    }
+    let mut signal = process::Signal::Terminate;
+    if let Some(option) = args.first() {
+        if option == b"-s" || option == b"--signal" {
+            signal = parse_signal(
+                args.get(1)
+                    .ok_or_else(|| Error::new("--signal requires a signal"))?,
+            )?;
+            args = &args[2..];
+        } else if let Some(name) = option.strip_prefix(b"--signal=") {
+            signal = parse_signal(name)?;
+            args = &args[1..];
+        } else if option != b"--" {
+            if let Some(name) = option.strip_prefix(b"-") {
+                signal = parse_signal(name).or_else(|error| {
+                    if let Some(name) = name.strip_prefix(b"s").filter(|name| !name.is_empty()) {
+                        parse_signal(name)
+                    } else {
+                        Err(error)
+                    }
+                })?;
+                args = &args[1..];
+            }
+        }
+    }
+    if args.first().is_some_and(|arg| arg == b"--") {
+        args = &args[1..];
+    }
+    if args.is_empty() {
+        return Err(Error::new("expected an owned job or process"));
+    }
+    Ok(KillAction::Send(signal, args))
 }
 
 #[cfg(test)]
