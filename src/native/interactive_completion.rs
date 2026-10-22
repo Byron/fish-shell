@@ -1,7 +1,8 @@
-//! Native command-line completion without evaluating shell source.
+//! Native command-line completion with an optional Fish evaluator callback.
 //!
 //! Keep terminal handling out of this module. Completion consumes a snapshot of
-//! the evaluator's functions, variables and declarative registrations. Git refs
+//! the evaluator's functions, variables and registrations. An evaluator callback
+//! runs only registered conditions and generators in the live session. Git refs
 //! come from in-process gix queries when the `git` feature is enabled; typed
 //! source is never executed.
 
@@ -16,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-/// The literal subset of Fish's `complete` registrations supported natively.
+/// A registration keeps source unevaluated until a relevant completion query.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct CompletionSpec {
     pub command: String,
@@ -24,10 +25,24 @@ pub(super) struct CompletionSpec {
     pub long_option: Option<String>,
     pub old_option: Option<String>,
     pub arguments: Vec<String>,
+    #[serde(default)]
+    pub argument_sources: Vec<String>,
+    #[serde(default)]
+    pub conditions: Vec<String>,
     pub description: String,
     pub no_files: bool,
     pub requires_argument: bool,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub(super) struct CompletionContext {
+    pub line: String,
+    /// UTF-8 byte offset, like the native editor cursor.
+    pub cursor: usize,
+}
+
+type Evaluator<'a> =
+    dyn FnMut(&CompletionContext, &CompletionSpec, bool) -> rash::Result<Option<Vec<String>>> + 'a;
 
 pub(super) struct CompletionEngine {
     fish: bool,
@@ -83,6 +98,7 @@ impl CompletionEngine {
                 "builtin",
                 "functions",
                 "complete",
+                "commandline",
                 "set_color",
                 "abbr",
                 "bind",
@@ -216,8 +232,26 @@ impl CompletionEngine {
     }
 
     pub(super) fn complete(&self, line: &str, pos: usize, cwd: &Path) -> (usize, Vec<Pair>) {
+        self.complete_evaluated(line, pos, cwd, false, &mut |_, spec, arguments| {
+            Ok(Some(if arguments {
+                spec.arguments.clone()
+            } else {
+                Vec::new()
+            }))
+        })
+        .expect("literal completion cannot fail")
+    }
+
+    pub(super) fn complete_evaluated(
+        &self,
+        line: &str,
+        pos: usize,
+        cwd: &Path,
+        shell_output: bool,
+        evaluate: &mut Evaluator<'_>,
+    ) -> rash::Result<(usize, Vec<Pair>)> {
         if pos > line.len() || !line.is_char_boundary(pos) {
-            return (pos.min(line.len()), Vec::new());
+            return Ok((pos.min(line.len()), Vec::new()));
         }
         let word = completion_word(
             line,
@@ -225,7 +259,7 @@ impl CompletionEngine {
             self.fish && self.input_language == InputLanguage::Fish,
         );
         if word.comment {
-            return (pos, Vec::new());
+            return Ok((pos, Vec::new()));
         }
         if let Some(start) = word.variable {
             let mut matches = Candidates::new(&line[start..pos]);
@@ -236,7 +270,7 @@ impl CompletionEngine {
                     matches.add(variable, variable, "Variable", false);
                 }
             }
-            let mut result = matches.finish(false, false);
+            let mut result = matches.finish_style(false, false, shell_output);
             let suffix: String = line[pos..]
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
@@ -250,7 +284,7 @@ impl CompletionEngine {
                     // Keep unsupported parameter operators and indices whole.
                     // Closing the name before `:-` or `[0]` would turn the
                     // remainder of an expansion into unrelated literal text.
-                    return (pos, Vec::new());
+                    return Ok((pos, Vec::new()));
                 }
             }
             preserve_suffix(&mut result, &suffix);
@@ -259,7 +293,7 @@ impl CompletionEngine {
                     candidate.replacement.push('}');
                 }
             }
-            return (start, result);
+            return Ok((start, result));
         }
         // Partial substitutions and literal dollar signs are not paths. Never
         // evaluate them, and do not accidentally replace them with a literal.
@@ -267,7 +301,7 @@ impl CompletionEngine {
             || word.value.contains('\n')
             || word.value.contains('`') && self.input_language != InputLanguage::Bash
         {
-            return (word.start, Vec::new());
+            return Ok((word.start, Vec::new()));
         }
 
         let command = word.command();
@@ -277,7 +311,16 @@ impl CompletionEngine {
         if !word.redirect {
             if command.is_some() {
                 if self.fish {
-                    files = self.contextual_with_wrappers(&word, cwd, &mut matches);
+                    files = self.contextual_with_wrappers(
+                        &word,
+                        CompletionContext {
+                            line: line.into(),
+                            cursor: pos,
+                        },
+                        cwd,
+                        &mut matches,
+                        evaluate,
+                    )?;
                 }
             } else if !prefix.contains(['/', '\\']) {
                 for name in &self.builtins {
@@ -314,30 +357,37 @@ impl CompletionEngine {
         // an interior cursor, only offer candidates that preserve its suffix.
         let tail = token_tail(line, pos, word.quote);
         let append_space = pos == line.len();
-        let mut result = matches.finish(true, append_space);
+        // Bash's input adapter has no ANSI-C quoting. Do not insert literal
+        // terminal controls or offer replacements that change their value.
         if self.input_language == InputLanguage::Bash {
-            // A backslash-newline is a continuation in Bash, never a literal
-            // newline in a filename. Preserve it as a quoted fragment instead.
-            for candidate in &mut result {
-                candidate.replacement = candidate.replacement.replace("\\\n", "'\n'");
-            }
+            matches
+                .entries
+                .retain(|_, entry| !entry.value.chars().any(char::is_control));
         }
+        let mut result = matches.finish_style(true, append_space, shell_output);
         preserve_suffix(&mut result, &tail);
-        (word.start, result)
+        Ok((word.start, result))
     }
 
-    fn contextual_with_wrappers(&self, word: &Word, cwd: &Path, matches: &mut Candidates) -> bool {
-        let mut pending = vec![(word.clone(), BTreeSet::new())];
+    fn contextual_with_wrappers(
+        &self,
+        word: &Word,
+        context: CompletionContext,
+        cwd: &Path,
+        matches: &mut Candidates,
+        evaluate: &mut Evaluator<'_>,
+    ) -> rash::Result<bool> {
+        let mut pending = vec![(word.clone(), context, BTreeSet::new())];
         let mut files = true;
         for _ in 0..MAX_WRAPPER_CONTEXTS {
-            let Some((word, mut visited)) = pending.pop() else {
+            let Some((word, context, mut visited)) = pending.pop() else {
                 break;
             };
             let Some(index) = word.command_index() else {
                 continue;
             };
             let command = &word.words[index];
-            files &= self.contextual(command, &word, cwd, matches);
+            files &= self.contextual(command, &word, &context, cwd, matches, evaluate)?;
             if !visited.insert(command.clone()) {
                 continue;
             }
@@ -352,22 +402,49 @@ impl CompletionEngine {
                 continue;
             };
             for target in targets.iter().rev() {
+                if self.input_language == InputLanguage::Bash
+                    && target.iter().any(|word| word.chars().any(char::is_control))
+                {
+                    continue;
+                }
                 if pending.len() >= MAX_WRAPPER_CONTEXTS
                     || word.words.len() + target.len() > MAX_WRAPPER_WORDS
                 {
                     break;
                 }
-                let mut wrapped = word.clone();
                 // Keep preceding syntax and already-typed arguments intact while
                 // supplying the wrapped command's fixed arguments before them.
-                wrapped.words.splice(index..=index, target.iter().cloned());
-                pending.push((wrapped, visited.clone()));
+                let replacement = target
+                    .iter()
+                    .map(|word| quote_completion(word))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let span = word.spans[index].clone();
+                let mut wrapped_context = context.clone();
+                wrapped_context
+                    .line
+                    .replace_range(span.clone(), &replacement);
+                wrapped_context.cursor = context.cursor - span.len() + replacement.len();
+                let wrapped = completion_word(
+                    &wrapped_context.line,
+                    wrapped_context.cursor,
+                    self.input_language == InputLanguage::Fish,
+                );
+                pending.push((wrapped, wrapped_context, visited.clone()));
             }
         }
-        files
+        Ok(files)
     }
 
-    fn contextual(&self, command: &str, word: &Word, cwd: &Path, matches: &mut Candidates) -> bool {
+    fn contextual(
+        &self,
+        command: &str,
+        word: &Word,
+        context: &CompletionContext,
+        cwd: &Path,
+        matches: &mut Candidates,
+        evaluate: &mut Evaluator<'_>,
+    ) -> rash::Result<bool> {
         #[cfg(not(feature = "git"))]
         let _ = cwd;
         let command = command_name(command.rsplit(['/', '\\']).next().unwrap_or(command));
@@ -447,7 +524,6 @@ impl CompletionEngine {
             .iter()
             .filter(|spec| spec.command == command)
         {
-            files &= !spec.no_files;
             let short = spec.short_option.map(|option| format!("-{option}"));
             let long = spec
                 .long_option
@@ -456,11 +532,6 @@ impl CompletionEngine {
             let old = spec.old_option.as_ref().map(|option| format!("-{option}"));
             let flags = [short.as_deref(), long.as_deref(), old.as_deref()];
             let has_option = flags.iter().any(Option::is_some);
-            if options {
-                for flag in flags.iter().flatten() {
-                    matches.add(flag, flag, &spec.description, true);
-                }
-            }
             let follows_option = args
                 .last()
                 .is_some_and(|arg| flags.iter().flatten().any(|flag| arg == flag));
@@ -468,8 +539,18 @@ impl CompletionEngine {
                 .value
                 .split_once('=')
                 .filter(|(name, _)| flags.iter().flatten().any(|flag| name == flag));
-            if !has_option || follows_option || attached.is_some() {
-                for argument in &spec.arguments {
+            let wants_arguments = !has_option || follows_option || attached.is_some();
+            let Some(arguments) = evaluate(context, spec, wants_arguments)? else {
+                continue;
+            };
+            files &= !spec.no_files;
+            if options {
+                for flag in flags.iter().flatten() {
+                    matches.add(flag, flag, &spec.description, true);
+                }
+            }
+            if wants_arguments {
+                for argument in &arguments {
                     let (value, description) = argument
                         .split_once('\t')
                         .unwrap_or((argument, &spec.description));
@@ -482,7 +563,7 @@ impl CompletionEngine {
                 }
             }
         }
-        files
+        Ok(files)
     }
 
     fn complete_paths(&self, word: &Word, cwd: &Path, matches: &mut Candidates) {
@@ -757,7 +838,12 @@ impl Candidates {
             });
     }
 
+    #[cfg(test)]
     fn finish(self, quote: bool, append_space: bool) -> Vec<Pair> {
+        self.finish_style(quote, append_space, false)
+    }
+
+    fn finish_style(self, quote: bool, append_space: bool, shell_output: bool) -> Vec<Pair> {
         let best = self
             .entries
             .values()
@@ -773,10 +859,17 @@ impl Candidates {
         entries
             .into_iter()
             .map(|entry| Pair {
-                display: if entry.description.is_empty() {
+                display: if !shell_output {
+                    let display = display_controls(&entry.display);
+                    if entry.description.is_empty() {
+                        display
+                    } else {
+                        format!("{}  ({})", display, display_controls(&entry.description))
+                    }
+                } else if entry.description.is_empty() {
                     entry.display
                 } else {
-                    format!("{}  ({})", entry.display, entry.description)
+                    format!("{}\t{}", entry.display, entry.description)
                 },
                 replacement: format!(
                     "{}{}",
@@ -797,6 +890,10 @@ fn quote_completion(value: &str) -> String {
     // "my\\ directory/" can immediately be continued by the next component.
     let mut result = String::new();
     for (index, character) in value.chars().enumerate() {
+        if character.is_control() {
+            result.push_str(&format!("\\u{:04x}", character as u32));
+            continue;
+        }
         if !(character.is_alphanumeric()
             || "-._/:".contains(character)
             || character == '=' && value.starts_with('-')
@@ -809,11 +906,24 @@ fn quote_completion(value: &str) -> String {
     result
 }
 
+fn display_controls(value: &str) -> String {
+    let mut display = String::new();
+    for character in value.chars() {
+        if character.is_control() {
+            display.extend(character.escape_default());
+        } else {
+            display.push(character);
+        }
+    }
+    display
+}
+
 #[derive(Clone, Default)]
 struct Word {
     start: usize,
     value: String,
     words: Vec<String>,
+    spans: Vec<std::ops::Range<usize>>,
     quote: Option<char>,
     variable: Option<usize>,
     braced_variable: bool,
@@ -965,6 +1075,7 @@ fn completion_word(line: &str, pos: usize, fish: bool) -> Word {
             if active && (word.expansion || !word.value.chars().all(|c| c.is_ascii_digit())) {
                 word.expanded_words |= word.expansion;
                 word.words.push(std::mem::take(&mut word.value));
+                word.spans.push(word.start..at);
             }
             word.value.clear();
             word.redirect = true;
@@ -979,6 +1090,7 @@ fn completion_word(line: &str, pos: usize, fish: bool) -> Word {
                 } else {
                     word.expanded_words |= word.expansion;
                     word.words.push(std::mem::take(&mut word.value));
+                    word.spans.push(word.start..at);
                 }
             }
             word.value.clear();
@@ -1211,6 +1323,36 @@ const CARGO_BUILD_OPTIONS: Choices = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_control_characters_are_safe_to_display_and_insert() {
+        let directory = Directory::new();
+        let mut engine = engine();
+        let value = "alpha\r\n\x1bomega";
+        engine.set_registrations(vec![CompletionSpec {
+            command: "control_probe".into(),
+            arguments: vec![value.into()],
+            description: "description\x1b\r\n".into(),
+            no_files: true,
+            ..Default::default()
+        }]);
+        let (_, candidates) = engine.complete("control_probe ", 14, &directory.0);
+        assert_eq!(candidates.len(), 1);
+        let candidate = &candidates[0];
+        assert!(!candidate.display.chars().any(char::is_control));
+        assert!(!candidate.replacement.chars().any(char::is_control));
+        assert_eq!(
+            crate::native::fish::unescape_literal(candidate.replacement.trim_end()).unwrap(),
+            value
+        );
+        engine.set_input_language(InputLanguage::Bash);
+        assert!(
+            engine
+                .complete("control_probe ", 14, &directory.0)
+                .1
+                .is_empty()
+        );
+    }
 
     struct Directory(PathBuf);
 

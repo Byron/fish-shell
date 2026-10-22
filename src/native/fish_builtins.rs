@@ -50,6 +50,7 @@ pub(super) fn is_builtin(name: &str) -> bool {
             | "kill"
             | "disown"
             | "complete"
+            | "commandline"
             | "set_color"
             | "abbr"
             | "bind"
@@ -135,6 +136,7 @@ impl Session {
                 self.status = 0;
             }
             "complete" => self.complete_builtin(args, host, output)?,
+            "commandline" => self.commandline_builtin(args, host, output)?,
             "history" => {
                 if let Err(error) = self.history_builtin(args, host, output) {
                     self.status = error.status;
@@ -315,7 +317,7 @@ impl Session {
             // Keep Fish builtins reserved while their native implementations are pending.
             "printf" | "string" | "math" | "read" | "status" | "functions" | "type" | "command"
             | "builtin" | "argparse" | "contains" | "random" | "jobs" | "fg" | "bg" | "wait"
-            | "disown" | "exec" | "ulimit" | "umask" | "commandline" => {
+            | "disown" | "exec" | "ulimit" | "umask" => {
                 return Err(unsupported(&format!("the {name} builtin")));
             }
             _ => {

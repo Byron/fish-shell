@@ -249,7 +249,16 @@ pub(super) fn split_substitution(bytes: &[u8], quoted: bool) -> Result<Vec<Strin
     if quoted {
         Ok(vec![value.trim_end_matches('\n').to_owned()])
     } else {
-        Ok(value.split_terminator('\n').map(str::to_owned).collect())
+        // Native programs ordinarily write Windows CRLF. Treat each CRLF as a
+        // line delimiter while preserving a lone carriage return as content.
+        Ok(value
+            .split_inclusive('\n')
+            .map(|line| {
+                line.strip_suffix('\n')
+                    .map_or(line, |line| line.strip_suffix('\r').unwrap_or(line))
+                    .to_owned()
+            })
+            .collect())
     }
 }
 
@@ -763,6 +772,14 @@ mod tests {
             ["a", "", "b", ""]
         );
         assert_eq!(split_substitution(b"a\n\nb\n\n", true).unwrap(), ["a\n\nb"]);
+        assert_eq!(
+            split_substitution(b"a\r\n\r\nb\r\nlast\r", false).unwrap(),
+            ["a", "", "b", "last\r"]
+        );
+        assert_eq!(
+            split_substitution(b"a\r\nb\r\n", true).unwrap(),
+            ["a\r\nb\r"]
+        );
         assert_eq!(
             word_with("pre(echo value)", |request| match request {
                 Request::Command { source, quoted } => {

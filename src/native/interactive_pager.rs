@@ -4,7 +4,7 @@
 //! owns all row clearing, wrapping and cursor positioning, including after a
 //! resize. Navigation never edits the input; accepting a candidate is one edit.
 
-use super::interactive_completion::CompletionEngine;
+use super::interactive_runtime::CompletionService;
 use rustyline::completion::Pair;
 use rustyline::hint::Hint;
 use rustyline::{
@@ -44,7 +44,7 @@ impl Hint for EditorHint {
 /// Clone this into every explicit binding and the `Event::Any` fallback.
 #[derive(Clone)]
 pub(super) struct PagerBindings {
-    engine: Arc<Mutex<CompletionEngine>>,
+    service: Arc<Mutex<CompletionService>>,
     state: Arc<Mutex<Option<Pager>>>,
     pending: Arc<Mutex<Option<PendingCompletion>>>,
 }
@@ -57,9 +57,9 @@ struct PendingCompletion {
 }
 
 impl PagerBindings {
-    pub(super) fn new(engine: Arc<Mutex<CompletionEngine>>) -> Self {
+    pub(super) fn new(service: Arc<Mutex<CompletionService>>) -> Self {
         Self {
-            engine,
+            service,
             state: Arc::new(Mutex::new(None)),
             pending: Arc::new(Mutex::new(None)),
         }
@@ -195,17 +195,24 @@ impl PagerBindings {
             if !tab || !open_on_tab {
                 return None;
             }
+            // Evaluation may emit output or invoke nested complete -C. Keep
+            // pager state unlocked while the service borrows the evaluator.
+            drop(state);
             let cwd = std::env::current_dir().ok()?;
-            let (start, candidates) = self.engine.lock().ok()?.complete(line, pos, &cwd);
+            let (start, mut candidates) = match self.service.lock().ok()?.complete(line, pos, &cwd)
+            {
+                Ok(result) => result,
+                Err(_) => return Some(Cmd::Interrupt),
+            };
             return Some(match candidates.len() {
                 0 => Cmd::Noop,
-                1 => Cmd::Complete,
+                1 => self.queue_completion(line, pos, start, candidates.remove(0).replacement),
                 _ => {
                     let mut pager = Pager::new(line, pos, start, candidates);
                     if backwards {
                         pager.navigate(-1);
                     }
-                    *state = Some(pager);
+                    *self.state.lock().ok()? = Some(pager);
                     Cmd::Repaint
                 }
             });
@@ -471,7 +478,7 @@ mod tests {
     }
 
     fn open_pager(line: &str, pos: usize, start: usize) -> PagerBindings {
-        let bindings = PagerBindings::new(Arc::new(Mutex::new(CompletionEngine::new("fish"))));
+        let bindings = PagerBindings::new(Arc::new(Mutex::new(CompletionService::new("fish"))));
         *bindings.state.lock().unwrap() = Some(Pager::new(line, pos, start, candidates()));
         bindings
     }

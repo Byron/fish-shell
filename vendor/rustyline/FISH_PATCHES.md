@@ -19,6 +19,11 @@ Local changes:
   rendered rows. Editing and completion navigation overwrite changed rows and
   erase only leftover text, preserving unchanged prompt, input and menu rows.
   Resizes, scrolling and unsupported terminal controls use a full redraw.
+- `src/tty/windows.rs` queues external output without blocking the reader's
+  completion callback. The reader drains queued messages without losing wakeups
+  or blocking on stale notifications, then uses its normal redraw path.
+- `src/tty/mod.rs` uses the reader's associated buffer type in `unbuffer`, so the
+  Windows implementation also compiles in the crate's test configuration.
 - `src/edit.rs` keeps the cursor after pasted text in Windows vi insert mode.
   Vi normal-mode paste retains the upstream cursor behavior.
 - `src/keymap.rs` and `src/command.rs` provide a Windows-only command to replace
@@ -36,6 +41,8 @@ instance; see `tests/native_fish_feel_tmuxx.py` and
 coordinates and preservation of preceding output with ANSI and Starship prompts.
 It also inspects raw ConPTY output for unnecessary erasure or repainting while
 typing and navigating completions.
+`tests/native_completion_tmuxx.py` checks live completion callbacks, output,
+empty callback input, cancellation, and retention of the shell's existing jobs.
 
 When updating this dependency, compare these files with the new upstream version
 and re-run the native unit and ConPTY checks. The remaining upstream files are

@@ -85,7 +85,9 @@ same arithmetic parser and functions as POSIX Fish. `string` supports literal
 split, join, replace, trim, case conversion, Unicode length/substrings, repeat,
 escaping, and wildcard matching, with arguments or redirected standard input.
 Command substitutions, brace lists, indirect variables, and list index ranges
-are supported. Native filesystem globbing expands unquoted `*` and recursive
+are supported. Unquoted native command substitutions split Windows CRLF output
+into lines; quoted substitutions retain their internal line endings.
+Native filesystem globbing expands unquoted `*` and recursive
 `**` directory components. Quoted stars and stars from variable values stay
 literal. Unmatched globs are empty lists for `set`, `count`, and `for`, and produce
 status 124 for ordinary command arguments. Command substitutions retain Fish's
@@ -104,7 +106,7 @@ session variables. String escaping is also shared, including
 The full builtin set is not implemented. Advanced read options and
 locale-specific numeric formatting remain unavailable;
 unsupported options produce diagnostics.
-The native evaluator also lacks `argparse`, `commandline` and the `path`
+The native evaluator also lacks `argparse` and the `path`
 builtin, so bundled functions that depend on them still need further shared
 implementation work.
 
@@ -335,25 +337,43 @@ files. Native queries do not discover an installed Git distribution to locate it
 system configuration. Shared query support does not supply the remaining builtin
 and event features required by every POSIX prompt or completion script.
 
-Register literal options and choices in `config.fish` or at the prompt:
+Register options and choices in `config.fish` or at the prompt:
 
 ```fish
 complete -c mytool -f -a 'build test'
 complete -c mytool -l mode -r -a 'fast thorough' -d 'Select checking mode'
+complete -c mytool -n '__fish_seen_subcommand_from build' -l release
 ```
 
 Native `complete` supports `-c`, `-s`, `-l`, `-o`, `-a`, `-d`, `-f`, `-r`, `-x`,
-and `-e` (erase), with their long forms. `complete` lists registrations as Fish
-source; `complete -C 'mytool --m'` prints the editor's annotated choices.
+`-n` (condition) and `-e` (erase), with their long forms. `complete` lists
+registrations as Fish source; `complete -C 'mytool --m'` prints choices with
+tab-separated descriptions.
 Registrations belong to the current session and can be recreated by configuration.
-Functions defined with `--wraps` inherit literal target completion, including
+Conditions and argument sources are evaluated on demand for both Tab and
+`complete -C`. Repeated conditions must all succeed; identical conditions are
+cached within one query. Argument sources can expand variables or run registered
+command substitutions. Their changes to the live session persist. Merely typing a
+command substitution in the input being completed never executes it.
+
+Read-only `commandline` queries use the same command-substitution, job, process
+and token boundaries as POSIX Fish. Completion helpers can use `commandline -opc`
+or `commandline -pxc`, as well as buffer, cursor, line and column queries.
+`--input` supplies explicit text for a query. Reader-editing operations remain
+unsupported.
+
+Functions defined with `--wraps` inherit target completion, including
 fixed arguments such as `--wraps='git checkout'`. Multiple targets and nested
 wrappers are supported with bounded, cycle-safe traversal. Wrapper targets never
 execute shell code. A saved wrapper's metadata becomes available when its function
-is loaded. Conditions, `complete --wraps` registrations, command-substitution generators, automatic
-completion-script loading, and path completion through `$VARIABLE/` are not yet
-supported. Dynamic registrations report a diagnostic instead of silently
-running as static choices.
+is loaded. `complete --wraps` registrations, automatic completion-script loading,
+and path completion through `$VARIABLE/` are not yet supported.
+
+Completion evaluation receives empty standard input by default. During Tab,
+Ctrl-C interrupts running generators before returning to the edited line.
+Incidental output is buffered and displayed through the editor's redraw path.
+Output from background jobs started by a callback may wait until the next
+completion or submission.
 
 When multiple completions match, Tab opens a searchable menu under the input.
 Type to filter choices; Tab/Shift-Tab, arrows or Ctrl-N/Ctrl-P select, Page Up/Down
@@ -465,7 +485,7 @@ python tests/native_history_tmuxx.py .\target\x86_64-pc-windows-msvc\release\fis
 ```
 
 This is a separate native editor, not the full POSIX Fish reader.
-Dynamic completion scripts and full Fish keymap compatibility remain separate work. The
+Automatic completion-script loading and full Fish keymap compatibility remain separate work. The
 standalone Rash executable on Unix retains its simple line-input fallback.
 The native dependency carries a small [Windows input patch](../vendor/rustyline/FISH_PATCHES.md)
 to Rustyline; its Unix backend and the POSIX Fish reader are unchanged.
@@ -681,6 +701,6 @@ or running tmuxx settings. A terminal still configured to use
 2. Extend descriptor handling, traps, pipeline state sharing and Windows
    foreground/background input behavior beyond the current owned-job support.
 3. Extend the native editor and completion toward full Fish behavior, including
-   programmable scripts and reader customization.
+   bundled completion-script coverage and reader customization.
 4. Add native installation and packaging, and qualify additional Windows targets
    and terminal environments.

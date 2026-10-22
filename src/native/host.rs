@@ -121,6 +121,22 @@ fn temporary_path() -> PathBuf {
 /// Shared seekable input/capture, removed when the last handle closes. Captures
 /// use a file so a child writing both stdout and stderr cannot fill an unread pipe.
 fn temporary_file(bytes: &[u8], read_only: bool) -> Result<Arc<File>> {
+    Ok(temporary_stream(bytes, read_only, false)?.0)
+}
+
+/// A reader with its own cursor can collect completion diagnostics while a
+/// background child continues writing through the shared output description.
+#[cfg(windows)]
+pub(super) fn temporary_output() -> Result<(Arc<File>, File)> {
+    let (output, reader) = temporary_stream(&[], false, true)?;
+    Ok((output, reader.expect("requested an independent reader")))
+}
+
+fn temporary_stream(
+    bytes: &[u8],
+    read_only: bool,
+    independent_reader: bool,
+) -> Result<(Arc<File>, Option<File>)> {
     for _ in 0..64 {
         let path = temporary_path();
         let mut options = OpenOptions::new();
@@ -144,12 +160,14 @@ fn temporary_file(bytes: &[u8], read_only: bool) -> Result<Arc<File>> {
         // Here input must remain read-only even when redirected onto an output
         // descriptor. Open before unlinking; both handles refer to the same file.
         let input = read_only.then(|| File::open(&path));
+        let reader = independent_reader.then(|| File::open(&path));
         #[cfg(unix)]
         std::fs::remove_file(&path)?;
         let input = input.transpose()?;
+        let reader = reader.transpose()?;
         file.write_all(bytes)?;
         file.rewind()?;
-        return Ok(Arc::new(input.unwrap_or(file)));
+        return Ok((Arc::new(input.unwrap_or(file)), reader));
     }
     Err(Error::new("could not create a native temporary stream"))
 }

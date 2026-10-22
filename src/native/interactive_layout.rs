@@ -397,10 +397,10 @@ mod tests {
 
     #[test]
     fn multiline_key_inserts_after_the_cursor_without_vi_paste_positioning() {
-        use super::super::interactive_completion::CompletionEngine;
+        use super::super::interactive_runtime::CompletionService;
         use std::sync::{Arc, Mutex};
 
-        let pager = PagerBindings::new(Arc::new(Mutex::new(CompletionEngine::new("fish"))));
+        let pager = PagerBindings::new(Arc::new(Mutex::new(CompletionService::new("fish"))));
         let line = "begin\n    echo 🐟\nend";
         let cursor = "begin\n    echo 🐟".len();
         assert_eq!(enter_command(&pager, line, cursor, true), Cmd::Complete);
@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn bash_enter_keeps_blocks_editable_and_alt_enter_preserves_unicode_suffixes() {
-        use super::super::interactive_completion::CompletionEngine;
+        use super::super::interactive_runtime::CompletionService;
         let language = InputLanguage::Bash;
         assert_eq!(
             enter_for_language("for x in a; do", 14, false, language),
@@ -432,7 +432,7 @@ mod tests {
         );
         let line = "if true; then\n    echo 🐟\nfi";
         let cursor = "if true; then\n    echo 🐟".len();
-        let pager = PagerBindings::new(Arc::new(Mutex::new(CompletionEngine::new("fish"))));
+        let pager = PagerBindings::new(Arc::new(Mutex::new(CompletionService::new("fish"))));
         assert_eq!(
             enter_command_for_language(&pager, line, cursor, true, language),
             Cmd::Complete

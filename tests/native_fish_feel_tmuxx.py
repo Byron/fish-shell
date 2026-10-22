@@ -130,6 +130,18 @@ def main():
             literal(source)
             keys("Enter")
 
+        def configure(source):
+            # Keymap, abbreviation and terminal mode tests need the new reader
+            # frame before sending their next control key or bracketed paste.
+            submitted = "FEEL> " + source
+            previous = capture().splitlines().count(submitted)
+            send(source)
+            wait_for(
+                lambda text: text.splitlines().count(submitted) > previous and
+                text.rstrip().splitlines()[-1].rstrip() == "FEEL>",
+                f"configuration did not reach a fresh prompt: {source!r}",
+            )
+
         def paste(source):
             # Exercise terminal mode negotiation too: tmuxx emits delimiters
             # only when the pane has enabled bracketed paste.
@@ -214,9 +226,9 @@ def main():
             literal("_moved")
             keys("Enter")
             expect("FEEL_end_of_line_moved")
-            send("bind ctrl-e end-of-line")
+            configure("bind ctrl-e end-of-line")
             suggestion("FEEL_hint_bound_end", "C-e")
-            send("bind --erase ctrl-e")
+            configure("bind --erase ctrl-e")
             paste("history append 'echo FEEL_hint_line first\necho FEEL_hint_extra'")
             keys("Enter")
             expect_input("")
@@ -343,11 +355,9 @@ def main():
 
             # Ctrl-N/P belong to the open menu in either input dialect, then
             # resume normal history navigation without losing the edited draft.
-            send("set -g fish_autosuggestion_enabled 0")
-            expect_input("")
+            configure("set -g fish_autosuggestion_enabled 0")
             for input_mode in ("fish", "bash"):
-                send(f"fish_input_mode {input_mode}")
-                expect_input("")
+                configure(f"fish_input_mode {input_mode}")
                 older = f"echo FEEL_ctrl_history_{input_mode}_older"
                 newer = f"echo FEEL_ctrl_history_{input_mode}_newer"
                 send(older)
@@ -418,9 +428,8 @@ def main():
                 expect_input("FEEL_pager ")
                 keys("C-c")
                 expect_input("")
-            send("fish_input_mode fish")
-            send("set -e fish_autosuggestion_enabled")
-            expect_input("")
+            configure("fish_input_mode fish")
+            configure("set -e fish_autosuggestion_enabled")
 
             # Menu cancellation preserves the exact cursor and suffix.
             literal("FEEL_pager  tail")
@@ -432,8 +441,7 @@ def main():
             keys("End", "Enter")
             expect("FEEL_pager_result:alpha FEEL_pager_result:tail")
 
-            send("set -g fish_autosuggestion_enabled 0")
-            expect_input("")
+            configure("set -g fish_autosuggestion_enabled 0")
             paste("printf '<%s>\\n' 'FEEL_paste_🐟\r\nline'\r\necho FEEL_paste_second\n")
             wait_for(lambda text: "echo FEEL_paste_second" in text,
                      "multiline terminal paste did not enter the edit buffer")
@@ -475,10 +483,9 @@ def main():
             expect_input("FEEL_pager alpha")
             keys("Enter")
             expect("FEEL_pager_result:alpha")
-            send("set -e fish_autosuggestion_enabled")
-            expect_input("")
+            configure("set -e fish_autosuggestion_enabled")
 
-            send("abbr --add fe 'echo FEEL_abbr'")
+            configure("abbr --add fe 'echo FEEL_abbr'")
             paste("fe ")
             expect_input("fe ")
             keys("C-c")
@@ -497,7 +504,7 @@ def main():
             paste("fe suffix")
             keys("Home", "Right", "Right", "Enter")
             expect("FEEL_abbr suffix")
-            send("abbr --add fb begin")
+            configure("abbr --add fb begin")
             literal("fb")
             keys("Enter")
             keys("C-_")
@@ -512,41 +519,40 @@ def main():
             keys("Enter")
             send("end")
             expect("FEEL_abbr_block")
-            send("abbr --add multi 'echo FEEL_abbr_first; echo FEEL_abbr_second'")
+            configure("abbr --add multi 'echo FEEL_abbr_first; echo FEEL_abbr_second'")
             send("multi")
             expect("FEEL_abbr_first")
             expect("FEEL_abbr_second")
             send("echo fe argument")
             expect("fe argument")
 
-            send("bind ctrl-t complete")
+            configure("bind ctrl-t complete")
             literal("ech")
             keys("C-t")
             literal("FEEL_bound_completion")
             keys("Enter")
             expect("FEEL_bound_completion")
-            send("bind --erase ctrl-t")
+            configure("bind --erase ctrl-t")
             literal("ecoh")
             keys("C-t")
             literal(" FEEL_binding_restored")
             keys("Enter")
             expect("FEEL_binding_restored")
 
-            send("bind tab backward-char")
+            configure("bind tab backward-char")
             literal("echo FEEL_tab_X")
             keys("Tab")
             literal("Y")
             keys("Enter")
             expect("FEEL_tab_YX")
-            send("bind --erase tab")
+            configure("bind --erase tab")
             literal("ech")
             keys("Tab")
             literal("FEEL_tab_restored")
             keys("Enter")
             expect("FEEL_tab_restored")
 
-            send("fish_vi_key_bindings")
-            expect_input("")
+            configure("fish_vi_key_bindings")
             literal("echo FEEL_vi_X")
             keys("Escape")
             literal("xAok")
@@ -570,19 +576,18 @@ def main():
             send("echo FEEL_vi_multiline")
             send("end")
             expect("FEEL_vi_multiline")
-            send("bind x forward-char")
+            configure("bind x forward-char")
             literal("echo FEEL_vi_binding_XY")
             keys("Escape")
             literal("hxrZ")
             keys("Enter")
             expect("FEEL_vi_binding_XZ")
-            send("bind --erase --all")
+            configure("bind --erase --all")
             paste("echo FEEL_vi_paste_")
             literal("after")
             keys("Enter")
             expect("FEEL_vi_paste_after")
-            send("fish_default_key_bindings")
-            expect_input("")
+            configure("fish_default_key_bindings")
 
             # Inspect colors attached to individual input characters. Capture
             # may combine SGR attributes, so do not depend on escape spelling.
@@ -619,25 +624,20 @@ def main():
             styles = styled_input(invalid)
             assert styles[0] in (31, 91), (invalid, styles)
 
-            send("set -g fish_color_command magenta; set -g fish_color_param green")
-            expect_input("")
+            configure("set -g fish_color_command magenta; set -g fish_color_param green")
             source = "echo FEEL_custom_palette"
             styles = styled_input(source)
             assert styles[0] == 35, styles
             assert styles[source.index("FEEL_")] == 32, styles
-            send("set -e fish_color_command; set -e fish_color_param")
-            expect_input("")
-            send("function fish_prompt; set_color green; printf 'FEEL> '; set_color normal; end")
-            expect_input("")
+            configure("set -e fish_color_command; set -e fish_color_param")
+            configure("function fish_prompt; set_color green; printf 'FEEL> '; set_color normal; end")
             send("echo FEEL_disabled_hint suffix")
             expect("FEEL_disabled_hint suffix")
-            send("set -g fish_autosuggestion_enabled 0")
-            expect_input("")
+            configure("set -g fish_autosuggestion_enabled 0")
             literal("echo FEEL_disabled_hint")
             expect_input("echo FEEL_disabled_hint")
             keys("C-c")
-            send("set -e fish_autosuggestion_enabled")
-            expect_input("")
+            configure("set -e fish_autosuggestion_enabled")
 
             send("exit 0")
             deadline = time.monotonic() + 10

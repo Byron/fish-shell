@@ -27,6 +27,8 @@ mod interactive_layout;
 #[cfg(windows)]
 mod interactive_pager;
 #[cfg(windows)]
+mod interactive_runtime;
+#[cfg(windows)]
 mod interactive_terminal;
 #[cfg(windows)]
 mod startup;
@@ -558,7 +560,29 @@ fn execute(options: Options) -> Result<i32> {
                 if source.is_empty() {
                     terminal.prompt(&std::env::current_dir()?)?;
                 }
-                match editor.read_line(&prompt)? {
+                #[cfg(windows)]
+                let read = match engine {
+                    Engine::Fish(session) => {
+                        let (session, returned_host, read) =
+                            editor.read_fish_line(&prompt, session, host);
+                        engine = Engine::Fish(session);
+                        host = returned_host;
+                        read
+                    }
+                    other => {
+                        engine = other;
+                        editor.read_line(&prompt)
+                    }
+                };
+                #[cfg(not(windows))]
+                let read = editor.read_line(&prompt);
+                // An explicit exit inside a completion is distinct from the
+                // editor's interrupt command used to finish the current read.
+                if engine.exited() {
+                    status = engine.status();
+                    break;
+                }
+                match read? {
                     interactive::ReadEvent::Line(line) => {
                         source.extend(line.as_bytes());
                         source.push(b'\n');

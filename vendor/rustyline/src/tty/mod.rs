@@ -36,7 +36,7 @@ pub trait RawReader {
     /// Check if `key` is bound to a peculiar command
     fn find_binding(&self, key: &KeyEvent) -> Option<Cmd>;
     /// Backup type ahead
-    fn unbuffer(self) -> Option<Buffer>;
+    fn unbuffer(self) -> Option<Self::Buffer>;
 }
 
 /// Display prompt, line and cursor in terminal output

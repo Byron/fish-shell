@@ -115,6 +115,22 @@ impl Editor {
         }
     }
 
+    /// The callback service owns the live evaluator and its existing job host
+    /// only for the duration of readline, including every error/EOF outcome.
+    #[cfg(windows)]
+    pub(super) fn read_fish_line(
+        &mut self,
+        prompt: &str,
+        session: super::fish::Session,
+        host: super::host::NativeHost,
+    ) -> (
+        super::fish::Session,
+        super::host::NativeHost,
+        Result<ReadEvent>,
+    ) {
+        self.inner.read_fish_line(prompt, session, host)
+    }
+
     /// Store a completed submission, including multiline source, once per command.
     pub fn add_history(&mut self, source: &str) -> Result<()> {
         #[cfg(windows)]
@@ -186,9 +202,9 @@ mod windows {
     use crate::native::InputLanguage;
     use crate::native::interactive_abbreviations::Abbreviations;
     use crate::native::interactive_bindings::{Action, Bindings};
-    use crate::native::interactive_completion::CompletionEngine;
     use crate::native::interactive_keys::{EndOfLineKey, HistoryKey, HistorySearch, SuggestionKey};
     use crate::native::interactive_pager::{EditorHint, PagerBindings};
+    use crate::native::interactive_runtime::CompletionService;
     use rustyline::completion::{Completer, Pair};
     use rustyline::config::Configurer as _;
     use rustyline::error::ReadlineError;
@@ -222,7 +238,12 @@ mod windows {
         pub(super) fn set_input_language(&mut self, language: InputLanguage) {
             let helper = self.editor.helper_mut().unwrap();
             *helper.input_language.lock().unwrap() = language;
-            helper.engine.lock().unwrap().set_input_language(language);
+            helper
+                .service
+                .lock()
+                .unwrap()
+                .engine
+                .set_input_language(language);
             helper.pager.reset();
         }
 
@@ -287,18 +308,20 @@ mod windows {
             self.editor
                 .helper_mut()
                 .unwrap()
-                .engine
+                .service
                 .lock()
                 .unwrap()
+                .engine
                 .set_registrations(registrations);
         }
         pub(super) fn set_wrappers(&mut self, wrappers: Vec<(String, Vec<String>)>) {
             self.editor
                 .helper_mut()
                 .unwrap()
-                .engine
+                .service
                 .lock()
                 .unwrap()
+                .engine
                 .set_wrappers(wrappers);
         }
         pub(super) fn new(language: &str, history: Option<PathBuf>) -> Result<Self> {
@@ -313,6 +336,17 @@ mod windows {
                 .build();
             let mut editor = rustyline::Editor::with_config(config).map_err(readline_error)?;
             editor.set_helper(Some(Completion::new(language)));
+            if language == "fish" {
+                if let Ok(printer) = editor.create_external_printer() {
+                    editor
+                        .helper()
+                        .unwrap()
+                        .service
+                        .lock()
+                        .unwrap()
+                        .set_printer(printer);
+                }
+            }
             let pager = editor.helper().unwrap().pager.clone();
             let abbreviations = Arc::clone(&editor.helper().unwrap().abbreviations);
             let input_language = Arc::clone(&editor.helper().unwrap().input_language);
@@ -435,9 +469,10 @@ mod windows {
         ) {
             let completion = self.editor.helper_mut().unwrap();
             completion
-                .engine
+                .service
                 .lock()
                 .unwrap()
+                .engine
                 .set_context(commands, path, variables);
         }
 
@@ -448,9 +483,10 @@ mod windows {
             self.editor
                 .helper_mut()
                 .unwrap()
-                .engine
+                .service
                 .lock()
                 .unwrap()
+                .engine
                 .set_environment(environment);
         }
 
@@ -480,6 +516,35 @@ mod windows {
                 }
                 Err(error) => Err(readline_error(error)),
             }
+        }
+
+        pub(super) fn read_fish_line(
+            &mut self,
+            prompt: &str,
+            session: crate::native::fish::Session,
+            host: crate::native::host::NativeHost,
+        ) -> (
+            crate::native::fish::Session,
+            crate::native::host::NativeHost,
+            Result<ReadEvent>,
+        ) {
+            let service = Arc::clone(&self.editor.helper().unwrap().service);
+            service.lock().unwrap().begin_read(session, host);
+            let mut result = self.read_line(prompt);
+            let (mut runtime, error, output) = service.lock().unwrap().end_read();
+            if let Some(error) = error {
+                result = Err(error);
+            }
+            if !output.is_empty() {
+                use rash::host::Host as _;
+                // Rustyline has restored console modes and finished its frame.
+                if let Err(error) = runtime.host.write(2, &output, &[], false) {
+                    if result.is_ok() {
+                        result = Err(error);
+                    }
+                }
+            }
+            (runtime.session, runtime.host, result)
         }
 
         pub(super) fn add_history(&mut self, source: &str) -> Result<()> {
@@ -665,7 +730,7 @@ mod windows {
     struct Completion {
         fish: bool,
         input_language: Arc<Mutex<InputLanguage>>,
-        engine: Arc<Mutex<CompletionEngine>>,
+        service: Arc<Mutex<CompletionService>>,
         pager: PagerBindings,
         abbreviations: Arc<Mutex<Abbreviations>>,
         palette: crate::native::interactive_colors::Palette,
@@ -674,12 +739,12 @@ mod windows {
 
     impl Completion {
         fn new(language: &str) -> Self {
-            let engine = Arc::new(Mutex::new(CompletionEngine::new(language)));
-            let pager = PagerBindings::new(Arc::clone(&engine));
+            let service = Arc::new(Mutex::new(CompletionService::new(language)));
+            let pager = PagerBindings::new(Arc::clone(&service));
             Self {
                 fish: language == "fish",
                 input_language: Arc::new(Mutex::new(InputLanguage::Fish)),
-                engine,
+                service,
                 pager,
                 abbreviations: Arc::new(Mutex::new(Abbreviations::default())),
                 palette: Default::default(),
@@ -699,11 +764,10 @@ mod windows {
             if let Some(completion) = self.pager.take_completion(line, pos) {
                 return Ok(completion);
             }
-            Ok(self
-                .engine
+            self.service
                 .lock()
                 .unwrap()
-                .complete(line, pos, &std::env::current_dir()?))
+                .complete(line, pos, &std::env::current_dir()?)
         }
     }
     impl Highlighter for Completion {
@@ -717,7 +781,7 @@ mod windows {
                         |name| {
                             language == InputLanguage::Fish
                                 && self.abbreviations.lock().unwrap().contains(name)
-                                || self.engine.lock().unwrap().command_exists(
+                                || self.service.lock().unwrap().engine.command_exists(
                                     name,
                                     &std::env::current_dir().unwrap_or_default(),
                                 )

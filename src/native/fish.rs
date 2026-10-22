@@ -79,6 +79,11 @@ pub struct Session {
     autoload_paths: Vec<String>,
     #[serde(default)]
     pub(super) completions: Vec<super::interactive_completion::CompletionSpec>,
+    /// Retained in worker snapshots for commandline queries in pipeline helpers.
+    #[serde(default)]
+    completion_line: Option<super::interactive_completion::CompletionContext>,
+    #[serde(default)]
+    completion_depth: usize,
     #[serde(default)]
     pub(super) abbreviations: super::interactive_abbreviations::Abbreviations,
     #[serde(default)]
@@ -236,6 +241,8 @@ impl Session {
             autoload_tombstones: Default::default(),
             autoload_paths: Vec::new(),
             completions: Vec::new(),
+            completion_line: None,
+            completion_depth: 0,
             abbreviations: Default::default(),
             bindings: Default::default(),
             history: None,
@@ -647,6 +654,8 @@ impl Session {
                 updated.depth = self.depth;
                 updated.input_mode_blocked = self.input_mode_blocked;
                 updated.refreshing_universals = self.refreshing_universals;
+                updated.completion_line = self.completion_line.clone();
+                updated.completion_depth = self.completion_depth;
                 *self = updated;
             }
         }
@@ -981,9 +990,18 @@ impl Session {
                     ..Default::default()
                 };
                 let input_mode_blocked = std::mem::replace(&mut self.input_mode_blocked, true);
+                let completion_scope = self.completion_depth > 0;
+                if completion_scope {
+                    self.scopes.push(BTreeMap::new());
+                }
                 let result = self.eval_source(source, host, &mut output);
+                if completion_scope {
+                    self.scopes.pop();
+                }
                 self.input_mode_blocked = input_mode_blocked;
-                self.flow = saved_flow;
+                if self.completion_depth == 0 || self.flow != Flow::Exit {
+                    self.flow = saved_flow;
+                }
                 result?;
                 expand::split_substitution(&output.bytes, quoted)
             }
@@ -1049,6 +1067,117 @@ mod tests {
         let mut capture = Capture::default();
         Session::new().unwrap().eval(source, &mut capture).unwrap();
         String::from_utf8(capture.0).unwrap()
+    }
+
+    #[test]
+    fn completion_queries_restore_reader_state_and_preserve_live_mutations() {
+        let mut session = Session::new().unwrap();
+        let mut capture = Capture::default();
+        session.set_mode(true, false);
+        session.eval("complete -c completion_probe -f -n 'set -g completion_touched yes; true' -a '(echo alpha)'", &mut capture).unwrap();
+        session.status = 7;
+        session.pipeline = vec![9, 7];
+        let mut engine = super::super::interactive_completion::CompletionEngine::new("fish");
+        let (_, choices) = session
+            .completion_query(
+                "completion_probe ",
+                17,
+                &std::env::current_dir().unwrap(),
+                &mut capture,
+                &mut engine,
+            )
+            .unwrap();
+        assert_eq!(choices[0].display, "alpha");
+        assert_eq!(session.values("completion_touched"), ["yes"]);
+        assert_eq!(session.status, 7);
+        assert_eq!(session.pipeline, [9, 7]);
+        assert!(!session.input_mode_blocked);
+        assert!(session.completion_line.is_none());
+        assert_eq!(session.completion_depth, 0);
+        assert!(session.flow == Flow::Normal);
+        assert!(capture.0.is_empty());
+
+        session.completions.clear();
+        session
+            .eval(
+                "complete -c completion_probe -f -a '(fish_input_mode bash)'",
+                &mut capture,
+            )
+            .unwrap();
+        session.status = 7;
+        session.pipeline = vec![9, 7];
+        assert!(
+            session
+                .completion_query(
+                    "completion_probe ",
+                    17,
+                    &std::env::current_dir().unwrap(),
+                    &mut capture,
+                    &mut engine
+                )
+                .is_err()
+        );
+        assert_eq!(session.status, 7);
+        assert_eq!(session.pipeline, [9, 7]);
+        assert!(!session.input_mode_blocked);
+        assert!(session.completion_line.is_none());
+        assert_eq!(session.completion_depth, 0);
+        assert!(session.flow == Flow::Normal);
+        assert_eq!(session.input_language, super::super::InputLanguage::Fish);
+    }
+
+    #[test]
+    fn reader_completion_exit_restores_preceding_status_and_keeps_exit_flow() {
+        for registration in ["-n 'exit 23' -a alpha", "-a '(exit 24)'"] {
+            let mut session = Session::new().unwrap();
+            let mut capture = Capture::default();
+            session.set_mode(true, false);
+            session
+                .eval(
+                    &format!("complete -c completion_probe -f {registration}"),
+                    &mut capture,
+                )
+                .unwrap();
+            session.status = 7;
+            session.pipeline = vec![9, 7];
+            let mut engine = super::super::interactive_completion::CompletionEngine::new("fish");
+            session
+                .completion_query(
+                    "completion_probe ",
+                    17,
+                    &std::env::current_dir().unwrap(),
+                    &mut capture,
+                    &mut engine,
+                )
+                .unwrap();
+            assert!(session.flow == Flow::Exit);
+            assert_eq!(session.status, 7);
+            assert_eq!(session.pipeline, [9, 7]);
+            assert!(!session.input_mode_blocked);
+            assert!(session.completion_line.is_none());
+            assert_eq!(session.completion_depth, 0);
+        }
+    }
+
+    #[test]
+    fn completion_commandline_cursor_uses_unicode_characters_and_preserves_suffix() {
+        let mut session = Session::new().unwrap();
+        let mut capture = Capture::default();
+        session.eval("complete -c completion_probe -f -n 'set -g observed (commandline -opc); set -g token (commandline -ct); true' -a alpha", &mut capture).unwrap();
+        let line = "echo ö; completion_probe alZZ";
+        let cursor = line.find("ZZ").unwrap();
+        let mut engine = super::super::interactive_completion::CompletionEngine::new("fish");
+        session
+            .completion_query(
+                line,
+                cursor,
+                &std::env::current_dir().unwrap(),
+                &mut capture,
+                &mut engine,
+            )
+            .unwrap();
+        assert_eq!(session.values("observed"), ["completion_probe"]);
+        assert_eq!(session.values("token"), ["al"]);
     }
 
     #[test]

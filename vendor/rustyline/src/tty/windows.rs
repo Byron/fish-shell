@@ -9,7 +9,7 @@ use std::os::windows::io::IntoRawHandle;
 use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -174,6 +174,11 @@ impl ConsoleRawReader {
                 continue;
             }
             let pipe = self.pipe_reader.as_ref().filter(|_| external_print);
+            if let Some(pipe) = pipe {
+                if let Some(message) = pipe.next_message()? {
+                    return Ok(Event::ExternalPrint(message));
+                }
+            }
             let handles = [self.conin, pipe.map_or(0, |pipe| pipe.event.0)];
             let count = if pipe.is_some() { 2 } else { 1 };
             let timeout = self.escape_deadline.map_or(INFINITE, |deadline| {
@@ -184,12 +189,9 @@ impl ConsoleRawReader {
             if rc == WAIT_OBJECT_0 {
                 self.read_record()?;
             } else if rc == WAIT_OBJECT_0 + 1 && pipe.is_some() {
-                let pipe = pipe.unwrap();
-                check(unsafe { threading::ResetEvent(pipe.event.0) })?;
-                match pipe.receiver.recv() {
-                    Ok(msg) => return Ok(Event::ExternalPrint(msg)),
-                    Err(e) => Err(io::Error::new(io::ErrorKind::InvalidInput, e))?,
-                }
+                // A sender may signal after we already consumed its message.
+                // Check the queue without blocking on a stale notification.
+                continue;
             } else if rc == WAIT_TIMEOUT && self.decoder.escape_pending() {
                 self.escape_deadline = None;
                 return Ok(Event::KeyPress(self.decoder.finish_escape()));
@@ -987,7 +989,7 @@ pub struct Console {
     // external print reader
     pipe_reader: Option<Rc<AsyncPipe>>,
     // external print writer
-    pipe_writer: Option<SyncSender<String>>,
+    pipe_writer: Option<Sender<String>>,
 }
 
 impl Console {
@@ -1223,7 +1225,9 @@ impl Term for Console {
         if event == 0 {
             Err(io::Error::last_os_error())?;
         }
-        let (sender, receiver) = sync_channel(1);
+        // A completion callback runs on this reader's thread. Its output must
+        // be queued without waiting for the reader to resume consuming it.
+        let (sender, receiver) = channel();
 
         let reader = Rc::new(AsyncPipe {
             event: Handle(event),
@@ -1266,10 +1270,24 @@ struct AsyncPipe {
     receiver: Receiver<String>,
 }
 
+impl AsyncPipe {
+    fn next_message(&self) -> Result<Option<String>> {
+        // Reset before inspecting the queue so an enqueue racing with an
+        // empty check still wakes WaitForMultipleObjects. Checking on every
+        // reader iteration also drains multiple messages from one signal.
+        check(unsafe { threading::ResetEvent(self.event.0) })?;
+        match self.receiver.try_recv() {
+            Ok(message) => Ok(Some(message)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(error) => Err(io::Error::new(io::ErrorKind::BrokenPipe, error).into()),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ExternalPrinter {
     event: HANDLE,
-    sender: SyncSender<String>,
+    sender: Sender<String>,
     raw_mode: Arc<AtomicBool>,
     conout: HANDLE,
 }
@@ -1307,6 +1325,43 @@ impl Drop for Handle {
 #[cfg(test)]
 mod test {
     use super::Console;
+
+    #[test]
+    fn external_output_can_queue_while_the_reader_is_in_a_callback() {
+        use super::*;
+        use crate::tty::ExternalPrinter as _;
+
+        let event = unsafe { threading::CreateEventW(ptr::null_mut(), TRUE, FALSE, ptr::null()) };
+        assert_ne!(event, 0);
+        let (sender, receiver) = channel();
+        let pipe = AsyncPipe {
+            event: Handle(event),
+            receiver,
+        };
+        let mut printer = ExternalPrinter {
+            event,
+            sender: sender.clone(),
+            raw_mode: Arc::new(AtomicBool::new(true)),
+            conout: 0,
+        };
+        let (finished, done) = channel();
+        let writer = std::thread::spawn(move || {
+            printer.print("first".into()).unwrap();
+            printer.print("second".into()).unwrap();
+            finished.send(()).unwrap();
+        });
+        done.recv_timeout(Duration::from_secs(2))
+            .expect("a callback cannot wait for the paused reader");
+        writer.join().unwrap();
+        assert_eq!(pipe.next_message().unwrap().as_deref(), Some("first"));
+        assert_eq!(pipe.next_message().unwrap().as_deref(), Some("second"));
+        assert!(pipe.next_message().unwrap().is_none());
+        assert_eq!(
+            unsafe { threading::WaitForSingleObject(event, 0) },
+            foundation::WAIT_TIMEOUT
+        );
+        drop(sender);
+    }
 
     #[test]
     fn test_send() {
