@@ -18,6 +18,7 @@ pub(super) fn is_builtin(name: &str) -> bool {
             | "false"
             | "echo"
             | "set"
+            | "emit"
             | "pwd"
             | "cd"
             | "count"
@@ -174,7 +175,22 @@ impl Session {
                 self.write(value.as_bytes(), host, output)?;
                 self.status = 0;
             }
-            "set" => self.set(args, host, output)?,
+            "set" => {
+                if !self.set(args, host, output)? {
+                    self.pipeline = vec![self.status];
+                }
+            }
+            "emit" => {
+                if let Err(error) = self.emit(args, host, output) {
+                    self.status = error.status;
+                    output.bytes.extend(host.write(
+                        2,
+                        format!("{}\n", error.message).as_bytes(),
+                        &output.redirects,
+                        output.capture,
+                    )?);
+                }
+            }
             "pwd" => {
                 if !args.is_empty() {
                     return Err(unsupported("pwd options"));
@@ -205,6 +221,7 @@ impl Session {
                         exported: true,
                     },
                 );
+                self.fire_variable_event("PWD", false, host)?;
                 self.status = 0;
             }
             "count" => {
@@ -284,7 +301,7 @@ impl Session {
             // Keep Fish builtins reserved while their native implementations are pending.
             "printf" | "string" | "math" | "read" | "status" | "functions" | "type" | "command"
             | "builtin" | "argparse" | "contains" | "random" | "jobs" | "fg" | "bg" | "wait"
-            | "disown" | "exec" | "ulimit" | "umask" | "commandline" | "emit" => {
+            | "disown" | "exec" | "ulimit" | "umask" | "commandline" => {
                 return Err(unsupported(&format!("the {name} builtin")));
             }
             _ => {
@@ -334,7 +351,9 @@ impl Session {
         Ok(())
     }
 
-    fn set(&mut self, args: &[String], host: &mut impl Host, output: &mut Output) -> Result<()> {
+    /// Return whether this was an assignment, which preserves the preceding
+    /// command's complete status (including every pipeline stage).
+    fn set(&mut self, args: &[String], host: &mut impl Host, output: &mut Output) -> Result<bool> {
         let mut local = false;
         let mut global = false;
         let mut exported = None;
@@ -342,6 +361,7 @@ impl Session {
         let mut erase = false;
         let mut append = false;
         let mut prepend = false;
+        let mut no_event = false;
         let mut index = 0;
         while let Some(arg) = args.get(index) {
             if arg == "--" {
@@ -360,6 +380,7 @@ impl Session {
                 "--erase" => erase = true,
                 "--append" => append = true,
                 "--prepend" => prepend = true,
+                "--no-event" => no_event = true,
                 _ if !arg.starts_with("--") => {
                     for flag in arg[1..].chars() {
                         match flag {
@@ -415,7 +436,7 @@ impl Session {
                 })
                 .count()
                 .min(255) as i32;
-            return Ok(());
+            return Ok(false);
         }
         if erase && (append || prepend || exported.is_some()) {
             return Err(Error::new("set: incompatible erase options"));
@@ -433,7 +454,7 @@ impl Session {
                 )?;
             }
             self.status = 0;
-            return Ok(());
+            return Ok(false);
         };
         valid_name(name)?;
         if matches!(
@@ -467,7 +488,7 @@ impl Session {
                 &mut self.scopes[index]
             } else {
                 self.status = 1;
-                return Ok(());
+                return Ok(false);
             }
         } else if local && !self.scopes.is_empty() {
             self.scopes.last_mut().unwrap()
@@ -480,11 +501,11 @@ impl Session {
         } else {
             &mut self.variables
         };
-        if erase {
+        let erased = if erase {
             if args.len() != 1 {
                 return Err(Error::new("set --erase: expected one variable"));
             }
-            self.status = i32::from(scope.remove(name).is_none());
+            Some(scope.remove(name).is_some())
         } else {
             scope.insert(
                 name.clone(),
@@ -494,11 +515,18 @@ impl Session {
                 },
             );
             // Fish assignment preserves the preceding command's status.
-        }
+            None
+        };
         if name == "fish_function_path" {
             self.refresh_function_paths();
         }
-        Ok(())
+        if !no_event && erased != Some(false) {
+            self.fire_variable_event(name, erase, host)?;
+        }
+        if let Some(erased) = erased {
+            self.status = i32::from(!erased);
+        }
+        Ok(!erase)
     }
 }
 

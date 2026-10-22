@@ -57,6 +57,7 @@ impl CompletionEngine {
                 ".",
                 "[",
                 "echo",
+                "emit",
                 "set",
                 "cd",
                 "pwd",
@@ -1157,6 +1158,7 @@ fn option_choices(command: &str) -> Option<Choices> {
             ("--query", "Test whether variables exist"),
             ("--append", "Append values"),
             ("--prepend", "Prepend values"),
+            ("--no-event", "Do not fire variable event handlers"),
         ],
         "cargo" => &[
             ("--help", "Show help"),

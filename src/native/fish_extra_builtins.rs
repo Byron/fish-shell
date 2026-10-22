@@ -51,7 +51,8 @@ impl Session {
                 Ok(result) => {
                     self.write(&result.bytes, host, output)?;
                     for (name, values) in result.captures {
-                        let mut assignment = vec![name];
+                        // Regex captures do not fire variable events in Fish.
+                        let mut assignment = vec!["--no-event".into(), name];
                         assignment.extend(values);
                         self.set(&assignment, host, output)?;
                     }
@@ -157,10 +158,10 @@ impl Session {
             "status" => {
                 self.status = 0;
                 match args.first().map_or("", String::as_str) {
-                    "is-interactive" | "-i" => {
+                    "is-interactive" | "--is-interactive" | "-i" => {
                         self.status = i32::from(!self.interactive);
                     }
-                    "is-login" | "-l" => self.status = i32::from(!self.login),
+                    "is-login" | "--is-login" | "-l" => self.status = i32::from(!self.login),
                     "is-native-windows" => {
                         if args.len() != 1 {
                             return Err(Error::new(format!(
@@ -169,9 +170,13 @@ impl Session {
                             )));
                         }
                     }
-                    "is-block" | "-b" => self.status = i32::from(self.scopes.len() <= 1),
-                    "is-command-substitution" => self.status = i32::from(!output.capture),
-                    "fish-path" => self.write(
+                    "is-block" | "--is-block" | "-b" => {
+                        self.status = i32::from(self.scopes.len() <= 1)
+                    }
+                    "is-command-substitution" | "--is-command-substitution" | "-c" => {
+                        self.status = i32::from(!output.capture)
+                    }
+                    "fish-path" | "--fish-path" => self.write(
                         format!("{}\n", std::env::current_exe()?.display()).as_bytes(),
                         host,
                         output,
@@ -371,12 +376,13 @@ impl Session {
             self.status = 130;
             return Ok(());
         };
-        self.status = i32::from(bytes.is_empty());
+        let read_status = i32::from(bytes.is_empty());
         let line = String::from_utf8(bytes).map_err(|_| Error::new("read: input is not UTF-8"))?;
         let line = line.strip_suffix('\n').unwrap_or(&line);
         let line = line.strip_suffix('\r').unwrap_or(line);
         if names.is_empty() {
             self.write(format!("{line}\n").as_bytes(), host, output)?;
+            self.status = read_status;
             return Ok(());
         }
         let fields: Vec<String> = if let Some(separator) = delimiter {
@@ -413,6 +419,7 @@ impl Session {
                 self.set(&set_args, host, output)?;
             }
         }
+        self.status = read_status;
         Ok(())
     }
 }

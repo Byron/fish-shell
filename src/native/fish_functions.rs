@@ -11,6 +11,8 @@ pub(super) struct Function {
     pub(super) inherit_vars: BTreeMap<String, Vec<String>>,
     pub(super) shadow_scope: bool,
     pub(super) wrap_targets: Vec<String>,
+    #[serde(default)]
+    pub(super) events: Vec<events::Registration>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -32,6 +34,10 @@ impl Function {
         }
         if !self.shadow_scope {
             definition.push_str(" --no-scope-shadowing");
+        }
+        for event in &self.events {
+            let (option, name) = event.description.option();
+            definition.push_str(&format!(" {option} {}", quote(name)));
         }
         if !self.named_arguments.is_empty() {
             definition.push_str(" --argument-names");
@@ -72,7 +78,7 @@ fn quote(value: &str) -> String {
 struct NativeContext;
 
 impl Context for NativeContext {
-    type Event = ();
+    type Event = events::Description;
     type Error = Error;
 
     fn validate_variable(&mut self, name: &wstr, read_only_ok: bool) -> Result<()> {
@@ -91,13 +97,13 @@ impl Context for NativeContext {
         Ok(())
     }
 
-    fn event(&mut self, option: char, _: &wstr) -> Result<()> {
+    fn event(&mut self, option: char, value: &wstr) -> Result<Self::Event> {
         let name = match option {
+            'v' => return Ok(events::Description::Variable(value.to_string())),
+            'e' => return Ok(events::Description::Generic(value.to_string())),
             's' => "--on-signal",
             'j' => "--on-job-exit",
             'p' => "--on-process-exit",
-            'v' => "--on-variable",
-            'e' => "--on-event",
             _ => unreachable!("unexpected function event option"),
         };
         Err(unsupported(&format!("function event handlers ({name})")))
@@ -150,7 +156,7 @@ impl Session {
         let options = function_options::parse(&mut argv, &mut NativeContext)?;
         if options.print_help {
             self.write(
-                b"function NAME [-d DESCRIPTION] [-w COMMAND] [-a NAMES...] [-V VARIABLE] [-S]\n",
+                b"function NAME [-d DESCRIPTION] [-w COMMAND] [-a NAMES...] [-V VARIABLE] [-S] [-v VARIABLE] [-e EVENT]\n",
                 host,
                 output,
             )?;
@@ -166,6 +172,7 @@ impl Session {
             })
             .collect();
         let name_string = name.to_string();
+        let events = self.register_events(options.events)?;
         self.autoload_tombstones.remove(&name_string);
         if !self.function_autoload.autoload_in_progress(name) {
             self.autoloaded_functions.remove(&name_string);
@@ -187,6 +194,7 @@ impl Session {
                     .into_iter()
                     .map(|target| target.to_string())
                     .collect(),
+                events,
             },
         );
         self.status = 0;

@@ -168,14 +168,8 @@ fn function_options_use_shared_getopt_ordering_and_validate_names() {
 }
 
 #[test]
-fn event_handlers_are_rejected_explicitly() {
-    for option in [
-        "--on-event",
-        "--on-variable",
-        "--on-signal",
-        "--on-job-exit",
-        "--on-process-exit",
-    ] {
+fn platform_specific_event_handlers_are_rejected_explicitly() {
+    for option in ["--on-signal", "--on-job-exit", "--on-process-exit"] {
         let output = fish(&format!("function handler {option} value; end"));
         assert_eq!(output.status.code(), Some(2), "{option}");
         let error = String::from_utf8_lossy(&output.stderr);

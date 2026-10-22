@@ -104,7 +104,7 @@ session variables. String escaping is also shared, including
 The full builtin set is not implemented. Universal variables (`set -U`),
 advanced read options and locale-specific numeric formatting remain unavailable;
 unsupported options produce diagnostics.
-The native evaluator also lacks `argparse`, `commandline`, `emit` and the `path`
+The native evaluator also lacks `argparse`, `commandline` and the `path`
 builtin, so bundled functions that depend on them still need further shared
 implementation work.
 
@@ -112,9 +112,19 @@ Function declarations use the same option parser as POSIX Fish. Native functions
 support `--description`/`-d`, `--wraps`/`-w`, `--argument-names`/`-a`,
 `--inherit-variable`/`-V`, and `--no-scope-shadowing`/`-S`. Captured values are
 snapshots; named arguments and scope boundaries follow Fish semantics. Printed
-definitions preserve these properties. Event-handler options still report an
-unsupported-feature error when the declaration executes. An untaken branch can
-therefore guard a POSIX-only declaration with `status is-native-windows`.
+definitions preserve these properties.
+
+Functions can subscribe to `--on-variable` changes or named `--on-event` events.
+`emit EVENT ARGS...` invokes named handlers with the supplied arguments. Variable
+handlers receive `VARIABLE SET NAME` or `VARIABLE ERASE NAME`; they run after
+assignments, including `cd` updates to `PWD`. `set --no-event` suppresses handlers
+for that change. Handlers preserve the triggering command's status, execute in
+registration order, and retain their registrations in pipeline workers and printed
+function definitions. Handler output bypasses redirections on the triggering
+command; a handler in a pipeline worker uses that worker's inherited stdout.
+Signal, process/job exit and automatic reader lifecycle
+events remain unsupported. An untaken branch can guard a POSIX-only declaration
+with `status is-native-windows`.
 
 Use `rash`, `fish --rash-shell`, or `fish --script-language=bash` for Bash syntax:
 

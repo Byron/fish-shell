@@ -14,6 +14,8 @@ use std::collections::BTreeMap;
 mod autoload;
 #[path = "fish_complete.rs"]
 mod complete;
+#[path = "fish_events.rs"]
+mod events;
 #[path = "fish_expand.rs"]
 mod expand;
 #[path = "fish_functions.rs"]
@@ -51,6 +53,8 @@ pub struct Session {
     variables: BTreeMap<String, Variable>,
     scopes: Vec<BTreeMap<String, Variable>>,
     functions: BTreeMap<String, functions::Function>,
+    #[serde(default)]
+    next_event_id: u64,
     #[serde(with = "autoload::serialization")]
     function_autoload: crate::autoload::Autoload,
     #[serde(default)]
@@ -208,6 +212,7 @@ impl Session {
             variables,
             scopes: vec![BTreeMap::new()],
             functions: BTreeMap::new(),
+            next_event_id: 0,
             function_autoload: autoload::resolver(),
             autoloaded_functions: Default::default(),
             autoload_tombstones: Default::default(),
@@ -528,6 +533,9 @@ impl Session {
             return self.eval_statement(&node.statement, source, host, output);
         }
         let scope = self.assignments(&node.variables, source, host)?;
+        if self.flow != Flow::Normal || host.cancelled() {
+            return Ok(());
+        }
         self.scopes.push(scope);
         let result = self.eval_statement(&node.statement, source, host, output);
         self.scopes.pop();
@@ -654,6 +662,10 @@ impl Session {
                         exported: true,
                     },
                 );
+                self.fire_variable_event(name, false, host)?;
+                if self.flow != Flow::Normal || host.cancelled() {
+                    break;
+                }
             }
             Ok(())
         })();
@@ -680,6 +692,9 @@ impl Session {
             ast::Statement::Decorated(node) => self.eval_command(node, source, host, output),
             ast::Statement::Not(node) => {
                 let scope = self.assignments(&node.variables, source, host)?;
+                if self.flow != Flow::Normal || host.cancelled() {
+                    return Ok(());
+                }
                 self.scopes.push(scope);
                 let result = self.eval_statement(&node.contents, source, host, output);
                 self.scopes.pop();
@@ -759,6 +774,7 @@ impl Session {
                                 exported: false,
                             },
                         );
+                        self.fire_variable_event(&name, false, host)?;
                         self.eval_jobs(&node.jobs, source, host, output)?;
                         if self.flow == Flow::Continue {
                             self.flow = Flow::Normal;
@@ -852,7 +868,11 @@ impl Session {
         let result = self.dispatch(&name, &args, node.decoration(), host, output);
         output.redirects = saved;
         output.stdin_is_directly_redirected = saved_stdin;
-        self.pipeline = vec![self.status];
+        // The set builtin supplies a new status for queries, erasure and
+        // listing, but assignment preserves the preceding pipeline verbatim.
+        if name != "set" || node.decoration() == StatementDecoration::Command {
+            self.pipeline = vec![self.status];
+        }
         result
     }
 
