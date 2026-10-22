@@ -12,6 +12,7 @@ mod git;
 
 pub(crate) mod argparse;
 pub(crate) mod commandline_extent;
+pub(crate) mod echo;
 pub(crate) mod function_options;
 pub mod history_core;
 pub(crate) mod path_lexical;

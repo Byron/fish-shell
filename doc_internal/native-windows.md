@@ -79,6 +79,9 @@ descriptors 0, 1 and 2; list variables, quoting and simple integer indices;
 `if`/`else`, `begin`, `for`, `while`, `switch`, functions, `not`, and logical
 chains. Initial builtins include `echo`, `set`, `cd`, `pwd`, `count`, `test`, `[`,
 `true`, `false`, `source`, `eval`, `exit`, `return`, `break` and `continue`.
+`echo` shares POSIX option parsing and escape rendering, including grouped flags,
+`-s`, `--` and literal byte escapes. Shared completion helpers therefore handle
+cached command names and option-looking arguments consistently.
 Native Fish also provides `printf`, `math`, `contains`, `read`, `type`, command
 queries, function queries/removal, and common `status` queries. `math` uses the
 same arithmetic parser and functions as POSIX Fish. `random` shares POSIX seed,

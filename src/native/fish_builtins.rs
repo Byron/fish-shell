@@ -165,31 +165,13 @@ impl Session {
             "true" | ":" => self.status = 0,
             "false" => self.status = 1,
             "echo" => {
-                let mut index = 0;
-                let mut newline = true;
-                let mut escape = false;
-                while let Some(arg) = args.get(index) {
-                    if arg == "-n" {
-                        newline = false;
-                    } else if arg == "-e" {
-                        escape = true;
-                    } else if arg == "-E" {
-                        escape = false;
-                    } else {
-                        break;
-                    }
-                    index += 1;
-                }
-                let mut value = args[index..].join(" ");
-                if escape {
-                    let (unescaped, stop) = expand::echo(&value)?;
-                    value = unescaped;
-                    newline &= !stop;
-                }
-                if newline {
-                    value.push('\n');
-                }
-                self.write(value.as_bytes(), host, output)?;
+                let words: Vec<_> = std::iter::once("echo")
+                    .chain(args.iter().map(String::as_str))
+                    .map(WString::from)
+                    .collect();
+                let mut argv: Vec<_> = words.iter().map(WString::as_utfstr).collect();
+                let value = crate::echo::output(&mut argv).expect("echo has its command name");
+                self.write(&fish_widestring::wcs2bytes(&value), host, output)?;
                 self.status = 0;
             }
             "set" => match self.set(args, host, output) {

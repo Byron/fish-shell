@@ -107,27 +107,6 @@ pub(crate) fn unescape_literal(input: &str) -> Result<String> {
     Ok(values.into_iter().next().unwrap_or_default())
 }
 
-pub(super) fn echo(input: &str) -> Result<(String, bool)> {
-    let chars: Vec<char> = input.chars().collect();
-    let mut index = 0;
-    let mut result = String::new();
-    while index < chars.len() {
-        if chars[index] == '\\' {
-            index += 1;
-            if chars.get(index) == Some(&'c') {
-                return Ok((result, true));
-            }
-            if let Some(c) = escape_char(&chars, &mut index, Quote::None)? {
-                result.push(c);
-            }
-        } else {
-            result.push(chars[index]);
-            index += 1;
-        }
-    }
-    Ok((result, false))
-}
-
 fn escape_char(chars: &[char], index: &mut usize, quote: Quote) -> Result<Option<char>> {
     let c = *chars
         .get(*index)
