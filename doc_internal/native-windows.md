@@ -932,6 +932,14 @@ or running tmuxx settings. A terminal still configured to use
 
 ## Remaining work
 
+Concrete startup and completion gaps include function-scoped `set -f` and
+`read -f`, edited or silent reads, generic `psub` and FIFO helpers, extra file
+descriptors, signal and per-process/job-exit subscriptions, and advanced reader
+and `status` introspection. POSIX ownership, mode bits and terminal process-group
+behavior do not have equivalent native implementations. Dynamic completions
+that query an application's own commands still require that application;
+successful script loading alone does not establish complete query coverage.
+
 1. Complete native Fish expansion, builtins and execution semantics, with shared
    behavior checks against the POSIX implementation.
 2. Extend descriptor handling, traps, pipeline state sharing and Windows
