@@ -11,7 +11,7 @@ set -e
 # Get the current directory, which we'll use for telling Cargo where to find the sources
 wd="$PWD"
 
-# Get the version from git-describe
+# Get the source version before building fish.
 VERSION=$(build_tools/git_version_gen.sh)
 
 # The name of the prefix, which is the directory that you get when you untar

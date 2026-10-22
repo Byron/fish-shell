@@ -24,7 +24,7 @@ function __fish_git_prompt_show_upstream --description "Helper function for fish
 
     set -l svn_remote
     # get some config options from git-config
-    command git config -z --get-regexp '^(svn-remote\..*\.url|bash\.showupstream)$' 2>/dev/null | while read -lz key value
+    __fish_git_query config -z --get-regexp '^(svn-remote\..*\.url|bash\.showupstream)$' 2>/dev/null | while read -lz key value
         switch $key
             case bash.showupstream
                 set show_upstream $value
@@ -72,7 +72,7 @@ function __fish_git_prompt_show_upstream --description "Helper function for fish
         case svn\*
             # get the upstream from the 'git-svn-id: …' in a commit message
             # (git-svn uses essentially the same procedure internally)
-            set -l svn_upstream (git log --first-parent -1 --grep="^git-svn-id: \($svn_url_pattern\)" 2>/dev/null)
+            set -l svn_upstream (__fish_git_query log --first-parent -1 --extended-regexp --grep="^git-svn-id: ($svn_url_pattern)" 2>/dev/null)
             if test (count $svn_upstream) -ne 0
                 echo $svn_upstream[-1] | read -l __ svn_upstream __
                 set svn_upstream (string replace -r '@.*' '' -- $svn_upstream)
@@ -100,7 +100,7 @@ function __fish_git_prompt_show_upstream --description "Helper function for fish
                     set upstream (string replace '/branches' '' -- $svn_upstream | string replace -a '/' '')
 
                     # Use fetch config to fix upstream
-                    set -l fetch_val (command git config "$cur_prefix".fetch)
+                    set -l fetch_val (__fish_git_query config "$cur_prefix".fetch)
                     if test -n "$fetch_val"
                         string split -m1 : -- "$fetch_val" | read -l trunk pattern
                         set upstream (string replace -r -- "/$trunk\$" '' $pattern) /$upstream
@@ -112,7 +112,7 @@ function __fish_git_prompt_show_upstream --description "Helper function for fish
     end
 
     # Find how many commits we are ahead/behind our upstream
-    set count (command git rev-list --count --left-right $upstream...HEAD 2>/dev/null | string replace \t " ")
+    set count (__fish_git_query rev-list --count --left-right $upstream...HEAD 2>/dev/null | string replace \t " ")
 
     # calculate the result
     if test -n "$verbose"
@@ -136,7 +136,7 @@ function __fish_git_prompt_show_upstream --description "Helper function for fish
                 echo "$prefix$___fish_git_prompt_char_upstream_diverged$ahead-$behind"
         end
         if test -n "$count" -a -n "$name"
-            echo " "(command git rev-parse --abbrev-ref "$upstream" 2>/dev/null)
+            echo " "(__fish_git_query rev-parse --abbrev-ref "$upstream" 2>/dev/null)
         end
     else if test -n "$informative"
         echo $count | read -l behind ahead
@@ -168,39 +168,8 @@ function __fish_git_prompt_show_upstream --description "Helper function for fish
     test "$count" = "0 0"
 end
 
-# Decide if git is safe to run.
-# On Darwin, git is pre-installed as a stub, which will pop a dialog if you run it.
-if string match -q Darwin -- (__fish_uname) && string match -q /usr/bin/git -- (command -s git) && type -q xcode-select && type -q xcrun
-    if not xcode-select --print-path &>/dev/null
-        # Only the stub git is installed.
-        # Do not try to run it.
-        function __fish_git_prompt_ready
-            return 1
-        end
-    else
-        # git is installed, but on the first run it may be very slow as xcrun needs to populate the cache.
-        # Kick it off in the background to populate the cache.
-        $(__fish_posix_shell) -c '( /usr/bin/git --version; touch /tmp/__fish_git_ready ) >/dev/null 2>&1 &'
-        function __fish_git_prompt_ready
-            path is /tmp/__fish_git_ready || return 1
-            # git is ready, erase the function.
-            functions -e __fish_git_prompt_ready
-            return 0
-        end
-    end
-end
-
 function fish_git_prompt --description "Prompt function for Git"
-    # If git isn't installed, there's nothing we can do
-    # Return 1 so the calling prompt can deal with it
-    if not command -sq git
-        return 1
-    end
-    # Fail if __fish_git_prompt_ready is defined and fails.
-    if functions -q __fish_git_prompt_ready && not __fish_git_prompt_ready
-        return 1
-    end
-    set -l repo_info (command git rev-parse --git-dir --git-common-dir --is-inside-git-dir --is-bare-repository --is-inside-work-tree HEAD 2>/dev/null)
+    set -l repo_info (__fish_git_query rev-parse --git-dir --git-common-dir --is-inside-git-dir --is-bare-repository --is-inside-work-tree HEAD 2>/dev/null)
     test -n "$repo_info"
     or return
 
@@ -245,7 +214,7 @@ function fish_git_prompt --description "Prompt function for Git"
     set -l informative
     set -l dirty
     set -l untracked
-    command git config -z --get-regexp 'bash\.(showInformativeStatus|showDirtyState|showUntrackedFiles)' 2>/dev/null | while read -lz key value
+    __fish_git_query config -z --get-regexp 'bash\.(showInformativeStatus|showDirtyState|showUntrackedFiles)' 2>/dev/null | while read -lz key value
         switch $key
             case bash.showinformativestatus
                 set informative $value
@@ -288,14 +257,11 @@ function fish_git_prompt --description "Prompt function for Git"
         else
             if not test "$dirty" = true; and test "$untracked" = true
                 # Only untracked, ls-files is faster.
-                command git -c core.fsmonitor= ls-files --others --exclude-standard --directory --no-empty-directory --error-unmatch -- :/ >/dev/null 2>&1
+                __fish_git_query -c core.fsmonitor= ls-files --others --exclude-standard --directory --no-empty-directory --error-unmatch -- :/ >/dev/null 2>&1
                 and set untrackedfiles 1
             else if test "$dirty" = true
-                # With both dirty and untracked, git status is ~10% faster.
-                # With just dirty, it's ~20%.
                 set -l opt -uno
                 test "$untracked" = true; and set opt -unormal
-                # Don't use `--ignored=no`; it was introduced in Git 2.16, from January 2018
                 # Ignored files are omitted by default
                 # Renames and copies in porcelain -z output have an extra NUL-delimited
                 # field for the source path. Filter to entries starting with a valid
@@ -411,7 +377,7 @@ end
 
 function __fish_git_prompt_status_porcelain_modulo_rename_source
     set -l skip false
-    for line in (git -c core.fsmonitor= status --porcelain -z $argv | string split0)
+    for line in (__fish_git_query -c core.fsmonitor= status --porcelain -z $argv | string split0)
         if $skip
             set skip false
             continue
@@ -534,17 +500,17 @@ function __fish_git_prompt_operation_branch_bare --description "fish_git_prompt 
     end
 
     if test -z "$branch"
-        if not set branch (command git symbolic-ref HEAD 2>/dev/null)
+        if not set branch (__fish_git_query symbolic-ref HEAD 2>/dev/null)
             set detached yes
             set branch (switch "$__fish_git_prompt_describe_style"
                         case contains
-                            command git describe --contains HEAD
+                            __fish_git_query describe --contains HEAD
                         case branch
-                            command git describe --contains --all HEAD
+                            __fish_git_query describe --contains --all HEAD
                         case describe
-                            command git describe HEAD
+                            __fish_git_query describe HEAD
                         case default '*'
-                            command git describe --tags --exact-match HEAD
+                            __fish_git_query describe --tags --exact-match HEAD
                         end 2>/dev/null)
             if test $status -ne 0
                 # Shorten the sha ourselves to 8 characters - this should be good for most repositories,

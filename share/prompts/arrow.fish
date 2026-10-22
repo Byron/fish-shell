@@ -7,23 +7,21 @@ function fish_prompt
     if not set -q -g __fish_arrow_functions_defined
         set -g __fish_arrow_functions_defined
         function _git_branch_name
-            set -l branch (git symbolic-ref --quiet HEAD 2>/dev/null)
+            set -l branch (__fish_git_query symbolic-ref --quiet HEAD 2>/dev/null)
             if set -q branch[1]
                 echo (string replace -r '^refs/heads/' '' $branch)
             else
-                echo (git rev-parse --short HEAD 2>/dev/null)
+                echo (__fish_git_query rev-parse --short HEAD 2>/dev/null)
             end
         end
 
         function _is_git_dirty
-            not command git diff-index --cached --quiet HEAD -- &>/dev/null
-            or not command git diff --no-ext-diff --quiet --exit-code &>/dev/null
+            not __fish_git_query diff-index --cached --quiet HEAD -- &>/dev/null
+            or not __fish_git_query diff --no-ext-diff --quiet --exit-code &>/dev/null
         end
 
         function _is_git_repo
-            type -q git
-            or return 1
-            git rev-parse --git-dir >/dev/null 2>&1
+            __fish_git_query rev-parse --git-dir >/dev/null 2>&1
         end
 
         function _hg_branch_name

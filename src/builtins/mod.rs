@@ -28,6 +28,7 @@ pub mod fish_key_reader;
 pub mod function;
 pub mod functions;
 pub mod r#gettext;
+mod git;
 pub mod history;
 pub mod jobs;
 pub mod math;

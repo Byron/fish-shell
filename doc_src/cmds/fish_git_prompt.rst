@@ -20,7 +20,11 @@ Description
 
 The ``fish_git_prompt`` function displays information about the current git repository, if any.
 
-`Git <https://git-scm.com>`_ must be installed.
+With the default-enabled ``gix`` (``git``) integration, the prompt reads
+repositories through gix APIs. An installed Git executable handles operations
+without a suitable API, including some explicit repository environment overrides.
+Errors from gix omit the affected information without retrying through Git.
+Builds without this feature use the Git executable for all queries.
 
 It is possible to modify the output format by passing an argument. The default value is ``" (%s)"``.
 

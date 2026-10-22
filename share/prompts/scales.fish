@@ -27,14 +27,9 @@ function fish_right_prompt
         echo -n (set_color red)"✘ $cmd_status"
     end
 
-    if not command -sq git
-        set_color --reset
-        return
-    end
-
     # Get the git directory for later use.
     # Return if not inside a Git repository work tree.
-    if not set -l git_dir (command git rev-parse --git-dir 2>/dev/null)
+    if not set -l git_dir (__fish_git_query rev-parse --git-dir 2>/dev/null)
         set_color --reset
         return
     end
@@ -43,18 +38,18 @@ function fish_right_prompt
     # and if there's one get the current commit hash too.
     set -l commit ''
     if set -l action (fish_print_git_action "$git_dir")
-        set commit (command git rev-parse HEAD 2> /dev/null | string sub -l 7)
+        set commit (__fish_git_query rev-parse HEAD 2> /dev/null | string sub -l 7)
     end
 
     # Get either the branch name or a branch descriptor.
     set -l branch_detached 0
-    if not set -l branch (command git symbolic-ref --short HEAD 2>/dev/null)
+    if not set -l branch (__fish_git_query symbolic-ref --short HEAD 2>/dev/null)
         set branch_detached 1
-        set branch (command git describe --contains --all HEAD 2>/dev/null)
+        set branch (__fish_git_query describe --contains --all HEAD 2>/dev/null)
     end
 
     # Get the commit difference counts between local and remote.
-    command git rev-list --count --left-right 'HEAD...@{upstream}' 2>/dev/null \
+    __fish_git_query rev-list --count --left-right 'HEAD...@{upstream}' 2>/dev/null \
         | read -d \t -l status_ahead status_behind
     if test $status -ne 0
         set status_ahead 0
@@ -108,7 +103,7 @@ function fish_right_prompt
     #  B  |    |    |    | m  | r  | m  | u  |    |    |    |
     #  ?  |    |    |    | m  | r  | m  | u  |    |    | t  |
     #  _  |    |    | d  | m  | r  | m  | u  |    |    |    |
-    set -l porcelain_status (command git status --porcelain 2>/dev/null | string sub -l2)
+    set -l porcelain_status (__fish_git_query status --porcelain 2>/dev/null | string sub -l2)
 
     set -l status_added 0
     if string match -qr '[ACDMT][ MT]|[ACMT]D' $porcelain_status

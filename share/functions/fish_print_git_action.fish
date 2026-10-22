@@ -2,10 +2,7 @@
 # for the git action in progress (e.g. "merge") or returns 1.
 function fish_print_git_action --argument-names git_dir
     if test -z "$git_dir"
-        if not command -sq git
-            return 1
-        end
-        if not set git_dir (command git rev-parse --git-dir 2>/dev/null)
+        if not set git_dir (__fish_git_query rev-parse --git-dir 2>/dev/null)
             return 1
         end
     end

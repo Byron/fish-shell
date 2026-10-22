@@ -762,7 +762,7 @@ mod tests {
             EnvSetMode::new(EnvMode::GLOBAL, false),
             WString::from(repo.to_str().unwrap()),
         );
-        // The actual bundled scripts and their dynamic Git subprocesses run unchanged.
+        // Exercise the bundled scripts with either gix or the Git CLI backend.
         for (source, expected) in [
             (L!("git sw"), L!("itch")),
             (L!("git --ver"), L!("sion")),

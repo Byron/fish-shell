@@ -130,6 +130,10 @@ const BUILTIN_DATAS: &[BuiltinData] = &[
         func: gettext::gettext,
     },
     BuiltinData {
+        name: L!("__fish_git"),
+        func: git::git,
+    },
+    BuiltinData {
         name: L!("abbr"),
         func: abbr::abbr,
     },

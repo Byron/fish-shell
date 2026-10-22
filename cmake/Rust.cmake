@@ -33,4 +33,10 @@ endif()
 
 add_feature_info(Translation WITH_MESSAGE_LOCALIZATION "message localization (requires gettext)")
 
+option(WITH_GIT "Build Git repository integration with gix." ON)
+if(WITH_GIT)
+    list(APPEND FISH_CARGO_FEATURES_LIST "gix")
+endif()
+add_feature_info(Git WITH_GIT "Use gix for prompts, completions and build version metadata")
+
 list(JOIN FISH_CARGO_FEATURES_LIST , FISH_CARGO_FEATURES)

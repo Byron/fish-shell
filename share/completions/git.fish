@@ -1,7 +1,6 @@
 # fish completion for git
 
-# Use this instead of calling git directly; it passes the commands that are
-# already present on the commandline to git. This is relevant for --work-tree etc, see issue #6219.
+# Query repositories, honoring routing options from the commandline.
 function __fish_git
     set -l saved_args $argv
     set -l global_args
@@ -15,8 +14,7 @@ function __fish_git
             set global_args $cmd[1..$num_global_args]
         end
     end
-    # Using 'command git' to avoid interactions for aliases from git to (e.g.) hub
-    command git $global_args $saved_args 2>/dev/null
+    __fish_git_query $global_args $saved_args 2>/dev/null
 end
 
 # Print an optspec for argparse to handle git's options that are independent of any subcommand.
@@ -212,12 +210,13 @@ function __fish_git_files
     and set -l colon 1
     or set -l colon
 
-    # We pick the v2 format if we can, because it shows relative filenames (if used without "-z").
-    # We fall back on the v1 format by reading git's _version_, because trying v2 first is too slow.
-    set -l ver (__fish_git --version | string replace -rf 'git version (\d+)\.(\d+)\.?.*' '$1\n$2')
-    # Version >= 2.11.* has the v2 format.
-    if test "$ver[1]" -gt 2 2>/dev/null; or test "$ver[1]" -eq 2 -a "$ver[2]" -ge 11 2>/dev/null
-        set -l stats (__fish_git $git_opt status --porcelain=2 -uno $status_opt)
+    # Prefer v2's relative filenames; only CLI-only builds retry with v1.
+    set -l stats (__fish_git $git_opt status --porcelain=2 -uno $status_opt)
+    set -l query_status $status
+    if test $query_status -ne 0; and builtin __fish_git --is-enabled
+        return $query_status
+    end
+    if test $query_status -eq 0
         if set -ql untracked
             # Fast path for untracked files - it is extremely easy to get a lot of these,
             # so we handle them separately.
@@ -683,7 +682,7 @@ function __fish_git_aliased_command
 end
 
 set -g __fish_git_aliases
-git config -z --get-regexp 'alias\..*' | while read -lz alias cmdline
+__fish_git_query config -z --get-regexp 'alias\..*' | while read -lz alias cmdline
     set -l command (__fish_git_aliased_command $cmdline)
     string match -q --regex '\w+' -- $command; or continue
     # Git aliases can contain chars that variable names can't - escape them.
@@ -859,7 +858,7 @@ function __fish_git_reflog
 end
 
 function __fish_git_help_all_concepts
-    git help -g | string match -e -r '^   \w+' | while read -l concept desc
+    __fish_git_query help -g | string match -e -r '^   \w+' | while read -l concept desc
         printf "%s\tConcept: %s\n" $concept (string trim $desc)
     end
 end
@@ -1589,7 +1588,7 @@ complete -c git -n '__fish_git_using_command diff' -n '__fish_git_contains_opt c
 ### Function to list available tools for git difftool and mergetool
 
 function __fish_git_diffmerge_tools -a cmd
-    git $cmd --tool-help | while read -l line
+    __fish_git_query $cmd --tool-help | while read -l line
         string match -q 'The following tools are valid, but not currently available:' -- $line
         and break
         string replace -f -r '^\t\t(\w+).*$' '$1' -- $line

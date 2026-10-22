@@ -238,3 +238,31 @@ git checkout -b pushbranch >/dev/null 2>&1
 git remote add pushremote ./.git
 complete -C'git push pushremote push'
 #CHECK: pushbranch	Local Branch
+
+# Only CLI-only builds retry a failed porcelain v2 query with v1.
+functions -c __fish_git __fish_git_with_porcelain_v2
+set -lx FISH_PORCELAIN_V1_TRACE "$tmp/status-query-trace"
+function __fish_git
+    if contains -- --porcelain=2 $argv
+        return 129
+    end
+    if contains -- --porcelain $argv
+        echo queried >>"$FISH_PORCELAIN_V1_TRACE"
+    end
+    __fish_git_with_porcelain_v2 $argv
+end
+touch porcelain-v1-file
+set -l files (complete -C'git add porcelain-')
+if builtin __fish_git --is-enabled
+    test -z "$files"; or exit 1
+    test ! -e "$FISH_PORCELAIN_V1_TRACE"; or exit 1
+else
+    test "$files" = (printf 'porcelain-v1-file\tUntracked file'); or exit 1
+    test -s "$FISH_PORCELAIN_V1_TRACE"; or exit 1
+end
+functions -e __fish_git
+functions -c __fish_git_with_porcelain_v2 __fish_git
+functions -e __fish_git_with_porcelain_v2
+set -e FISH_PORCELAIN_V1_TRACE
+echo 'porcelain query checks passed'
+#CHECK: porcelain query checks passed

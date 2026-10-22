@@ -1754,11 +1754,14 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
         let cmd_string = CmdString::new(cmd_orig, self.ctx.vars());
         let cmd_name = cmd_string.basename(cmd_orig);
 
-        let cmd_exists = builtin_exists(cmd_name) || function::exists_no_autoload(cmd_name) || {
-            // Even if the command is given as absolute path, use the basename, since
-            // that's the prerequisite for the completion script to use it.
-            path_get_path(cmd_name, self.ctx.vars()).is_some()
-        };
+        let cmd_exists = cmd_name == "git"
+            || builtin_exists(cmd_name)
+            || function::exists_no_autoload(cmd_name)
+            || {
+                // Even if the command is given as absolute path, use the basename, since
+                // that's the prerequisite for the completion script to use it.
+                path_get_path(cmd_name, self.ctx.vars()).is_some()
+            };
         if !cmd_exists {
             // Do not load custom completions if the command does not exist
             // This prevents errors caused during the execution of completion providers for

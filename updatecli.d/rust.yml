@@ -14,11 +14,11 @@ sources:
         fi
         stable_rust_version=$("$(rustup +stable which rustc)" --version | cut -d' ' -f2)
         echo "${stable_rust_version%.*}"
-  debian_stable_rust_version:
+  rust_msrv:
     kind: shell
     spec:
       command: |
-        build_tools/version-available-in-debian.sh stable rustc
+        awk -F'"' '/^rust-version =/ { print $2; exit }' Cargo.toml
 
 targets:
   update_rust_stable:
@@ -39,9 +39,9 @@ targets:
       replacepattern: 'rust-version: {{ source "rust_stable_version" }} # updatecli.d/rust.yml'
   update_msrv:
     name: "Update MSRV"
-    sourceid: debian_stable_rust_version
+    sourceid: rust_msrv
     kind: file
     spec:
       file: .github/actions/rust-toolchain/action.yml
       matchpattern: '\(msrv\)   echo \d+\.\d+ ;;.*'
-      replacepattern: '(msrv)   echo {{ source "debian_stable_rust_version" }} ;; # updatecli.d/rust.yml'
+      replacepattern: '(msrv)   echo {{ source "rust_msrv" }} ;; # updatecli.d/rust.yml'

@@ -22,7 +22,8 @@ add_executable(fish_macapp EXCLUDE_FROM_ALL
     ${RESOURCE_FILES}
 )
 
-# Compute the version. Note this is done at generation time, not build time,
+# Get the source version before the fish binary is available.
+# Note this is done at generation time, not build time,
 # so cmake must be re-run after version changes for the app to be updated. But
 # generally this will be run by make_macos_pkg.sh which always re-runs cmake.
 execute_process(

@@ -6,6 +6,10 @@ use rsconf::Target;
 #[cfg(not(windows))]
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "git")]
+#[path = "src/git/status.rs"]
+mod git_status;
+
 fn main() {
     let is_nightly =
         rustc_version::version_meta().unwrap().channel == rustc_version::Channel::Nightly;
@@ -216,8 +220,8 @@ fn get_version() -> String {
 fn git_version() -> Option<String> {
     // Open only this checkout: an unpacked source archive inside another
     // repository must retain the package version. No Git executable is needed.
-    // Disable command-capable configuration, including clean filters used by
-    // the dirty check, so obtaining build metadata cannot launch subprocesses.
+    // Exclude parent-repository filters from build metadata. Submodule status
+    // uses gix normalization; repository queries never invoke the Git CLI.
     let mut repo = gix::open_opts(
         workspace_root(),
         gix::open::Options::isolated().filter_config_section(|_| false),
@@ -235,15 +239,27 @@ fn git_version() -> Option<String> {
     repo.object_cache_size_if_unset(4 * 1024 * 1024);
     watch_git_version_inputs(&repo);
 
-    repo.head_commit()
+    let mut description = repo
+        .head_commit()
         .ok()?
         .describe()
         .id_as_fallback(true)
         .try_resolve()
         .ok()??
-        .format_with_dirty_suffix("dirty".to_owned())
-        .ok()
-        .map(|description| description.to_string())
+        .format()
+        .ok()?;
+    // Share the status queries used by the interactive Git integration.
+    match git_status::query(
+        &repo,
+        repo.workdir()?,
+        "diff-index",
+        &["--quiet".into(), "HEAD".into(), "--".into()],
+    ) {
+        Ok(_) => {}
+        Err(1) => description.dirty_suffix = Some("dirty".into()),
+        Err(_) => return None,
+    }
+    Some(description.to_string())
 }
 
 #[cfg(feature = "git")]
@@ -269,7 +285,9 @@ fn watch_git_version_inputs(repo: &gix::Repository) {
     // build output, caches, or unrelated files in the working directory.
     if let (Some(worktree), Ok(index)) = (repo.workdir(), repo.index()) {
         for entry in index.entries() {
-            watch(worktree.join(gix::path::from_bstr(entry.path(&index))));
+            if let Ok(path) = gix::path::from_bstr(entry.path(&index)) {
+                watch(worktree.join(path));
+            }
         }
     }
 }

@@ -116,7 +116,7 @@ Dependencies
 
 Compiling fish requires:
 
--  Rust (version 1.85 or later), including cargo
+-  Rust (version 1.88 or later), including cargo
 -  CMake (version 3.15 or later)
 -  a C compiler (for system feature detection and the test helper binary)
 -  PCRE2 (headers and libraries) - optional, this will be downloaded if missing
@@ -164,6 +164,7 @@ In addition to the normal CMake build options (like ``CMAKE_INSTALL_PREFIX``), f
   you can build a native one with ``cargo build --bin fish_indent`` and set this to ``$PWD/target/debug/fish_indent``.
 - FISH_USE_SYSTEM_PCRE2=ON|OFF - whether to use an installed pcre2. This is normally autodetected.
 - WITH_MESSAGE_LOCALIZATION=ON|OFF - whether to include translations.
+- WITH_GIT=ON|OFF - whether to use gix for Git repository integration. Defaults to ON; OFF uses the Git executable on POSIX.
 - extra_functionsdir, extra_completionsdir and extra_confdir - to compile in an additional directory to be searched for functions, completions and configuration snippets
 
 Building fish with Cargo
@@ -187,7 +188,25 @@ You can also install Sphinx another way and drop the ``uv run --no-managed-pytho
 
 This will place standalone binaries in ``~/.cargo/bin/``, but you can move them wherever you want.
 
-To disable translations, disable the ``localize-messages`` feature by passing ``--no-default-features --features=embed-manpages`` to cargo.
+To disable translations, disable the ``localize-messages`` feature by passing ``--no-default-features --features=embed-manpages,gix`` to cargo.
+
+The default-enabled ``gix`` Cargo feature enables the ``git`` feature, which gates
+repository integration through the gix library. POSIX Git prompts and repository
+completions use gix APIs where available, including filter handling for status.
+Library errors, unsupported repository storage and non-UTF-8 query arguments do
+not trigger a retry through Git.
+
+Operations without a suitable API use an installed Git executable. These include
+installed Git help, tool and configuration catalogs, and queries with nonempty
+``GIT_COMMON_DIR``, ``GIT_CONFIG_PARAMETERS``, ``GIT_OBJECT_DIRECTORY`` or
+``GIT_ALTERNATE_OBJECT_DIRECTORIES`` overrides. These operations are unavailable
+when Git is not installed. To use the Git executable for all POSIX queries while
+retaining the other defaults, pass
+``--no-default-features --features=embed-manpages,localize-messages``.
+
+Cargo build version metadata uses gix when enabled and the package version
+otherwise. Packaging helpers prefer a supplied fish binary's build version, then
+try Git, and finally use the Cargo package version.
 
 You can also link this build statically (but not against glibc) and move it to other computers.
 

@@ -58,7 +58,6 @@ function __fish_complete_yadm_like_git
         set cmdline (string replace 'gitconfig' 'config' "$cmdline")
     end
 
-    set -l yadm_work_tree (yadm gitconfig --get core.worktree)
     set -l yadm_repo (yadm introspect repo)
 
     argparse -u 'R-yadm-repo=&' -- $cmdline 2>/dev/null
@@ -70,6 +69,7 @@ function __fish_complete_yadm_like_git
         set cmdline $argv_opts -- $argv
     end
 
+    set -l yadm_work_tree (__fish_git_query --git-dir "$yadm_repo" config --get core.worktree)
     set -l git_wrapper_cmd "git --work-tree $yadm_work_tree --git-dir $yadm_repo $cmdline"
 
     # `complete -a` expects each completion to be separated by space, not newline

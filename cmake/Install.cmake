@@ -121,16 +121,14 @@ fish_create_dirs(
 fish_try_create_dirs(${rel_datadir}/pkgconfig)
 configure_file(fish.pc.in fish.pc.noversion @ONLY)
 
-add_custom_command(
-    OUTPUT fish.pc
+add_custom_target(build_fish_pc ALL
     COMMAND sed '/Version/d' fish.pc.noversion > fish.pc
     COMMAND printf "Version: " >> fish.pc
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/build_tools/git_version_gen.sh >> fish.pc
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/build_tools/git_version_gen.sh "${CMAKE_CURRENT_BINARY_DIR}/fish" >> fish.pc
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/fish.pc.noversion
+    DEPENDS fish ${CMAKE_CURRENT_BINARY_DIR}/fish.pc.noversion
+    BYPRODUCTS fish.pc
 )
-
-add_custom_target(build_fish_pc ALL DEPENDS fish.pc)
 
 install(
     FILES ${CMAKE_CURRENT_BINARY_DIR}/fish.pc

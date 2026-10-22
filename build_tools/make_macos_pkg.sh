@@ -49,10 +49,6 @@ if [ -n "$NOTARIZE" ] && [ -z "$API_KEY_FILE" ]; then
     usage
 fi
 
-VERSION=$(build_tools/git_version_gen.sh)
-
-echo "Version is $VERSION"
-
 PKGDIR=$(mktemp -d)
 echo "$PKGDIR"
 
@@ -92,6 +88,9 @@ FILE=$PKGDIR/root/usr/local/bin/fish
 X86_FILE=$PKGDIR/build_x86_64/$(basename "$FILE")
 rcodesign macho-universal-create --output "$FILE" "$FILE" "$X86_FILE"
 chmod 755 "$FILE"
+
+VERSION=$("$SRC_DIR/build_tools/git_version_gen.sh" "$FILE")
+echo "Version is $VERSION"
 
 if test -n "$SIGN"; then
     echo "Signing executables"

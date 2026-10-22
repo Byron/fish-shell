@@ -252,14 +252,24 @@ expansion are not evaluated. This native provider does not load the full POSIX
 Git aliases, all option combinations, revision expressions and tracked-file
 filtering remain outside its current scope.
 
-The default-enabled `git` Cargo feature controls these native repository queries
-and the Git revision/dirty suffix in Cargo build version metadata. Both use `gix`
-without invoking Git. Build with `--no-default-features` to omit them, adding
+The default-enabled `gix` Cargo feature enables the underlying `git` feature,
+which controls repository integration on both Windows and POSIX and the Git
+revision/dirty suffix in Cargo build version metadata. POSIX's existing completion
+and prompt scripts use an internal builtin for their repository queries,
+including status, history and configuration. Only operations without a suitable
+API use an installed Git executable: installed help, tool and configuration
+catalogs, and queries with nonempty `GIT_COMMON_DIR`, `GIT_CONFIG_PARAMETERS`,
+`GIT_OBJECT_DIRECTORY` or `GIT_ALTERNATE_OBJECT_DIRECTORIES` overrides. Errors
+from gix, including unsupported repository storage, do not retry through Git.
+Status uses gix's filter APIs. The native editor retains the bounded reference
+provider described above, without a Git subprocess fallback.
+Build with `--no-default-features` to disable gix integration, adding
 `--features embed-manpages,localize-messages` to retain the other defaults if
-desired. Such builds report the package version and retain static Git command,
-option and ordinary file completion. There is no Git subprocess fallback when
-the feature is disabled or a repository is unsupported. Existing POSIX
-completion scripts and developer tools retain their existing behavior.
+desired. Such builds report the package version and use Git for all POSIX
+repository queries. Native Windows builds retain static Git command, option and
+ordinary file completion but omit repository suggestions when gix is disabled.
+CMake builds enable the same gix integration by default; `-DWITH_GIT=OFF`
+selects the Git executable for POSIX repository queries.
 
 Register literal options and choices in `config.fish` or at the prompt:
 

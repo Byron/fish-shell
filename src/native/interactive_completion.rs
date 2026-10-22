@@ -7,10 +7,10 @@
 
 use super::InputLanguage;
 #[cfg(feature = "git")]
-use super::interactive_git::{GitRef, GitRefs, RefKind as GitRefKind};
-#[cfg(feature = "git")]
 use super::interactive_git_context::RefFilter;
 use super::interactive_git_context::{self as git_context, Target};
+#[cfg(feature = "git")]
+use crate::git::{GitRef, GitRefs, RefKind as GitRefKind};
 use rustyline::completion::Pair;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};

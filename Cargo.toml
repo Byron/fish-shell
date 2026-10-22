@@ -5,7 +5,7 @@ exclude = ["vendor/rustyline"]
 [workspace.package]
 edition = "2024"
 # To build revisions that use Corrosion (those before 2024-01), use CMake 3.19, Rustc 1.78 and Rustup 1.27.
-rust-version = "1.85"
+rust-version = "1.88"
 repository = "https://github.com/fish-shell/fish-shell"
 # see doc_src/license.rst for details
 # don't forget to update COPYING and debian/copyright too
@@ -40,7 +40,7 @@ fish-wcstringutil = { path = "crates/wcstringutil" }
 fish-wgetopt = { path = "crates/wgetopt" }
 fish-widecharwidth = { path = "crates/widecharwidth" }
 fish-widestring = { path = "crates/widestring" }
-gix = { version = "0.87.1", default-features = false, features = ["sha1", "sha256"] }
+gix = { git = "https://github.com/GitoxideLabs/gitoxide", rev = "b8ef9ea94ba69302981c56e16d52b696a00d4c98", default-features = false, features = ["sha1", "sha256"] }
 fluent = { git = "https://github.com/projectfluent/fluent-rs", rev = "0f87afbbc3fe7d20c61a3fc75cb5d0e123aefdda" }
 # https://codeberg.org/danielrainer/fluent-ftl-tools
 fluent-ftl-tools = { git = "https://github.com/danielrainer/fluent-ftl-tools", rev = "17be1e678558d776f2bde068eacedf5fa79bf6fb" }
@@ -119,6 +119,7 @@ readme = "README.rst"
 rash = { path = "crates/rash" }
 bincode = "1.3.3"
 serde = { version = "1.0.228", features = ["derive"] }
+gix = { workspace = true, optional = true, features = ["revision", "status"] }
 
 # The POSIX backend is also used by the MSYS2/Cygwin Rust target. Native
 # Windows builds must not pull in its Unix-only libraries or build scripts.
@@ -163,7 +164,6 @@ portable-atomic.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 fd-lock = "4.0"
-gix = { workspace = true, optional = true }
 jiff = "0.2.38"
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
@@ -237,7 +237,8 @@ name = "fish_key_reader"
 path = "src/bin/fish_key_reader.rs"
 
 [features]
-default = ["embed-manpages", "localize-messages", "git"]
+default = ["embed-manpages", "localize-messages", "gix"]
+gix = ["git"]
 git = ["dep:gix"]
 benchmark = []
 embed-manpages = ["dep:fish-build-man-pages"]

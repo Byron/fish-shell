@@ -11,6 +11,7 @@ Deprecations and removed features
 
 Interactive improvements
 ------------------------
+- Git prompts and repository completions on POSIX now use gix APIs by default. Operations without a suitable API use the Git executable; errors from gix do not trigger a retry. Disabling the ``gix`` Cargo feature or CMake's ``WITH_GIT`` option restores the Git executable implementation.
 - Completion options `--no-files` and `--force-files` on a wrapping command now take precedence over such options on the commands it wraps.
 - ``history clear`` empties the history file instead of deleting it, preventing future shells from reimporting bash history (:issue:`12976`).
 - Fixed a glitch in the initial prompt when the terminal is resized during early startup (:issue:`12995`).

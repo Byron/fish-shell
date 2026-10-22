@@ -1,8 +1,11 @@
-//! Bounded Git reference discovery for native completion.
+//! Bounded Git reference discovery shared by POSIX and native completion.
 //!
 //! Repository discovery and reference reads use gix directly. The caller
 //! separately recognizes a revision slot and supplies literal repository-routing
 //! options; edited shell source, aliases and completion scripts never run.
+
+#[cfg(not(windows))]
+mod status;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
@@ -10,10 +13,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+#[cfg(not(windows))]
+mod history;
+#[cfg(not(windows))]
+pub(crate) mod query;
+
 // This budget is checked between library calls; synchronous filesystem access
 // cannot be forcibly interrupted. No worker thread or child process is left
 // running after a query returns.
 const QUERY_BUDGET: Duration = Duration::from_millis(500);
+// Select Git only for missing APIs, never in response to a gix error.
+#[cfg(not(windows))]
+const USE_CLI: i32 = 125;
 const CACHE_AGE: Duration = Duration::from_millis(500);
 const MAX_CACHE_ENTRIES: usize = 8;
 const MAX_REFS: usize = 4096;
@@ -21,7 +32,7 @@ const MAX_OUTPUT: usize = 1024 * 1024;
 const MAX_REF_BYTES: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum RefKind {
+pub(crate) enum RefKind {
     LocalBranch,
     RemoteBranch,
     Tag,
@@ -29,9 +40,9 @@ pub(super) enum RefKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct GitRef {
-    pub(super) name: String,
-    pub(super) kind: RefKind,
+pub(crate) struct GitRef {
+    pub(crate) name: String,
+    pub(crate) kind: RefKind,
 }
 
 struct CachedRefs {
@@ -42,22 +53,25 @@ struct CachedRefs {
 }
 
 #[derive(Default)]
-pub(super) struct GitRefs {
+pub(crate) struct GitRefs {
     environment: Vec<(OsString, OsString)>,
     cache: Mutex<VecDeque<CachedRefs>>,
 }
 
 impl GitRefs {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub(super) fn set_environment(&mut self, environment: Vec<(OsString, OsString)>) {
+    pub(crate) fn set_environment(&mut self, environment: Vec<(OsString, OsString)>) {
+        if self.environment == environment {
+            return;
+        }
         self.environment = environment;
         self.cache = Mutex::default();
     }
 
-    pub(super) fn query(&self, cwd: &Path, global_args: &[String]) -> Vec<GitRef> {
+    pub(crate) fn query(&self, cwd: &Path, global_args: &[String]) -> Vec<GitRef> {
         if !approved_routing(global_args) {
             return Vec::new();
         }
@@ -157,7 +171,13 @@ impl Routing {
         let variable = |key: &str| {
             environment.iter().rev().find_map(|(name, value)| {
                 name.to_str()
-                    .is_some_and(|name| name.eq_ignore_ascii_case(key))
+                    .is_some_and(|name| {
+                        if cfg!(windows) {
+                            name.eq_ignore_ascii_case(key)
+                        } else {
+                            name == key
+                        }
+                    })
                     .then_some(value.as_os_str())
             })
         };
@@ -227,11 +247,19 @@ impl Routing {
     }
 
     fn open(&self) -> Option<gix::Repository> {
+        self.open_with_config(&[])
+    }
+
+    fn open_with_config(&self, overrides: &[String]) -> Option<gix::Repository> {
         // In particular, never ask gix to locate Git's installation config:
         // that lookup can itself launch git.exe. Isolated options also prevent
         // inherited GIT_* variables and include files from changing routing.
-        let options =
-            gix::open::Options::isolated().config_overrides(["gitoxide.objects.noReplace=true"]);
+        let options = gix::open::Options::isolated().config_overrides(
+            overrides
+                .iter()
+                .map(String::as_str)
+                .chain(["gitoxide.objects.noReplace=true"]),
+        );
         match &self.git_dir {
             Some(git_dir) => gix::open_opts(git_dir, options.open_path_as_is(true)).ok(),
             None => {
@@ -625,7 +653,7 @@ mod tests {
         add_reference(&second, "refs/heads/second");
         let mut git = GitRefs::new();
         git.set_environment(vec![
-            ("git_dir".into(), "second/.git".into()),
+            ("GIT_DIR".into(), "second/.git".into()),
             ("GIT_WORK_TREE".into(), "missing".into()),
             ("GIT_NAMESPACE".into(), "server".into()),
         ]);
@@ -649,6 +677,22 @@ mod tests {
             git.set_environment(vec![(key.into(), value.into())]);
             assert!(git.query(first.workdir().unwrap(), &[]).is_empty());
         }
+    }
+
+    #[test]
+    fn environment_variable_names_follow_platform_case_rules() {
+        let temporary = TemporaryDirectory::new();
+        let first = temporary.repository("first");
+        let second = temporary.repository("second");
+        add_reference(&first, "refs/heads/first");
+        add_reference(&second, "refs/heads/second");
+        let mut git = GitRefs::new();
+        git.set_environment(vec![("git_dir".into(), second.git_dir().into())]);
+        let expected = if cfg!(windows) { "second" } else { "first" };
+        assert_eq!(
+            names(&git.query(first.workdir().unwrap(), &[])),
+            BTreeSet::from([expected])
+        );
     }
 
     #[test]
@@ -778,6 +822,8 @@ mod tests {
         });
         assert_eq!(git.query(Path::new("C:/fixture"), &[])[0].name, "cached");
         git.set_environment(Vec::new());
+        assert_eq!(git.query(Path::new("C:/fixture"), &[])[0].name, "cached");
+        git.set_environment(vec![("GIT_DIR".into(), "missing".into())]);
         assert!(git.cache.lock().unwrap().is_empty());
         assert!(git.query(Path::new("C:/fixture"), &[]).is_empty());
     }
