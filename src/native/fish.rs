@@ -1024,6 +1024,50 @@ mod tests {
     }
 
     #[test]
+    fn native_windows_status_is_quiet_and_selects_startup_code() {
+        let mut session = Session::new().unwrap();
+        let mut capture = Capture::default();
+        assert_eq!(
+            session
+                .eval("false; status is-native-windows", &mut capture)
+                .unwrap(),
+            0
+        );
+        assert!(capture.0.is_empty());
+        session
+            .eval(
+                "if status is-native-windows; set -g backend native; else; set -g backend posix; end",
+                &mut capture,
+            )
+            .unwrap();
+        assert_eq!(session.values("backend"), ["native"]);
+        session.set_mode(true, true);
+        session.eval("fish_input_mode bash", &mut capture).unwrap();
+        assert_eq!(
+            session
+                .eval_input("status is-native-windows", &mut capture)
+                .unwrap(),
+            0
+        );
+        assert!(capture.0.is_empty());
+    }
+
+    #[test]
+    fn native_windows_status_rejects_operands() {
+        let mut session = Session::new().unwrap();
+        let mut capture = Capture::default();
+        let error = session
+            .eval("status is-native-windows extra", &mut capture)
+            .unwrap_err();
+        assert_eq!(error.status, 2);
+        assert_eq!(
+            error.message,
+            "status is-native-windows: expected 0 arguments; got 1"
+        );
+        assert!(capture.0.is_empty());
+    }
+
+    #[test]
     fn fish_status_and_prefix_assignment_semantics() {
         // Expected results checked against the POSIX Fish evaluator.
         assert_eq!(

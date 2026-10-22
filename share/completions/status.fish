@@ -21,6 +21,7 @@ set -l __fish_status_all_commands \
     is-interactive-job-control \
     is-interactive-read \
     is-login \
+    is-native-windows \
     is-no-job-control \
     job-control \
     language \
@@ -38,6 +39,7 @@ complete -c status -s h -l help -d "Display help and exit"
 
 # The "is-something" subcommands.
 complete -f -c status -n "not __fish_seen_subcommand_from $__fish_status_all_commands" -a is-login -d "Test if this is a login shell"
+complete -f -c status -n "not __fish_seen_subcommand_from $__fish_status_all_commands" -a is-native-windows -d "Test if fish uses the native Windows backend"
 complete -f -c status -n "not __fish_seen_subcommand_from $__fish_status_all_commands" -a is-interactive -d "Test if this is an interactive shell"
 complete -f -c status -n "not __fish_seen_subcommand_from $__fish_status_all_commands" -a is-interactive-read -d "Test if inside an interactive read builtin"
 complete -f -c status -n "not __fish_seen_subcommand_from $__fish_status_all_commands" -a is-command-substitution -d "Test if a command substitution is currently evaluated"

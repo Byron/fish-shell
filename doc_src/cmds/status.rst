@@ -8,6 +8,7 @@ Synopsis
 
     status
     status is-login
+    status is-native-windows
     status is-interactive
     status is-interactive-read
     status is-block
@@ -59,6 +60,11 @@ The following operations (subcommands) are available:
 
 **is-login**, **-l** or **--is-login**
     Returns 0 if fish is a login shell - that is, if fish should perform login tasks such as setting up :envvar:`PATH`.
+
+**is-native-windows**
+    Returns 0 when fish uses the native Windows backend, and 1 on POSIX builds, including MSYS2, Cygwin and WSL.
+    This query produces no output and can be used in shared startup files to select configuration for each backend.
+    Its result does not depend on the terminal, parent shell or selected input language.
 
 **is-full-job-control** or **--is-full-job-control**
     Returns 0 if full job control is enabled.

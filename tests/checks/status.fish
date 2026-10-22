@@ -19,6 +19,21 @@ and echo '"status is-login" unexpectedly returned true for a non-login shell'
 status is-interactive
 and echo '"status is-interactive" unexpectedly returned true for a non-interactive shell'
 
+# Backend detection is quiet and false on POSIX, including MSYS2/Cygwin.
+status is-native-windows
+echo native-windows:$status
+# CHECK: native-windows:1
+if status is-native-windows
+    echo native-startup
+else
+    echo posix-startup
+end
+# CHECK: posix-startup
+status is-native-windows extra
+# CHECKERR: status is-native-windows: expected 0 arguments; got 1
+echo native-windows-arguments:$status
+# CHECK: native-windows-arguments:2
+
 # We should get an error message about an invalid combination of flags.
 status --is-interactive --is-login
 #CHECKERR: status: is-interactive is-login: options cannot be used together

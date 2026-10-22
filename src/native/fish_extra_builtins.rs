@@ -92,6 +92,14 @@ impl Session {
                         self.status = i32::from(!self.interactive);
                     }
                     "is-login" | "-l" => self.status = i32::from(!self.login),
+                    "is-native-windows" => {
+                        if args.len() != 1 {
+                            return Err(Error::new(format!(
+                                "status is-native-windows: expected 0 arguments; got {}",
+                                args.len() - 1
+                            )));
+                        }
+                    }
                     "is-block" | "-b" => self.status = i32::from(self.scopes.len() <= 1),
                     "is-command-substitution" => self.status = i32::from(!output.capture),
                     "fish-path" => self.write(

@@ -76,6 +76,7 @@ str_enum!(
     (IsInteractiveJobControl, "is-interactive-job-control"),
     (IsInteractiveRead, "is-interactive-read"),
     (IsLogin, "is-login"),
+    (IsNativeWindows, "is-native-windows"),
     (IsNoJobControl, "is-no-job-control"),
     (LineNumber, "line-number", "current-line-number"),
     (ListFiles, "list-files"),
@@ -657,6 +658,7 @@ pub fn status(parser: &mut Parser, streams: &mut IoStreams, args: &mut [&wstr]) 
                         return Err(STATUS_CMD_ERROR);
                     }
                 }
+                IsNativeWindows => return Err(STATUS_CMD_ERROR),
                 IsFullJobControl => {
                     if get_job_control_mode() == JobControl::All {
                         return Ok(SUCCESS);

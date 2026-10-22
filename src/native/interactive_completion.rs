@@ -998,6 +998,7 @@ fn subcommand_choices(command: &str) -> Option<Choices> {
         "status" => &[
             ("is-interactive", "Test interactive session"),
             ("is-login", "Test login shell"),
+            ("is-native-windows", "Test native Windows backend"),
             ("current-command", "Print current command"),
             ("is-block", "Test block scope"),
             ("is-command-substitution", "Test captured output"),

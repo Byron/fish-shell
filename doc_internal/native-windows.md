@@ -50,6 +50,12 @@ Keep the MSYS2 runtime DLLs and utilities available when launching that executab
 The separate output directories let native and MSYS2 builds coexist. Building
 either target does not replace an installed shell or change terminal settings.
 
+Shared Fish startup files can use `status is-native-windows` to select native
+configuration. It silently returns status 0 for the native Windows backend and
+status 1 for POSIX builds, including MSYS2/Cygwin and WSL. The result is independent
+of the terminal, parent shell and Fish/Bash input mode; no subprocess or version
+string parsing is needed.
+
 ## Native command and script execution
 
 Native `fish` uses the existing Fish AST and tokenizer with an initial native
