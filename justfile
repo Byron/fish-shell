@@ -1,11 +1,11 @@
 set windows-shell := ["pwsh.exe", "-NoLogo", "-NoProfile", "-Command"]
 
-# Build native release binaries, preserving existing Windows executables.
+# Build first, then publish the release for an explicit Rust target.
 [windows]
-release:
-    @& ./build_tools/build-release.ps1
+release $target:
+    @& ./build_tools/build-release.ps1 -Target $env:target
 
-# Build release binaries with the current Unix toolchain.
+# Build release binaries for an explicit Rust target.
 [unix]
-release:
-    cargo build --locked --release --package fish --bins
+release $target:
+    cargo build --locked --release --package fish --bins --target "$target"

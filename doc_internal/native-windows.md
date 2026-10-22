@@ -30,16 +30,27 @@ cargo build --locked --release --bins --target x86_64-pc-windows-msvc
 .\target\x86_64-pc-windows-msvc\release\rash.exe -c 'printf "%s\n" "native Rash"'
 ```
 
-With [Just](https://just.systems/) and PowerShell 7 installed, use `just release`
-to rebuild all four release binaries. On Windows this selects
-`x86_64-pc-windows-msvc`, the target used by Rustty. Before building, it renames
-existing executables and PDBs in the release and Cargo `deps` directories to
-names such as `fish.previous-<UTC timestamp>-<GUID>.exe` in the same directory.
-Running shells can continue using those files while Cargo creates new binaries.
-Every invocation uses a new suffix; previous backups are kept, including when
-the build fails. Cargo's configured target and build directories are respected.
-On Unix, `just release` builds with the current toolchain and ordinary Cargo
-release output paths.
+With [Just](https://just.systems/) and PowerShell 7 installed, use
+`just release x86_64-pc-windows-msvc` to rebuild all four native release binaries.
+The target argument is required on both Windows and Unix; `just release` alone
+reports a missing argument. Direct PowerShell invocation likewise requires
+`./build_tools/build-release.ps1 -Target x86_64-pc-windows-msvc`.
+
+On Windows, Cargo first builds in `.release-build` under its configured target
+directory, with any separate Cargo build directory redirected into that cache.
+Existing published binaries stay in place throughout compilation. Only after
+every binary is built and the complete bundle is prepared does the script rename
+the old executables and PDBs to names such as
+`fish.previous-<UTC timestamp>-<GUID>.exe` and publish the replacements. Running
+shells can keep using the preserved files. Failed builds leave the current bundle
+untouched; publication failures attempt to restore it and report any files that
+could not be restored. Replacement of multiple files is not atomic.
+
+Published binaries remain in `<target-directory>/<target>/release`. Earlier
+backups are kept, and the separate build cache is reused on subsequent runs.
+On Unix, the recipe passes the explicit target to Cargo and uses its ordinary
+release output paths. `python tests/build_release.py` checks Windows publication
+and rollback with isolated fake Cargo artifacts.
 
 With an MSVC host toolchain, `cargo build --locked --release --bins` selects the
 native backend automatically and writes optimized executables to `target/release`.
