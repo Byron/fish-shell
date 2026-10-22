@@ -5,6 +5,8 @@ use fish_widestring::prelude::*;
 use rash::host::{Host, ReadResult, Redirection};
 use rash::{Error, Result};
 
+#[path = "fish_string_display.rs"]
+mod display;
 #[path = "fish_string_matching.rs"]
 mod matching;
 
@@ -35,12 +37,41 @@ impl StringOutput {
     }
 }
 
+#[cfg(test)]
 pub(super) fn run(
     args: &[String],
     host: &mut impl Host,
     redirects: &[Redirection],
     stdin_is_directly_redirected: bool,
 ) -> Result<StringOutput> {
+    run_with_width(
+        args,
+        host,
+        redirects,
+        stdin_is_directly_redirected,
+        Default::default(),
+    )
+}
+
+pub(super) fn run_with_width(
+    args: &[String],
+    host: &mut impl Host,
+    redirects: &[Redirection],
+    stdin_is_directly_redirected: bool,
+    widths: crate::string_display::WidthSettings,
+) -> Result<StringOutput> {
+    if args
+        .first()
+        .is_some_and(|command| matches!(command.as_str(), "pad" | "shorten" | "length"))
+    {
+        return Ok(display::run(
+            args,
+            host,
+            redirects,
+            stdin_is_directly_redirected,
+            widths,
+        ));
+    }
     if args.first().is_some_and(|command| {
         matches!(
             command.as_str(),

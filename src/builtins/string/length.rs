@@ -33,21 +33,7 @@ impl StringSubCommand<'_> for Length {
 
         for InputValue { arg, .. } in arguments(args, optind, streams) {
             if self.visible {
-                // Visible length only makes sense line-wise.
-                for line in {
-                    let val: &wstr = &arg;
-                    val.split('\n')
-                } {
-                    let mut max = 0;
-                    // Carriage-return returns us to the beginning. The longest substring without
-                    // carriage-return determines the overall width.
-                    for reset in {
-                        let val = &line;
-                        val.split('\r')
-                    } {
-                        let n = width_without_escapes(reset, 0);
-                        max = usize::max(max, n);
-                    }
+                for max in crate::string_display::WidthSettings::default().line_widths(&arg) {
                     if max > 0 {
                         nnonempty += 1;
                     }
@@ -79,9 +65,22 @@ impl StringSubCommand<'_> for Length {
 
 #[cfg(test)]
 mod tests {
+    mod display_cases {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/string_display_cases.rs"
+        ));
+    }
     use crate::builtins::{STATUS_CMD_ERROR, STATUS_CMD_OK};
     use crate::tests::prelude::*;
     use crate::validate;
+
+    #[test]
+    #[serial]
+    fn shared_display_cases() {
+        test_init();
+        display_cases::check(super::super::test_helpers::validate_case);
+    }
 
     #[test]
     #[serial]

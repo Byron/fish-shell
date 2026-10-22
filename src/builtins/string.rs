@@ -1,5 +1,5 @@
-use crate::{builtins, err_fmt, err_raw, err_str, screen::escape_code_length};
-use fish_wcstringutil::fish_wcwidth_visible;
+use crate::string_display::visible_width;
+use crate::{builtins, err_fmt, err_raw, err_str};
 // Forward some imports to make subcmd implementations easier
 use super::prelude::*;
 
@@ -223,37 +223,6 @@ enum Direction {
     #[default]
     Left,
     Right,
-}
-
-fn width_without_escapes(ins: &wstr, start_pos: usize) -> usize {
-    let mut width: isize = 0;
-    for c in ins[start_pos..].chars() {
-        let w = fish_wcwidth_visible(c);
-        // We assume that this string is on its own line,
-        // in which case a backslash can't bring us below 0.
-        if w > 0 || width > 0 {
-            width += w;
-        }
-    }
-    // ANSI escape sequences like \e\[31m contain printable characters. Subtract their width
-    // because they are not rendered.
-    let mut pos = start_pos;
-    while let Some(ec_pos) = ins.slice_from(pos).find_char('\x1B') {
-        pos += ec_pos;
-        if let Some(len) = escape_code_length(ins.slice_from(pos)) {
-            let sub = &ins[pos..pos + len];
-            for c in sub.chars() {
-                width -= fish_wcwidth_visible(c);
-            }
-            // Move us forward behind the escape code,
-            // it might include a second escape!
-            // E.g. SGR0 ("reset") is \e\(B\e\[m in xterm.
-            pos += len - 1;
-        } else {
-            pos += 1;
-        }
-    }
-    usize::try_from(width).expect("line has negative width")
 }
 
 /// Empirically determined.

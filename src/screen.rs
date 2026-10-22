@@ -1544,20 +1544,7 @@ impl LayoutCache {
     }
 }
 
-/// Returns the number of characters in the escape code starting at 'code'. We only handle sequences
-/// that begin with \x1B. If it doesn't we return zero. We also return zero if we don't recognize
-/// the escape sequence.
-pub fn escape_code_length(code: &wstr) -> Option<usize> {
-    if code.char_at(0) != '\x1B' {
-        return None;
-    }
-
-    is_screen_name_escape_seq(code)
-        .or_else(|| is_osc_escape_seq(code))
-        .or_else(|| is_three_byte_escape_seq(code))
-        .or_else(|| is_csi_style_escape_seq(code))
-        .or_else(|| is_two_byte_escape_seq(code))
-}
+pub use crate::string_display::escape_code_length;
 
 static MIDNIGHT_COMMANDER_HACK: RelaxedAtomicBool = RelaxedAtomicBool::new(false);
 
@@ -1576,118 +1563,6 @@ fn next_tab_stop(current_line_width: usize) -> usize {
     // Assume tab stops every 8 characters.
     const TAB_WIDTH: usize = 8;
     ((current_line_width / TAB_WIDTH) + 1) * TAB_WIDTH
-}
-
-/// Does this look like the escape sequence for setting a screen name?
-fn is_screen_name_escape_seq(code: &wstr) -> Option<usize> {
-    // Tmux escapes start with `\ePtmux;` and end also in `\e\\`,
-    // so we can just handle them here.
-    let tmux_seq = L!("Ptmux;");
-    let mut is_tmux = false;
-    if code.char_at(1) != 'k' {
-        if code.starts_with(tmux_seq) {
-            is_tmux = true;
-        } else {
-            return None;
-        }
-    }
-    let screen_name_end_sentinel = L!("\x1B\\");
-    let mut offset = 2;
-    let escape_sequence_end;
-    loop {
-        let Some(pos) = code[offset..].find(screen_name_end_sentinel) else {
-            // Consider just <esc>k to be the code.
-            // (note: for the tmux sequence this is broken, but since we have no idea...)
-            escape_sequence_end = 2;
-            break;
-        };
-        let screen_name_end = offset + pos;
-        // The tmux sequence requires that all escapes in the payload sequence
-        // be doubled. So if we have \e\e\\ that's still not the end.
-        if is_tmux {
-            let mut esc_count = 0;
-            let mut i = screen_name_end;
-            while i > 0 && code.as_char_slice()[i - 1] == '\x1B' {
-                i -= 1;
-                if i > 0 {
-                    esc_count += 1;
-                }
-            }
-            if esc_count % 2 == 1 {
-                offset = screen_name_end + 1;
-                continue;
-            }
-        }
-        escape_sequence_end = screen_name_end + screen_name_end_sentinel.len();
-        break;
-    }
-    Some(escape_sequence_end)
-}
-
-/// Operating System Command (OSC) escape codes, used by iTerm2 and others:
-/// ESC followed by ], terminated by either BEL or escape + backslash.
-/// See <https://invisible-island.net/xterm/ctlseqs/ctlseqs.html>
-/// and <https://iterm2.com/documentation-escape-codes.html>.
-fn is_osc_escape_seq(code: &wstr) -> Option<usize> {
-    if code.char_at(1) == ']' {
-        // Start at 2 to skip over <esc>].
-        let mut cursor = 2;
-        while cursor < code.len() {
-            let code = code.as_char_slice();
-            // Consume a sequence of characters up to <esc>\ or <bel>.
-            if code[cursor] == '\x07' || (code[cursor] == '\\' && code[cursor - 1] == '\x1B') {
-                return Some(cursor + 1);
-            }
-            cursor += 1;
-        }
-    }
-    None
-}
-
-/// Generic VT100 three byte sequence: `CSI` followed by something in the range @ through _.
-fn is_three_byte_escape_seq(code: &wstr) -> Option<usize> {
-    if code.char_at(1) == '[' && (code.char_at(2) >= '@' && code.char_at(2) <= '_') {
-        return Some(3);
-    }
-    None
-}
-
-/// Generic VT100 two byte sequence: `<esc>` followed by something in the range @ through _.
-fn is_two_byte_escape_seq(code: &wstr) -> Option<usize> {
-    if code.char_at(1) >= '@' && code.char_at(1) <= '_' {
-        return Some(2);
-    }
-    None
-}
-
-/// Generic VT100 CSI-style sequence. `<esc>`, followed by zero or more ASCII characters NOT in
-/// the range `[@,_],` followed by one character in that range.
-/// This will also catch color sequences.
-fn is_csi_style_escape_seq(code: &wstr) -> Option<usize> {
-    if code.char_at(1) != '[' {
-        return None;
-    }
-
-    // Start at 2 to skip over <esc>[
-    let mut cursor = 2;
-    while cursor < code.len() {
-        // Consume a sequence of ASCII characters not in the range [@, ~].
-        let widechar = code.as_char_slice()[cursor];
-
-        // If we're not in ASCII, just stop.
-        if !widechar.is_ascii() {
-            break;
-        }
-
-        // If we're the end character, then consume it and then stop.
-        if ('@'..'~').contains(&widechar) {
-            cursor += 1;
-            break;
-        }
-        cursor += 1;
-    }
-    // cursor now indexes just beyond the end of the sequence (or at the terminating zero).
-    Some(cursor)
 }
 
 /// Return whether `c` ends a measuring run.

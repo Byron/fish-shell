@@ -54,11 +54,19 @@ impl Session {
                 self.write(&numeric::math(args)?, host, output)?;
                 self.status = 0;
             }
-            "string" => match string::run(
+            "string" => match string::run_with_width(
                 args,
                 host,
                 &output.redirects,
                 output.stdin_is_directly_redirected,
+                crate::string_display::WidthSettings::from_overrides(
+                    self.variable("fish_ambiguous_width")
+                        .map(|v| v.values.join(" "))
+                        .as_deref(),
+                    self.variable("fish_emoji_width")
+                        .map(|v| v.values.join(" "))
+                        .as_deref(),
+                ),
             ) {
                 Ok(result) => {
                     self.write(&result.bytes, host, output)?;

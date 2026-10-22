@@ -97,6 +97,15 @@ grouped flags, and `--option=value`. String operations read stdin only when it
 is directly piped or redirected to the builtin; an empty argument list does not
 consume input inherited by a function or block. Use `<&0` for an explicit read
 inside such a block.
+`string pad`, `string shorten`, and `string length --visible` share terminal
+escape recognition, Unicode width measurement, and display transforms with
+POSIX Fish. They honor session-local `fish_emoji_width` and
+`fish_ambiguous_width`, preserve ANSI sequences, and support the same alignment,
+ellipsis, multiline, and quiet options. Buffered native display input is limited
+to 4,194,304 Unicode characters and 100,000 records; output is limited to 16 MiB.
+Left shortening and unfinished escape scanning take linear time. Both builds
+clip backspaces after ignoring escape sequences, avoiding negative-width errors
+on colored text with excess backspaces.
 `string split --fields` selects fields, including repeated fields and forward or
 reverse ranges; `--allow-empty` skips missing fields. Native selections are
 bounded to 100,000 fields. `string sub --end` accepts positive or negative Unicode

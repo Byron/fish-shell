@@ -30,6 +30,19 @@ pub static FISH_EMOJI_WIDTH: AtomicUsize = AtomicUsize::new(2);
 static WC_LOOKUP_TABLE: LazyLock<WcLookupTable> = LazyLock::new(WcLookupTable::new);
 
 pub fn fish_wcwidth(c: char) -> Option<usize> {
+    fish_wcwidth_with_options(
+        c,
+        FISH_AMBIGUOUS_WIDTH.load(Ordering::Relaxed),
+        FISH_EMOJI_WIDTH.load(Ordering::Relaxed),
+    )
+}
+
+/// Character width with explicit terminal settings, for independent shell sessions.
+pub fn fish_wcwidth_with_options(
+    c: char,
+    ambiguous_width: usize,
+    emoji_width: usize,
+) -> Option<usize> {
     // Check for VS16 which selects emoji presentation. This "promotes" a character like U+2764
     // (width 1) to an emoji (probably width 2). So treat it as width 1 so the sums work. See #2652.
     // VS15 selects text presentation.
@@ -54,11 +67,11 @@ pub fn fish_wcwidth(c: char) -> Option<usize> {
         WcWidth::NonCharacter | WcWidth::Combining | WcWidth::Unassigned => 0,
         WcWidth::Ambiguous | WcWidth::PrivateUse => {
             // TR11: "All private-use characters are by default classified as Ambiguous".
-            FISH_AMBIGUOUS_WIDTH.load(Ordering::Relaxed)
+            ambiguous_width
         }
         WcWidth::One => 1,
         WcWidth::Two => 2,
-        WcWidth::WidenedIn9 => FISH_EMOJI_WIDTH.load(Ordering::Relaxed),
+        WcWidth::WidenedIn9 => emoji_width,
     })
 }
 

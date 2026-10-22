@@ -41,7 +41,7 @@ impl<'args> StringSubCommand<'args> for Shorten<'args> {
         match c {
             'c' => {
                 self.ellipsis = arg.unwrap();
-                self.ellipsis_width = width_without_escapes(self.ellipsis, 0);
+                self.ellipsis_width = visible_width(self.ellipsis);
             }
             'm' => {
                 let arg = arg.unwrap();
@@ -99,7 +99,7 @@ impl<'args> StringSubCommand<'args> for Shorten<'args> {
                 .unwrap()
                 .to_owned();
                 s.push_utfstr(&self.ellipsis);
-                let width = width_without_escapes(&s, 0);
+                let width = visible_width(&s);
 
                 if width > 0 && width < min_width {
                     min_width = width;
@@ -107,7 +107,7 @@ impl<'args> StringSubCommand<'args> for Shorten<'args> {
                 inputs.push(s);
             } else {
                 for s in splits {
-                    let width = width_without_escapes(s, 0);
+                    let width = visible_width(s);
                     if width > 0 && width < min_width {
                         min_width = width;
                     }
@@ -132,116 +132,26 @@ impl<'args> StringSubCommand<'args> for Shorten<'args> {
         // That seems excessive - specifically because the ellipsis on LANG=C
         // is "..." (width 3!).
 
-        let skip_escapes = |l: &wstr, pos: usize| -> usize {
-            let mut totallen = 0usize;
-            while l.char_at(pos + totallen) == '\x1B' {
-                let Some(len) = escape_code_length(l.slice_from(pos + totallen)) else {
-                    break;
-                };
-                totallen += len;
-            }
-            totallen
-        };
-
+        let widths = crate::string_display::WidthSettings::default();
         for line in inputs {
-            let mut pos = 0usize;
-            let mut max = 0usize;
-            // Collect how much of the string we can use without going over the maximum.
-            if self.shorten_from == Direction::Left {
-                // Our strategy for keeping from the end.
-                // This is rather unoptimized - actually going *backwards* from the end
-                // is extremely tricky because we would have to subtract escapes again.
-                // Also we need to avoid hacking combiners into bits.
-                // This should work for most cases considering the combiners typically have width 0.
-                let mut out = L!("");
-                while pos < line.len() {
-                    let w = width_without_escapes(&line, pos);
-                    // If we're at the beginning and it fits, we sits.
-                    //
-                    // Otherwise we require it to fit the ellipsis
-                    if (w <= ourmax && pos == 0) || (w + ell_width <= ourmax) {
-                        out = line.slice_from(pos);
-                        break;
-                    }
-
-                    pos += skip_escapes(&line, pos).max(1);
-                }
-                if self.quiet {
-                    if pos != 0 {
-                        return Ok(());
-                    }
-                    continue;
-                }
-
-                let output = match pos {
-                    0 => line,
-                    _ => {
-                        // We have an ellipsis, construct our string and print it.
-                        nsub += 1;
-                        let mut res = WString::with_capacity(ell.len() + out.len());
-                        res.push_utfstr(ell);
-                        res.push_utfstr(out);
-                        res
-                    }
-                };
-                streams.out.appendln(&output);
-                continue;
-            } else {
-                /* shorten the right side */
-                // Going from the left.
-                // This is somewhat easier.
-                while max <= ourmax && pos < line.len() {
-                    pos += skip_escapes(&line, pos);
-                    if pos >= line.len() {
-                        break;
-                    }
-                    let w = fish_wcwidth_visible(line.char_at(pos));
-                    if w <= 0 || max + w as usize + ell_width <= ourmax {
-                        // If it still fits, even if it is the last, we add it.
-                        max = max.saturating_add_signed(w);
-                        pos += 1;
-                    } else {
-                        // We're at the limit, so see if the entire string fits.
-                        let mut max2 = max + w as usize;
-                        let mut pos2 = pos + 1;
-                        while pos2 < line.len() {
-                            pos2 += skip_escapes(&line, pos2);
-                            if pos2 >= line.len() {
-                                break;
-                            }
-                            let w = fish_wcwidth_visible(line.char_at(pos2));
-                            max2 = max2.saturating_add_signed(w);
-                            pos2 += 1;
-                        }
-
-                        if max2 <= ourmax {
-                            // We're at the end and everything fits,
-                            // no ellipsis.
-                            pos = pos2;
-                        }
-                        break;
-                    }
-                }
-            }
-
+            let left = self.shorten_from == Direction::Left;
+            let range = widths.shorten_range(&line, ourmax, ell_width, left);
+            let changed = range != (0..line.len());
             if self.quiet {
-                if pos != line.len() {
+                if changed {
                     return Ok(());
                 }
                 continue;
             }
-
-            if pos == line.len() {
-                streams.out.appendln(&line);
-                continue;
+            nsub += usize::from(changed);
+            if changed && left {
+                streams.out.append(ell);
             }
-
-            nsub += 1;
-            let mut newl = line;
-            newl.truncate(pos);
-            newl.push_utfstr(ell);
-            newl.push('\n');
-            streams.out.append(&newl);
+            streams.out.append(&line[range]);
+            if changed && !left {
+                streams.out.append(ell);
+            }
+            streams.out.appendln(L!(""));
         }
 
         // Return true if we have shortened something and false otherwise.

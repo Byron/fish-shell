@@ -78,7 +78,7 @@ impl StringSubCommand<'_> for Pad {
         let mut print_trailing_newline = true;
 
         for InputValue { arg, want_newline } in arguments(args, optind, streams) {
-            let width = width_without_escapes(&arg, 0);
+            let width = visible_width(&arg);
             max_width = max_width.max(width);
             inputs.push((arg, width));
             print_trailing_newline = want_newline;
@@ -87,22 +87,15 @@ impl StringSubCommand<'_> for Pad {
         let pad_width = max_width.max(self.width);
 
         for (input, width) in inputs {
-            let total_pad = pad_width - width;
-            let (left_pad, right_pad) = match (self.pad_from, self.center) {
-                (Direction::Left, false) => (total_pad, 0),
-                (Direction::Right, false) => (0, total_pad),
-                (Direction::Left, true) => (total_pad - total_pad / 2, total_pad / 2),
-                (Direction::Right, true) => (total_pad / 2, total_pad - total_pad / 2),
-            };
-
-            let chars = |w| std::iter::repeat_n(self.char_to_pad, w / self.pad_char_width);
-            let spaces = |w| std::iter::repeat_n(' ', w % self.pad_char_width);
-            let mut padded: WString = chars(left_pad)
-                .chain(spaces(left_pad))
-                .chain(input.chars())
-                .chain(spaces(right_pad))
-                .chain(chars(right_pad))
-                .collect();
+            let mut padded = crate::string_display::pad(
+                &input,
+                width,
+                pad_width,
+                self.char_to_pad,
+                self.pad_char_width,
+                self.pad_from == Direction::Right,
+                self.center,
+            );
             if print_trailing_newline {
                 padded.push('\n');
             }
