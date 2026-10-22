@@ -59,7 +59,16 @@ impl GitRefs {
         Self::default()
     }
 
-    pub(super) fn set_environment(&mut self, environment: Vec<(OsString, OsString)>) {
+    pub(super) fn set_environment(&mut self, mut environment: Vec<(OsString, OsString)>) {
+        // Match NativeHost command execution: canonical PATH wins over Windows aliases.
+        if environment.iter().any(|(name, _)| name == "PATH") {
+            environment.retain(|(name, _)| {
+                name == "PATH"
+                    || !name
+                        .to_str()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("PATH"))
+            });
+        }
         self.environment = environment;
         self.cache = Mutex::default();
     }
@@ -500,6 +509,43 @@ mod tests {
         assert_eq!(
             find_git(&[("PATH".into(), ".".into())], &cwd),
             Some(cwd.join(".").join("git.exe"))
+        );
+    }
+
+    #[test]
+    fn canonical_path_takes_precedence_over_other_windows_spellings() {
+        let temporary = TemporaryDirectory::new();
+        let preferred = temporary.path().join("preferred");
+        let shadow = temporary.path().join("shadow");
+        std::fs::create_dir(&preferred).unwrap();
+        std::fs::create_dir(&shadow).unwrap();
+        std::fs::write(preferred.join("git.exe"), []).unwrap();
+        std::fs::write(shadow.join("git.exe"), []).unwrap();
+        let mut git = GitRefs::new();
+        git.set_environment(vec![
+            ("Path".into(), shadow.as_os_str().to_owned()),
+            ("PATH".into(), preferred.as_os_str().to_owned()),
+            ("pAtH".into(), shadow.as_os_str().to_owned()),
+            ("KEEP".into(), "value".into()),
+        ]);
+        assert_eq!(
+            find_git(&git.environment, temporary.path()),
+            Some(preferred.join("git.exe"))
+        );
+        assert_eq!(
+            git.environment,
+            vec![
+                ("PATH".into(), preferred.as_os_str().to_owned()),
+                ("KEEP".into(), "value".into()),
+            ]
+        );
+
+        let environment = vec![("pAtH".into(), shadow.as_os_str().to_owned())];
+        git.set_environment(environment.clone());
+        assert_eq!(git.environment, environment);
+        assert_eq!(
+            find_git(&git.environment, temporary.path()),
+            Some(shadow.join("git.exe"))
         );
     }
 
