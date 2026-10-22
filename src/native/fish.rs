@@ -10,6 +10,8 @@ use rash::host::{Command, Host, OpenMode, RedirectAction, Redirection};
 use rash::{Error, Result};
 use std::collections::BTreeMap;
 
+#[path = "fish_argparse.rs"]
+mod argparse_builtin;
 #[path = "fish_autoload.rs"]
 mod autoload;
 #[path = "fish_complete.rs"]
@@ -1064,6 +1066,40 @@ mod tests {
         let mut capture = Capture::default();
         Session::new().unwrap().eval(source, &mut capture).unwrap();
         String::from_utf8(capture.0).unwrap()
+    }
+
+    #[test]
+    fn argparse_validator_errors_unwind_temporary_scope_and_reader_state() {
+        let mut session = Session::new().unwrap();
+        let mut capture = Capture::default();
+        session
+            .eval(
+                "set -l argv original; set -l _flag_value caller",
+                &mut capture,
+            )
+            .unwrap();
+        session.status = 7;
+        session.pipeline = vec![9, 7];
+        let scope_count = session.scopes.len();
+        let frame_count = session.function_frames.len();
+        let args = [
+            "x=!set -l transient value; fish_input_mode bash",
+            "--",
+            "-x",
+            "argument",
+        ]
+        .map(str::to_owned);
+        let mut output = Output::default();
+        assert!(session.argparse(&args, &mut capture, &mut output).is_err());
+        assert_eq!(session.scopes.len(), scope_count);
+        assert_eq!(session.function_frames.len(), frame_count);
+        assert!(!session.input_mode_blocked);
+        assert_eq!(session.status, 7);
+        assert_eq!(session.pipeline, [9, 7]);
+        assert!(session.flow == Flow::Normal);
+        assert_eq!(session.values("argv"), ["original"]);
+        assert_eq!(session.values("_flag_value"), ["caller"]);
+        assert!(session.values("transient").is_empty());
     }
 
     #[test]

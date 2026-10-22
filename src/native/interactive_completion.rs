@@ -91,6 +91,7 @@ impl CompletionEngine {
                 "math",
                 "string",
                 "contains",
+                "argparse",
                 "read",
                 "status",
                 "type",

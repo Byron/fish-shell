@@ -180,7 +180,7 @@ impl Session {
             // command's redirections or command-substitution capture. Actual
             // process handles (including a worker's pipeline) still apply.
             let mut output = Output::default();
-            let result = self.invoke_function(function, arguments, host, &mut output);
+            let result = self.invoke_function(&name, function, arguments, host, &mut output);
             self.input_mode_blocked = input_mode_blocked;
             self.status = status;
             self.pipeline = pipeline;

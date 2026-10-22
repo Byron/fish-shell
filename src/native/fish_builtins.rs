@@ -37,6 +37,7 @@ pub(super) fn is_builtin(name: &str) -> bool {
             | "math"
             | "string"
             | "contains"
+            | "argparse"
             | "read"
             | "status"
             | "type"
@@ -75,7 +76,7 @@ impl Session {
                 return Ok(());
             }
             if let Some(function) = self.functions.get(name).cloned() {
-                return self.invoke_function(function, args, host, output);
+                return self.invoke_function(name, function, args, host, output);
             }
         }
         if decoration == StatementDecoration::Command {

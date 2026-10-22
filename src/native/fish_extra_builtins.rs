@@ -34,6 +34,7 @@ impl Session {
                     }
                 }
             }
+            "argparse" => self.argparse(args, host, output)?,
             "printf" => {
                 self.write(&printf::format(args)?, host, output)?;
                 self.status = 0;

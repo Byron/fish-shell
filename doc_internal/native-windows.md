@@ -108,9 +108,11 @@ session variables. String escaping is also shared, including
 The full builtin set is not implemented. Advanced read options and
 locale-specific numeric formatting remain unavailable;
 unsupported options produce diagnostics.
-The native evaluator also lacks `argparse` and the `path`
-builtin, so bundled functions that depend on them still need further shared
-implementation work.
+`argparse` uses the same option parser as POSIX Fish, including short and long
+options, repeated and optional arguments, mutually exclusive options, argument
+counts, and validation commands. It writes local `_flag_*`, `argv_opts`, and
+remaining `argv` values for the caller. The `path` builtin still needs further
+shared implementation work.
 
 Function declarations use the same option parser as POSIX Fish. Native functions
 support `--description`/`-d`, `--wraps`/`-w`, `--argument-names`/`-a`,

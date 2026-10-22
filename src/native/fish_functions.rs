@@ -17,6 +17,8 @@ pub(super) struct Function {
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct FunctionFrame {
+    #[serde(default)]
+    pub(super) name: String,
     pub(super) local_scope: usize,
     pub(super) visibility_start: usize,
 }
@@ -203,6 +205,7 @@ impl Session {
 
     pub(super) fn invoke_function(
         &mut self,
+        name: &str,
         function: Function,
         args: &[String],
         host: &mut impl Host,
@@ -247,6 +250,7 @@ impl Session {
             );
         }
         self.function_frames.push(FunctionFrame {
+            name: name.into(),
             local_scope,
             visibility_start,
         });
