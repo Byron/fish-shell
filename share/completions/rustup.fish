@@ -21,26 +21,33 @@ set -l rustup_show \
     profile \
     help
 
-# rustup does not really expose a mechanism of retrieving a list of all valid components without the archs appended
-# Just print the list of installable x86_64-unknown-linux-gnu components for everyone
+# Rustup qualifies platform-specific component names with a target triple.
+# Strip a known final target so components can be added or removed by name.
 function __rustup_components
-    rustup component list | string match -r "\S+" | string replace -rf -- "-x86_64-unknown-linux-gnu.*" "" | __fish_sort -u
+    # If the user has supplied `--toolchain foo`, use its component and target lists.
+    set -l toolchain (commandline -j | string replace -rf ".*\s--toolchain\s+(\S+)\s.*" '$1')
+    set -l toolchain_filter
+    if set -q toolchain[1]
+        set toolchain_filter --toolchain $toolchain
+    end
+    set -l targets (string escape --style=regex -- (__rustup_targets $toolchain_filter) | string join '|')
+    RUSTUP_AUTO_INSTALL=0 rustup component list $argv $toolchain_filter |
+        string replace -r '\s+.*' '' |
+        string replace -r -- "-($targets)\$" '' |
+        __fish_sort -u
 end
 
 function __rustup_installed_components
-    # If the user has supplied `--toolchain foo`, use it to filter the list
-    set -l toolchain (commandline -j | string replace -rf ".*\s--toolchain\s+(\S+)\s.*" '$1')
-    set -l toolchain_filter
-    if string match -qr . -- $toolchain
-        set toolchain_filter "--toolchain $toolchain"
-    end
-
-    rustup component list --installed $toolchain_filter | string replace -r -- (printf -- "-%s\n" (__rustup_targets) | string join "|") "" | __fish_sort -u
-
+    __rustup_components --installed
 end
 
 function __rustup_installable_components
-    comm -2 -3 (__rustup_components | psub -F) (__rustup_installed_components | psub -F)
+    set -l installed (__rustup_installed_components)
+    for component in (__rustup_components)
+        contains -- $component $installed
+        or printf '%s\n' $component
+    end
+    return 0
 end
 
 # All *valid* target triples, retrieved from source
@@ -210,13 +217,16 @@ end
 
 # All valid toolchains excluding installed
 function __rustup_installable_toolchains
-    comm -2 -3 (__rustup_all_toolchains | psub -F) (printf "%s\n" (__rustup_toolchains) | psub -F) \
-        # Ignore warnings about lists not being in sorted order, as we are aware of their contents
-        2>/dev/null
+    set -l installed (__rustup_toolchains)
+    for toolchain in (__rustup_all_toolchains)
+        contains -- $toolchain $installed
+        or printf '%s\n' $toolchain
+    end
+    return 0
 end
 
 function __rustup_targets
-    rustup target list | string replace -rf "^(\S+).*" '$1'
+    RUSTUP_AUTO_INSTALL=0 rustup target list $argv | string replace -rf "^(\S+).*" '$1'
 end
 
 function __rustup_installed_targets

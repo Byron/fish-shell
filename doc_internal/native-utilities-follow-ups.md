@@ -92,6 +92,12 @@ The adapters resolve the native builtin name through a variable: POSIX Fish
 validates literal builtin names while parsing a function, even in an untaken
 branch, so a literal native-only builtin would prevent the shared helper loading.
 
+Rustup's shared component and toolchain helpers compare Fish lists directly,
+without `comm`, FIFOs, or process-substitution cleanup. Component names strip
+only a known final target triple, retaining platform-independent names such as
+`rust-src`. Explicit toolchain selection is forwarded as separate arguments;
+completion list queries disable automatic installation of missing toolchains.
+
 Utilities that launch commands themselves, including `env`, `xargs`, `find
 -exec`, and AWK subprocesses, use their own process lookup. They cannot discover
 Fish functions or Fish-only packaged fallbacks in an empty PATH. The utility

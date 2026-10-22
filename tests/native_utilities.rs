@@ -194,11 +194,13 @@ fn rustup_helpers_use_unix_utilities_with_windows_name_collisions() {
         function rustup
             if test "$argv[1]" = doc
                 echo '{}'
+            else if test "$argv[1]" = target
+                echo x86_64-unknown-linux-gnu
             else
                 printf 'rustfmt-x86_64-unknown-linux-gnu\nrustfmt-x86_64-unknown-linux-gnu\nclippy-x86_64-unknown-linux-gnu\n'
             end
         end
-        __rustup_components
+        complete -C 'rustup component remove ' | __fish_sort
         __fish_rustup_docs_modules | __fish_sort
     "#,
         quote(&directory),
