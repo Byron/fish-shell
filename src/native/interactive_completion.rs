@@ -53,6 +53,7 @@ impl CompletionEngine {
         } else {
             [
                 ":",
+                "__fish_git",
                 ".",
                 "[",
                 "echo",

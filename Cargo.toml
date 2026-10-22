@@ -165,6 +165,7 @@ portable-atomic.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 fd-lock = "4.0"
+pcre2.workspace = true
 jiff = "0.2.38"
 unicode-segmentation.workspace = true
 unicode-width.workspace = true

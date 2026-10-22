@@ -8,15 +8,16 @@ The current lockfile uses gix 0.89.0 at
 [`b8ef9ea94ba69302981c56e16d52b696a00d4c98`](https://github.com/GitoxideLabs/gitoxide/commit/b8ef9ea94ba69302981c56e16d52b696a00d4c98).
 It requires Rust 1.88, reflected in the workspace minimum.
 These upstream changes would simplify the integration and improve correctness.
-The POSIX integration uses gix wherever its APIs cover the query. Errors returned
-by gix, including unsupported repository storage, never trigger a Git CLI retry.
-The native Windows integration remains gix-only.
+Both evaluators use the same gix query implementation. Errors returned by gix
+and unsupported repository storage do not trigger a Git CLI retry. Operations
+without a suitable API, or builds with integration disabled, can use the Git
+executable through the shared shell helper. Gix may also invoke Git or other
+programs while discovering its runtime environment or running configured filters.
 
-With the feature enabled, remaining CLI uses are common/object-directory and
-serialized config environment overrides (missing an explicit session-snapshot
-opening API), Git's help/config-key/tool catalogs, and packaging before a runnable
-fish binary is available. Disabling the feature intentionally uses the CLI for all
-POSIX queries; this is a compatibility mode rather than an upstream gap.
+Common/object-directory and serialized config environment overrides select the
+CLI (missing an explicit session-snapshot opening API), as do Git's
+help/config-key/tool catalogs. Packaging helpers can also use Git before a runnable
+fish binary is available.
 Non-UTF-8 query arguments are currently rejected by fish's private string protocol.
 
 1. **Preserve repository isolation when checking submodules (bug).**
@@ -65,8 +66,8 @@ Non-UTF-8 query arguments are currently rejected by fish's private string protoc
    obtains cwd and repository environment overrides from process-global state.
    A shell needs its current exported variables and repeated `-C` arguments without changing
    process state. An explicit context would replace fish's configuration loader and individual
-   environment mappings, and avoid Git CLI fallback for currently unsupported
-   object-store/common-directory overrides.
+   environment mappings, and enable currently unsupported object-store/common-directory
+   overrides without changing global process state.
 
 8. **Provide a policy that forbids external processes throughout a query (API).**
    Isolated opening still permits repository-local configuration, including executable
@@ -97,3 +98,32 @@ Non-UTF-8 query arguments are currently rejected by fish's private string protoc
     again can return the old ignore setting. Track the config generation or overlay
     repository overrides on each access. Fish reads worktree module settings afresh;
     normal queries configure a newly opened repository before reading modules.
+
+12. **Accept an explicit shell for Windows normalization filters (API).**
+    Source inspection of [filter driver initialization](https://github.com/GitoxideLabs/gitoxide/blob/b8ef9ea94ba69302981c56e16d52b696a00d4c98/gix-filter/src/driver/init.rs#L76)
+    shows that shell-requiring clean/process commands use the default
+    [command preparation](https://github.com/GitoxideLabs/gitoxide/blob/b8ef9ea94ba69302981c56e16d52b696a00d4c98/gix-command/src/prepare.rs#L216).
+    On Windows, `shell_command()` discovers Git for Windows through `core_dir()`,
+    which can invoke `git --exec-path`. Isolated repository opening does not
+    control that discovery. Expose the shell/process policy through filter options
+    so an embedding shell can supply its own executable without process-global
+    environment changes. Fish permits this discovery and configured filter execution;
+    this follow-up concerns explicit configuration for installations without Git
+    for Windows, rather than forbidding subprocesses. No native filter guard is
+    applied, so both backends retain gix's normalization behavior.
+
+13. **Read reftable reference storage (missing backend).**
+    The current file-reference backend cannot read reftable repositories. Fish
+    explicitly rejects non-files `extensions.refStorage`, including repositories
+    retaining stale loose refs after migration. The shared
+    `unsupported_ref_storage_declines_without_falling_back_to_file_refs` test
+    protects this boundary. Remove the guard only when the selected gix backend
+    reads the actual storage; neither partial file refs nor a Git retry are valid.
+
+14. **Match Git's exclusive discovery ceiling (behavior difference).**
+    Upward discovery currently includes the ceiling directory itself when starting
+    below it. Fish checks the discovered repository root against the captured
+    ceiling paths before opening it. The shared
+    `exported_ceiling_directories_stop_upward_discovery` fixture covers this
+    difference. An upstream option matching Git's stopping rule would remove the
+    post-discovery check.

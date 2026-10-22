@@ -9,6 +9,31 @@ impl Session {
         output: &mut Output,
     ) -> Result<bool> {
         match name {
+            "__fish_git" => {
+                if args.first().is_some_and(|arg| arg == "--is-enabled") {
+                    self.status = i32::from(!cfg!(feature = "git"));
+                } else {
+                    #[cfg(feature = "git")]
+                    {
+                        let environment = self.completion_environment();
+                        let cwd = self.values("PWD");
+                        let result = cwd.first().ok_or(1).and_then(|cwd| {
+                            crate::git::query::query(std::path::Path::new(cwd), &environment, args)
+                        });
+                        match result {
+                            Ok(bytes) => {
+                                self.write(&bytes, host, output)?;
+                                self.status = 0;
+                            }
+                            Err(status) => self.status = status,
+                        }
+                    }
+                    #[cfg(not(feature = "git"))]
+                    {
+                        self.status = 125;
+                    }
+                }
+            }
             "printf" => {
                 self.write(&printf::format(args)?, host, output)?;
                 self.status = 0;
@@ -177,9 +202,20 @@ impl Session {
                     break;
                 }
                 "-q" | "--query" => quiet = true,
+                "--quiet" if mode == "command" => quiet = true,
+                "-s" | "--search" | "-v" if mode == "command" => paths_only = true,
                 "-p" | "--path" | "-P" | "--force-path" => paths_only = true,
                 "-t" | "--type" => kind_only = true,
                 "-a" | "--all" => all = true,
+                _ if mode == "command"
+                    && arg.starts_with('-')
+                    && arg.len() > 2
+                    && arg[1..].chars().all(|flag| "asqv".contains(flag)) =>
+                {
+                    quiet |= arg.contains('q');
+                    all |= arg.contains('a');
+                    paths_only = true;
+                }
                 _ if arg.starts_with('-') => {
                     return Err(Error::new(format!("{mode}: unknown option {arg}")));
                 }

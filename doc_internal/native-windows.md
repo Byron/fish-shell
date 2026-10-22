@@ -95,9 +95,12 @@ case; quote wildcard patterns, for example `case '*.txt'`. Blocks support standa
 redirections, with a shared file position across their commands: `while read line;
 echo $line; end < input.txt > output.txt` reads and writes each line in order.
 Nested redirections are restored when a block finishes, including `return` and
-`break`. The full builtin set is not implemented. Regular-expression
-string operations, advanced read options and locale-specific numeric formatting
-remain unavailable; unsupported options produce diagnostics.
+`break`. The full builtin set is not implemented. Universal variables (`set -U`),
+regular-expression string operations, advanced read options and locale-specific
+numeric formatting remain unavailable; unsupported options produce diagnostics.
+The native evaluator also lacks `argparse`, `commandline`, `emit` and the `path`
+builtin, so bundled functions that depend on them still need further shared
+implementation work.
 
 Function declarations use the same option parser as POSIX Fish. Native functions
 support `--description`/`-d`, `--wraps`/`-w`, `--argument-names`/`-a`,
@@ -262,22 +265,31 @@ filtering remain outside its current scope.
 
 The default-enabled `gix` Cargo feature enables the underlying `git` feature,
 which controls repository integration on both Windows and POSIX and the Git
-revision/dirty suffix in Cargo build version metadata. POSIX's existing completion
-and prompt scripts use an internal builtin for their repository queries,
-including status, history and configuration. Only operations without a suitable
-API use an installed Git executable: installed help, tool and configuration
+revision/dirty suffix in Cargo build version metadata. Both evaluators expose the
+same internal `__fish_git` query builtin, sharing status, history, configuration,
+repository routing and regex handling. POSIX completion and prompt scripts use
+this builtin; the native editor retains the bounded reference provider described
+above. The shared shell helper uses an installed Git executable for queries without
+a suitable API: installed help, tool and configuration
 catalogs, and queries with nonempty `GIT_COMMON_DIR`, `GIT_CONFIG_PARAMETERS`,
 `GIT_OBJECT_DIRECTORY` or `GIT_ALTERNATE_OBJECT_DIRECTORIES` overrides. Errors
-from gix, including unsupported repository storage, do not retry through Git.
-Status uses gix's filter APIs. The native editor retains the bounded reference
-provider described above, without a Git subprocess fallback.
+from gix and unsupported repository storage do not trigger a retry. Status uses
+gix's normalization APIs, including configured filters. Gix may invoke Git to
+discover its Windows shell environment when a filter needs one.
 Build with `--no-default-features` to disable gix integration, adding
 `--features embed-manpages,localize-messages` to retain the other defaults if
-desired. Such builds report the package version and use Git for all POSIX
-repository queries. Native Windows builds retain static Git command, option and
+desired. Such builds report the package version and use Git for queries through
+the shared helper when it is installed. Native Windows builds retain static Git command, option and
 ordinary file completion but omit repository suggestions when gix is disabled.
 CMake builds enable the same gix integration by default; `-DWITH_GIT=OFF`
-selects the Git executable for POSIX repository queries.
+selects the Git executable for queries through the shared helper.
+
+Native configuration lookup uses the session's exported environment, matching
+Windows variable names without case sensitivity. `HOME` (or `USERPROFILE`) selects
+user Git configuration; `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` select explicit
+files. Native queries do not discover an installed Git distribution to locate its
+system configuration. Shared query support does not supply the remaining builtin
+and event features required by every POSIX prompt or completion script.
 
 Register literal options and choices in `config.fish` or at the prompt:
 

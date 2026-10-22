@@ -1,11 +1,11 @@
-//! Bounded Git reference discovery shared by POSIX and native completion.
+//! Read-only Git queries shared by POSIX and native Windows Fish.
 //!
-//! Repository discovery and reference reads use gix directly. The caller
-//! separately recognizes a revision slot and supplies literal repository-routing
-//! options; edited shell source, aliases and completion scripts never run.
+//! Repository queries use gix directly, with a distinct status for APIs that need
+//! the Git CLI. Completion reference lookup validates literal repository-routing
+//! options separately; typed shell source is never executed by that lookup.
 
-#[cfg(not(windows))]
 mod status;
+use status::reference_storage_supported;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
@@ -13,9 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-#[cfg(not(windows))]
 mod history;
-#[cfg(not(windows))]
 pub(crate) mod query;
 
 // This budget is checked between library calls; synchronous filesystem access
@@ -23,7 +21,6 @@ pub(crate) mod query;
 // running after a query returns.
 const QUERY_BUDGET: Duration = Duration::from_millis(500);
 // Select Git only for missing APIs, never in response to a gix error.
-#[cfg(not(windows))]
 const USE_CLI: i32 = 125;
 const CACHE_AGE: Duration = Duration::from_millis(500);
 const MAX_CACHE_ENTRIES: usize = 8;
@@ -109,14 +106,7 @@ impl GitRefs {
         };
         // gix's file reference backend cannot read reftable repositories yet.
         // Do not accidentally return partial file refs from a mixed migration.
-        if repository
-            .config_snapshot()
-            .string("extensions.refStorage")
-            .is_some_and(|storage| {
-                let storage: &[u8] = storage.as_ref();
-                storage != b"files"
-            })
-        {
+        if !reference_storage_supported(&repository) {
             return Vec::new();
         }
         let Ok(platform) = repository.references() else {
@@ -163,24 +153,33 @@ struct Routing {
     cross_fs: bool,
 }
 
+fn environment_name_matches(name: &OsStr, key: &str) -> bool {
+    name.to_str().is_some_and(|name| {
+        if cfg!(windows) {
+            name.eq_ignore_ascii_case(key)
+        } else {
+            name == key
+        }
+    })
+}
+
+fn environment_variable<'a>(
+    environment: &'a [(OsString, OsString)],
+    key: &str,
+) -> Option<&'a OsStr> {
+    environment
+        .iter()
+        .rev()
+        .find(|(name, _)| environment_name_matches(name, key))
+        .map(|(_, value)| value.as_os_str())
+}
+
 impl Routing {
     fn new(cwd: &Path, arguments: &[String], environment: &[(OsString, OsString)]) -> Option<Self> {
         if !cwd.is_absolute() || !approved_routing(arguments) {
             return None;
         }
-        let variable = |key: &str| {
-            environment.iter().rev().find_map(|(name, value)| {
-                name.to_str()
-                    .is_some_and(|name| {
-                        if cfg!(windows) {
-                            name.eq_ignore_ascii_case(key)
-                        } else {
-                            name == key
-                        }
-                    })
-                    .then_some(value.as_os_str())
-            })
-        };
+        let variable = |key: &str| environment_variable(environment, key);
         // These overrides cannot currently be applied to a gix repository
         // opened from a session snapshot. Decline rather than use another
         // repository's refs or consult the process-global environment.
@@ -430,13 +429,13 @@ fn parse_refs(output: &[u8], complete: bool) -> Vec<GitRef> {
 }
 
 #[cfg(test)]
-mod tests {
+mod test_support {
     use super::*;
 
-    struct TemporaryDirectory(PathBuf);
+    pub(super) struct TemporaryDirectory(PathBuf);
 
     impl TemporaryDirectory {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             loop {
                 let path = std::env::temp_dir().join(format!(
@@ -452,11 +451,11 @@ mod tests {
             }
         }
 
-        fn path(&self) -> &Path {
+        pub(super) fn path(&self) -> &Path {
             &self.0
         }
 
-        fn repository(&self, name: &str) -> gix::Repository {
+        pub(super) fn repository(&self, name: &str) -> gix::Repository {
             let mut repository = gix::ThreadSafeRepository::init_opts(
                 self.path().join(name),
                 gix::create::Kind::WithWorktree,
@@ -475,6 +474,12 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::TemporaryDirectory;
+    use super::*;
 
     const OBJECT: &str = "0123456789012345678901234567890123456789";
 

@@ -9,6 +9,13 @@ use gix::status::plumbing::index_as_worktree::{Change, Conflict, EntryStatus};
 use gix::status::plumbing::index_as_worktree_with_renames::{Entry, Recorder};
 use gix::submodule::config::Ignore;
 
+pub(super) fn reference_storage_supported(repository: &gix::Repository) -> bool {
+    repository
+        .config_snapshot()
+        .string("extensions.refStorage")
+        .is_none_or(|storage| storage.eq_ignore_ascii_case(b"files"))
+}
+
 #[derive(Clone)]
 struct Options {
     untracked: gix::status::UntrackedFiles,
@@ -120,6 +127,11 @@ impl gix::status::plumbing::index_as_worktree::traits::SubmoduleStatus for Submo
             &root,
             gix::open::Options::isolated().config_overrides(["gitoxide.objects.noReplace=true"]),
         )?;
+        if !reference_storage_supported(&repo) {
+            return Err(gix::Error::from_error(gix::error::message(
+                "unsupported submodule reference storage",
+            )));
+        }
         let mut flags = *b"S...";
         if repo.head_id().is_ok_and(|id| id.detach() != entry.id) {
             flags[1] = b'C';
@@ -190,6 +202,9 @@ fn collect(
     options: &Options,
     depth: usize,
 ) -> Result<Vec<(Vec<u8>, FileStatus)>, i32> {
+    if !reference_storage_supported(repo) {
+        return Err(1);
+    }
     let repo = without_diff_drivers(repo)?;
     let index = repo.index_or_empty().map_err(|_| 128)?;
     let mut files = BTreeMap::new();
@@ -519,8 +534,13 @@ pub(super) fn query(
     }
     let root = gix::path::realpath(repo.workdir().ok_or(128)?).map_err(|_| 128)?;
     let cwd = gix::path::realpath(cwd).map_err(|_| 128)?;
+    #[cfg(windows)]
+    let root = root.canonicalize().map_err(|_| 128)?;
+    #[cfg(windows)]
+    let cwd = cwd.canonicalize().map_err(|_| 128)?;
     let prefix =
         gix::path::into_bstr(cwd.strip_prefix(&root).unwrap_or(Path::new(""))).map_err(|_| 128)?;
+    let prefix = gix::path::to_unix_separators_on_windows(prefix);
     let quote_high = repo
         .config_snapshot()
         .boolean("core.quotePath")
@@ -744,23 +764,13 @@ mod tests {
     struct Fixture {
         root: PathBuf,
         repo: gix::Repository,
+        _directory: super::super::test_support::TemporaryDirectory,
     }
 
     impl Fixture {
         fn new(files: &[(&str, &str)]) -> Self {
-            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-            let root = loop {
-                let root = std::env::temp_dir().join(format!(
-                    "fish-gix-status-{}-{}",
-                    std::process::id(),
-                    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                ));
-                match std::fs::create_dir(&root) {
-                    Ok(()) => break root,
-                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                    Err(error) => panic!("cannot create fixture: {error}"),
-                }
-            };
+            let directory = super::super::test_support::TemporaryDirectory::new();
+            let root = directory.path().to_owned();
             let repo = gix::ThreadSafeRepository::init_opts(
                 &root,
                 gix::create::Kind::WithWorktree,
@@ -769,7 +779,11 @@ mod tests {
             )
             .unwrap()
             .to_thread_local();
-            let fixture = Self { root, repo };
+            let fixture = Self {
+                root,
+                repo,
+                _directory: directory,
+            };
             let tree = fixture.set_index(files);
             let signature = gix::actor::SignatureRef {
                 name: "Fixture".into(),
@@ -823,12 +837,6 @@ mod tests {
                 command,
                 &args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>(),
             )
-        }
-    }
-
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.root);
         }
     }
 
@@ -1016,16 +1024,33 @@ mod tests {
 
     #[test]
     fn status_uses_gix_normalization_without_external_diff_drivers() {
+        let indexed = if cfg!(windows) {
+            "original\n"
+        } else {
+            "ORIGINAL\n"
+        };
         let fixture = Fixture::new(&[
             (".gitattributes", "tracked filter=probe diff=probe\n"),
-            ("tracked", "ORIGINAL\n"),
+            ("tracked", indexed),
         ]);
-        std::fs::write(fixture.root.join("tracked"), "original\n").unwrap();
+        std::fs::write(
+            fixture.root.join("tracked"),
+            if cfg!(windows) {
+                "original\r\n"
+            } else {
+                "original\n"
+            },
+        )
+        .unwrap();
         let mut repo = fixture.repo.clone();
         repo.config_snapshot_mut()
             .append_config(
                 [
-                    "FILTER.probe.clean=tr a-z A-Z",
+                    if cfg!(windows) {
+                        "core.autocrlf=true"
+                    } else {
+                        "FILTER.probe.clean=tr a-z A-Z"
+                    },
                     "filter.probe.required=true",
                     "diff.probe.textconv=echo forbidden > spawned-textconv",
                     "diff.external=echo forbidden > spawned-diff",
@@ -1051,6 +1076,32 @@ mod tests {
         assert_eq!(quote_path("café".as_bytes(), false), "café".as_bytes());
         assert_eq!(quote_path(b"a\tb\nc\\d\"", false), br#""a\tb\nc\\d\"""#);
         assert_eq!(relative_path(b"a/other", b"a/nested"), b"../other");
+    }
+
+    #[test]
+    fn nested_working_directories_use_repository_separators_for_relative_paths() {
+        let fixture = Fixture::new(&[]);
+        let cwd = fixture.root.join("src/native");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(cwd.join("tracked"), "contents\n").unwrap();
+        let mut index = gix::index::State::new(fixture.repo.object_hash());
+        index.dangerously_push_entry(
+            Default::default(),
+            fixture.repo.write_blob("contents\n").unwrap().detach(),
+            gix::index::entry::Flags::empty(),
+            gix::index::entry::Mode::FILE,
+            "src/native/tracked".into(),
+        );
+        gix::index::File::from_state(index, fixture.repo.index_path())
+            .write(Default::default())
+            .unwrap();
+        assert_eq!(
+            query(&fixture.repo, &cwd, "ls-files", &["-z".into()]),
+            Ok(b"tracked\0".to_vec())
+        );
+        let status = query(&fixture.repo, &cwd, "status", &["--porcelain=2".into()]).unwrap();
+        assert!(status.ends_with(b" tracked\n"), "{status:?}");
+        assert!(!status.windows(4).any(|part| part == b"src/"));
     }
 
     #[test]
@@ -1180,9 +1231,21 @@ mod tests {
             .append(true)
             .open(subdir.join(".git/config"))
             .unwrap()
-            .write_all(b"\n[filter \"probe\"]\n\tclean = tr A-Z a-z\n\trequired = true\n")
+            .write_all(if cfg!(windows) {
+                b"\n[core]\n\tautocrlf = true\n"
+            } else {
+                b"\n[filter \"probe\"]\n\tclean = tr A-Z a-z\n\trequired = true\n"
+            })
             .unwrap();
-        std::fs::write(subdir.join("tracked"), "ORIGINAL\n").unwrap();
+        std::fs::write(
+            subdir.join("tracked"),
+            if cfg!(windows) {
+                "original\r\n"
+            } else {
+                "ORIGINAL\n"
+            },
+        )
+        .unwrap();
         assert_eq!(
             query(&repo, &fixture.root, "status", &cli_args).unwrap(),
             b"A  sub\0"
@@ -1207,5 +1270,19 @@ mod tests {
             query(&repo, &fixture.root, "status", &cli_args).unwrap(),
             b""
         );
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(subdir.join(".git/config"))
+            .unwrap()
+            .write_all(b"\n[extensions]\n refStorage = reftable\n")
+            .unwrap();
+        for ignore in ["none", "dirty"] {
+            *cli_args.last_mut().unwrap() = format!("--ignore-submodules={ignore}");
+            assert_eq!(
+                query(&repo, &fixture.root, "status", &cli_args),
+                Err(128),
+                "{ignore} must not read stale loose refs from an unsupported child store"
+            );
+        }
     }
 }

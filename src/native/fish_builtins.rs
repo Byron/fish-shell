@@ -13,6 +13,7 @@ pub(super) fn is_builtin(name: &str) -> bool {
     matches!(
         name,
         "true"
+            | "__fish_git"
             | ":"
             | "false"
             | "echo"

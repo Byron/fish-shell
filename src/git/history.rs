@@ -422,14 +422,14 @@ mod tests {
     use super::*;
 
     struct Fixture {
-        _directory: fish_tempfile::TempDir,
         repository: gix::Repository,
         tree: gix::ObjectId,
+        _directory: super::super::test_support::TemporaryDirectory,
     }
 
     impl Fixture {
         fn new() -> Self {
-            let directory = fish_tempfile::new_dir().unwrap();
+            let directory = super::super::test_support::TemporaryDirectory::new();
             let mut repository = gix::ThreadSafeRepository::init_opts(
                 directory.path().join("repo"),
                 gix::create::Kind::WithWorktree,

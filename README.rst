@@ -193,6 +193,8 @@ To disable translations, disable the ``localize-messages`` feature by passing ``
 The default-enabled ``gix`` Cargo feature enables the ``git`` feature, which gates
 repository integration through the gix library. POSIX Git prompts and repository
 completions use gix APIs where available, including filter handling for status.
+The native Windows query builtin shares those implementations and the same
+Git fallback contract; its editor retains its specialized completion provider.
 Library errors, unsupported repository storage and non-UTF-8 query arguments do
 not trigger a retry through Git.
 

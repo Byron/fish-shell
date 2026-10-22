@@ -1,4 +1,4 @@
-//! Read-only Git queries used by the bundled POSIX scripts.
+//! Read-only Git queries used by bundled scripts on both execution backends.
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
@@ -13,13 +13,7 @@ pub(crate) fn query(
     environment: &[(OsString, OsString)],
     arguments: &[String],
 ) -> QueryResult {
-    let variable = |key: &str| {
-        environment
-            .iter()
-            .rev()
-            .find(|(name, _)| name == key)
-            .map(|(_, value)| value.as_os_str())
-    };
+    let variable = |key: &str| super::environment_variable(environment, key);
     let mut routing_args = Vec::new();
     let mut overrides = Vec::new();
     let mut worktree = variable("GIT_WORK_TREE").map(PathBuf::from);
@@ -98,7 +92,7 @@ pub(crate) fn query(
         env_overrides.push(format!("{key}={value}"));
     }
     env_overrides.append(&mut overrides);
-    // shortcut: these snapshot overrides need Git until gix accepts them explicitly.
+    // These snapshot overrides need Git until gix accepts them explicitly.
     if [
         "GIT_COMMON_DIR",
         "GIT_CONFIG_PARAMETERS",
@@ -112,7 +106,7 @@ pub(crate) fn query(
     }
     let routing_env = environment
         .iter()
-        .filter(|(name, _)| name != "GIT_CONFIG_COUNT")
+        .filter(|(name, _)| !super::environment_name_matches(name, "GIT_CONFIG_COUNT"))
         .cloned()
         .collect::<Vec<_>>();
     let routing = super::Routing::new(cwd, &routing_args, &routing_env).ok_or(1)?;
@@ -127,11 +121,7 @@ pub(crate) fn query(
     }
     let mut repo = routing.open_with_config(&env_overrides);
     if let Some(repo) = repo.as_mut() {
-        if repo
-            .config_snapshot()
-            .string("extensions.refStorage")
-            .is_some_and(|v| !v.eq_ignore_ascii_case(b"files"))
-        {
+        if !super::reference_storage_supported(repo) {
             return Err(1);
         }
     }
@@ -254,20 +244,16 @@ fn configuration(
         Source,
         file::{Metadata, includes, init},
     };
-    let variable = |key: &str| {
-        environment
-            .iter()
-            .rev()
-            .find(|(name, _)| name == key)
-            .map(|(_, value)| value.as_os_str())
-    };
-    let home = variable("HOME").map(|path| {
-        if path.is_empty() {
-            PathBuf::from("/")
-        } else {
-            cwd.join(path)
-        }
-    });
+    let variable = |key: &str| super::environment_variable(environment, key);
+    let home = variable("HOME")
+        .or_else(|| cfg!(windows).then(|| variable("USERPROFILE")).flatten())
+        .map(|path| {
+            if path.is_empty() {
+                PathBuf::from("/")
+            } else {
+                cwd.join(path)
+            }
+        });
     let mut paths = Vec::new();
     let no_system = variable("GIT_CONFIG_NOSYSTEM")
         .and_then(OsStr::to_str)
@@ -279,8 +265,14 @@ fn configuration(
         })
         .unwrap_or(false);
     if !no_system {
-        let path = variable("GIT_CONFIG_SYSTEM").unwrap_or(OsStr::new("/etc/gitconfig"));
-        if !path.is_empty() {
+        let path = variable("GIT_CONFIG_SYSTEM").or_else(|| {
+            if cfg!(windows) {
+                gix::path::env::system_config().map(Path::as_os_str)
+            } else {
+                Some(OsStr::new("/etc/gitconfig"))
+            }
+        });
+        if let Some(path) = path.filter(|path| !path.is_empty()) {
             paths.push(Metadata::from(Source::System).at(cwd.join(path)));
         }
     }
@@ -448,11 +440,13 @@ fn rev_parse(repo: &gix::Repository, cwd: &Path, args: &[String]) -> QueryResult
                 .as_encoded_bytes()
                 .to_vec(),
             "--is-bare-repository" => repo.is_bare().to_string().into_bytes(),
-            "--is-inside-git-dir" => cwd.starts_with(repo.git_dir()).to_string().into_bytes(),
-            "--is-inside-work-tree" => (repo.workdir().is_some_and(|root| cwd.starts_with(root))
-                && !cwd.starts_with(repo.git_dir()))
-            .to_string()
-            .into_bytes(),
+            "--is-inside-git-dir" => path_is_within(cwd, repo.git_dir()).to_string().into_bytes(),
+            "--is-inside-work-tree" => {
+                (repo.workdir().is_some_and(|root| path_is_within(cwd, root))
+                    && !path_is_within(cwd, repo.git_dir()))
+                .to_string()
+                .into_bytes()
+            }
             _ if arg.starts_with('-') => return Err(2),
             _ if abbrev => {
                 let name = if arg == "@{upstream}" || arg == "@{u}" {
@@ -488,6 +482,21 @@ fn rev_parse(repo: &gix::Repository, cwd: &Path, args: &[String]) -> QueryResult
         line(&mut out, &value);
     }
     Ok(out)
+}
+
+fn path_is_within(path: &Path, directory: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        // Windows accepts both C:\\... and \\\\?\\C:\\... for the same directory.
+        // gix may return either spelling when opening a discovered repository.
+        path.canonicalize().is_ok_and(|path| {
+            directory
+                .canonicalize()
+                .is_ok_and(|directory| path.starts_with(directory))
+        })
+    }
+    #[cfg(not(windows))]
+    path.starts_with(directory)
 }
 
 fn refs(repo: &gix::Repository, command: &str, args: &[String]) -> QueryResult {
@@ -582,7 +591,7 @@ fn refs(repo: &gix::Repository, command: &str, args: &[String]) -> QueryResult {
 
 #[test]
 fn refs_sort_tags_by_tagger_and_lightweight_tags_by_committer() {
-    let temp = fish_tempfile::new_dir().unwrap();
+    let temp = super::test_support::TemporaryDirectory::new();
     let mut repo = gix::ThreadSafeRepository::init_opts(
         temp.path().join("repo"),
         gix::create::Kind::WithWorktree,
@@ -665,8 +674,102 @@ mod tests {
     }
 
     #[test]
+    fn configuration_snapshot_names_follow_platform_case_rules() {
+        let temporary = super::super::test_support::TemporaryDirectory::new();
+        let root = temporary.path();
+        std::fs::write(root.join("global"), "[alias]\n selected = file\n").unwrap();
+        let environment = vec![
+            ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+            ("GIT_CONFIG_GLOBAL".into(), root.join("global").into()),
+            ("GIT_CONFIG_COUNT".into(), "0".into()),
+            ("git_config_count".into(), "1".into()),
+            ("git_config_key_0".into(), "alias.selected".into()),
+            ("git_config_value_0".into(), "snapshot".into()),
+        ];
+        assert_eq!(
+            query(root, &environment, &args(&["config", "alias.selected"])),
+            Ok(if cfg!(windows) {
+                "snapshot\n"
+            } else {
+                "file\n"
+            }
+            .as_bytes()
+            .to_vec())
+        );
+    }
+
+    #[test]
+    fn user_configuration_uses_snapshot_home_and_windows_profile() {
+        let temporary = super::super::test_support::TemporaryDirectory::new();
+        let root = temporary.path();
+        for (directory, value) in [("profile 文", "profile"), ("home", "home")] {
+            std::fs::create_dir(root.join(directory)).unwrap();
+            std::fs::write(
+                root.join(directory).join(".gitconfig"),
+                format!("[include]\n path = ~/included\n[alias]\n location = {value}\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                root.join(directory).join("included"),
+                format!("[alias]\n included = {value}\n"),
+            )
+            .unwrap();
+        }
+        let mut environment = vec![
+            ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+            ("USERPROFILE".into(), "profile 文".into()),
+        ];
+        for key in ["alias.location", "alias.included"] {
+            assert_eq!(
+                query(root, &environment, &args(&["config", key])),
+                if cfg!(windows) {
+                    Ok(b"profile\n".to_vec())
+                } else {
+                    Err(1)
+                }
+            );
+        }
+        environment.push(("HOME".into(), "home".into()));
+        assert_eq!(
+            query(root, &environment, &args(&["config", "alias.included"])),
+            Ok(b"home\n".to_vec())
+        );
+    }
+
+    #[test]
+    fn missing_library_apis_request_cli_without_masking_repository_errors() {
+        let temporary = super::super::test_support::TemporaryDirectory::new();
+        let repository = temporary.repository("repo");
+        let root = repository.workdir().unwrap();
+        for arguments in [
+            args(&["help", "--config"]),
+            args(&["help", "-g"]),
+            args(&["difftool", "--tool-help"]),
+            args(&["mergetool", "--tool-help"]),
+        ] {
+            assert_eq!(query(root, &[], &arguments), Err(125), "{arguments:?}");
+        }
+        for name in [
+            "GIT_COMMON_DIR",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        ] {
+            assert_eq!(
+                query(
+                    root,
+                    &[(name.into(), "unsupported".into())],
+                    &args(&["rev-parse", "--git-dir"]),
+                ),
+                Err(125),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn configuration_uses_exported_paths_includes_and_overrides() {
-        let temp = fish_tempfile::new_dir().unwrap();
+        let temp = super::super::test_support::TemporaryDirectory::new();
         let root = temp.path().canonicalize().unwrap();
         let repo = gix::ThreadSafeRepository::init_opts(
             root.join("repo"),
@@ -750,7 +853,7 @@ mod tests {
 
     #[test]
     fn relative_configuration_paths_follow_routed_cwd() {
-        let temp = fish_tempfile::new_dir().unwrap();
+        let temp = super::super::test_support::TemporaryDirectory::new();
         let root = temp.path().canonicalize().unwrap();
         let routed = root.join("routed");
         for (base, value) in [(&root, "parent"), (&routed, "routed")] {
@@ -790,7 +893,7 @@ mod tests {
                 "alias.fallback",
             ),
         ] {
-            let mut environment = vec![("GIT_CONFIG_SYSTEM".into(), "/dev/null".into())];
+            let mut environment = vec![("GIT_CONFIG_SYSTEM".into(), "".into())];
             environment.extend(
                 exported
                     .iter()
@@ -823,7 +926,7 @@ mod tests {
 
     #[test]
     fn unborn_repository_information_and_unsupported_storage() {
-        let temp = fish_tempfile::new_dir().unwrap();
+        let temp = super::super::test_support::TemporaryDirectory::new();
         let root = temp.path().canonicalize().unwrap();
         let repo = gix::ThreadSafeRepository::init_opts(
             root.join("repo"),
@@ -834,7 +937,7 @@ mod tests {
         .unwrap()
         .to_thread_local();
         let env = vec![
-            ("GIT_CONFIG_GLOBAL".into(), "/dev/null".into()),
+            ("GIT_CONFIG_GLOBAL".into(), "".into()),
             ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
         ];
         assert_eq!(

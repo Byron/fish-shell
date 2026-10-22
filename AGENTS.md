@@ -11,5 +11,6 @@
 
 ## Git integrations
 
-- Implement Git repository integrations with the `gix` crate, not Git subprocesses.
-- Gate repository integration behind the default-enabled `git` Cargo feature. Disabling the feature or encountering unsupported repository storage must not fall back to invoking Git.
+- Share Git repository integrations through the `gix` crate where its APIs support the query. Git subprocesses are permitted, including runtime fallbacks and commands invoked internally by gix.
+- Gate gix integration behind the default-enabled `git` Cargo feature (also enabled by the `gix` feature alias). Preserve the Git CLI compatibility path when the feature is disabled or a query lacks a suitable gix API. Return library errors and unsupported-storage failures without masking them with a retry.
+- Follow gitoxide's `main` branch, retain the tested revision in `Cargo.lock`, and record concrete compatibility issues and upstream follow-ups in `doc_internal/gix-follow-ups.md`.
