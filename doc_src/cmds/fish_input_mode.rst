@@ -20,6 +20,8 @@ Backticks are ordinary characters, including inside strings, as in Fish. They do
 
 Tab completes filenames in arguments and redirection targets, including ``<``, ``>``, ``>>``, ``>|``, ``&>`` and ``&>>``, with optional file descriptors. For example, ``echo hi > READ`` can complete to ``echo hi > README.rst``. Redirections can precede the command, and spaces around them are optional. Completion preserves quoting and the rest of the input without opening or modifying the target file.
 
+File completion also works after wildcard arguments, for example ``cp *.txt dest``. Wildcards retain Fish's expansion rules and their original spelling. Brackets in filenames are literal, as in ordinary Fish input.
+
 The change takes effect after the entire submitted command finishes. For example, in Fish::
 
     fish_input_mode bash; set -g example still_fish

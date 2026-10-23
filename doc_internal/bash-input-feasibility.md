@@ -154,6 +154,10 @@ Unicode filenames, options, trailing whitespace, middle-of-buffer edits,
 descriptions/ordering, suggestions and history. Original provider feasibility
 tests remain. File completion also covers `<`, `>`, `>>`, `>|`, `&>` and `&>>`,
 descriptor prefixes and leading redirections, without opening their targets.
+In the Fish input dialect, earlier wildcard arguments also allow filename
+completion (for example `cp *.txt dest`), and brackets in filenames are literal.
+Wildcard spelling is preserved; completion does not expand a current glob into
+multiple words. Rash glob contexts remain outside this projection.
 Completion projection still refuses compound/assignment contexts, here-documents,
 here-strings, read/write redirects and substitutions it cannot map reliably. It never evaluates
 unfinished substitutions; intentional provider commands retain existing behavior.

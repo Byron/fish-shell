@@ -189,6 +189,23 @@ def main(binary):
             assert shell.buffer()[0] == "cd ~/tilde-directory/"
             shell.clear()
             assert_file_completions(shell, root)
+            (root / "glob-source.txt").write_text("GLOB-FILE\n")
+            for source, expected in (
+                ("cp *.txt directory-", "cp *.txt directory-completion/"),
+                ("cp **/*.txt directory-", "cp **/*.txt directory-completion/"),
+                ("cp glob-*.txt directory-", "cp glob-*.txt directory-completion/"),
+                ("cat glob-*.txt > directory-", "cat glob-*.txt > directory-completion/"),
+                ("cat glob-*", "cat glob-* "),
+            ):
+                shell.child.send(source + "\t")
+                assert shell.buffer()[0] == expected, (source, shell.buffer())
+                shell.clear()
+            (root / "bracket[one].txt").write_text("BRACKET-FILE\n")
+            shell.child.send("cat bracket[\t")
+            assert shell.buffer()[0] != "cat bracket["
+            shell.child.sendline("")
+            shell.child.expect_exact(b"BRACKET-FILE\r\n")
+            shell.finished(0)
             print("PASS unchanged Git/function providers, live variables, options, cursor/trailing context, descriptions and literal filenames", flush=True)
 
             shell.child.send("echo legacy_rash_")

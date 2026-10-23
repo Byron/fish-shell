@@ -5,6 +5,7 @@ use crate::complete::{
 };
 use crate::env::Environment;
 use crate::prelude::*;
+use fish_feature_flags::{FeatureFlag, feature_test};
 use std::ops::Range;
 
 #[derive(Debug, PartialEq)]
@@ -412,7 +413,14 @@ impl Projection {
                     i += 1;
                 }
                 (_, '`') if !fish => return Err(Unsupported::Expansion),
-                (None, '(' | ')' | '{' | '}' | '<' | '>' | '*' | '?' | '[' | '~') => {
+                (None, '*' | '?') if fish => {
+                    word.as_mut().unwrap().has_expansion |=
+                        c == '*' || !feature_test(FeatureFlag::QuestionMarkNoGlob);
+                    p.copy(c, i);
+                    i += 1;
+                }
+                (None, '[') if !fish => return Err(Unsupported::Expansion),
+                (None, '(' | ')' | '{' | '}' | '<' | '>' | '*' | '?' | '~') => {
                     return Err(Unsupported::Expansion);
                 }
                 _ => {
@@ -712,6 +720,39 @@ mod tests {
         assert_eq!(p.apply(&c, false).unwrap().0, L!("cat ~/file tail"));
         c.flags.replaces = Some(crate::complete::ReplacementScope::Token(Default::default()));
         assert_eq!(p.apply(&c, false), Err(Unsupported::Replacement));
+    }
+
+    #[test]
+    fn fish_glob_arguments_preserve_expansion_and_literal_brackets() {
+        let vars = TestEnvironment::default();
+        let state = crate::bash_session::State {
+            fish_evaluation: true,
+            ..Default::default()
+        };
+        for source in [
+            L!("cp *.txt dest"),
+            L!("cp file?.txt dest"),
+            L!("cat file["),
+        ] {
+            let p = Projection::for_state(source, source.len(), &vars, &state).unwrap();
+            assert_eq!(p.text, source);
+            assert!(!p.current_word().unwrap().has_expansion);
+            assert!(Projection::new(source, source.len(), &vars).is_err());
+        }
+        let source = L!("cat file*[");
+        let p = Projection::for_state(source, source.len(), &vars, &state).unwrap();
+        let mut c = Completion::from_completion(L!("file*[one].txt").to_owned());
+        c.flags.replaces = Some(crate::complete::ReplacementScope::Token(Default::default()));
+        assert_eq!(p.apply(&c, false), Err(Unsupported::Replacement));
+
+        let source = L!("cat file*");
+        let p = Projection::for_state(source, source.len(), &vars, &state).unwrap();
+        let c = Completion::from_completion(WString::new());
+        assert_eq!(p.apply(&c, false).unwrap().0, L!("cat file* "));
+        for source in [L!("cat 'file*"), L!("cat file\\*")] {
+            let p = Projection::for_state(source, source.len(), &vars, &state).unwrap();
+            assert!(!p.current_word().unwrap().has_expansion);
+        }
     }
 
     #[test]
