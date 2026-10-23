@@ -1,4 +1,5 @@
 name: Rust Toolchain
+description: Install the repository's stable or minimum supported Rust toolchain.
 
 inputs:
   toolchain_channel:

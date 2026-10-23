@@ -59,7 +59,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, build_tools/update-dependencies.sh
-    - uses: ./.github/actions/rust-toolchain@oldest-supported
+    - uses: ./.github/actions/rust-toolchain
+      with:
+        toolchain_channel: msrv
     - name: Install deps
       uses: ./.github/actions/install-dependencies
       with:
@@ -77,13 +79,18 @@ jobs:
     - name: make fish_run_tests
       run: |
         make -C build VERBOSE=1 fish_run_tests
+    - name: Compare shared behavior and dynamic completions
+      run: >-
+        cargo test --locked --no-default-features --features git -p fish
+        --test fish_behavior_parity --test fish_dynamic_completions
 
   ubuntu-32bit-static-pcre2:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, build_tools/update-dependencies.sh
-    - uses: ./.github/actions/rust-toolchain@oldest-supported
+    - uses: ./.github/actions/rust-toolchain
       with:
+        toolchain_channel: msrv
         targets: "i586-unknown-linux-gnu"
     - name: Update package database
       run: sudo apt-get update
@@ -169,7 +176,9 @@ jobs:
       CARGO_NET_GIT_FETCH_WITH_CLI: true
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, build_tools/update-dependencies.sh
-    - uses: ./.github/actions/rust-toolchain@oldest-supported
+    - uses: ./.github/actions/rust-toolchain
+      with:
+        toolchain_channel: msrv
     - name: Install deps
       run: |
         # --break-system-packages because homebrew has now declared itself "externally managed".
@@ -201,8 +210,40 @@ jobs:
       run: cargo build --locked --bins --target x86_64-pc-windows-msvc
     - name: Test native Fish and Rash
       run: cargo test --locked -p fish -p rash -p fish-widestring -p fish-fallback -p fish-feature-flags --target x86_64-pc-windows-msvc
+    - name: Test release bundling
+      run: python tests/build_release.py
+    - name: Test portable packaging and installation
+      run: python tests/native_distribution.py
     - name: Lint native Fish and Rash
       run: cargo clippy --locked -p fish -p rash --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+
+  windows-native-compatibility:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - toolchain: stable
+            features: --no-default-features
+          - toolchain: msrv
+            features: ""
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, build_tools/update-dependencies.sh
+    - uses: ./.github/actions/rust-toolchain
+      with:
+        toolchain_channel: ${{ matrix.toolchain }}
+        targets: x86_64-pc-windows-msvc
+    - name: Check every native target
+      run: >-
+        cargo check --locked -p fish -p rash --all-targets
+        --target x86_64-pc-windows-msvc ${{ matrix.features }}
+    - name: Test portable behavior and bundled completion queries
+      run: >-
+        cargo test --locked -p fish --target x86_64-pc-windows-msvc
+        ${{ matrix.features }} --test fish_behavior_parity
+        --test fish_dynamic_completions --test native_fish_function_scope
+        --test native_fish_psub --test native_fish_indent
+        --test native_fish_key_reader
 
   windows-msys2:
     runs-on: windows-latest

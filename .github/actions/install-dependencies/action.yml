@@ -1,4 +1,5 @@
 name: Install dependencies for system tests
+description: Install platform dependencies needed to build and test Fish.
 
 inputs:
   include_sphinx:

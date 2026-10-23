@@ -285,12 +285,12 @@ mod tests {
         assert_eq!(quote(c"", printable), None);
         assert!(!should_quote(c"", printable));
         assert_eq!(
-            quote(c"a\n\x1b'\\\xff", printable).unwrap(),
+            quote(c"a\n\x1b'\\\xff", printable).unwrap().as_c_str(),
             c"$'a\\n\\E\\'\\\\\\377'"
         );
         assert!(should_quote(c"\xff", printable));
         assert!(!should_quote(c"\xff", |_| true));
-        assert_eq!(quote(c"\xff", |_| true).unwrap(), c"$'\xff'");
+        assert_eq!(quote(c"\xff", |_| true).unwrap().as_c_str(), c"$'\xff'");
     }
 
     #[test]

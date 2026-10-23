@@ -44,3 +44,13 @@ command responses nor successful source loading establishes that every dynamic
 query works with every application version. Installed-tool smoke tests remain
 necessary for those integrations, and terminal harnesses cover actual key input,
 redrawing, completion paging, and cancellation.
+
+The Test workflow runs the shared fixtures on Ubuntu and in the regular native
+Windows suite. A separate Windows compatibility matrix checks every native
+target and runs the shared fixtures, function-scope tests, and file-backed
+`psub` and standalone-tool tests on the declared minimum Rust version and on
+stable Rust with default features disabled. This keeps core startup behavior
+working when gix and the packaged native utilities are omitted. The minimum
+version comes from the repository's Rust toolchain action rather than a second
+version in the workflow. The regular Windows job also runs the mocked release,
+package, and installation rollback checks without changing an installed bundle.

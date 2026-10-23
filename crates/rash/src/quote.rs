@@ -136,31 +136,40 @@ mod tests {
 
     #[test]
     fn quotes_preserve_bytes_and_internal_markers() {
-        assert_eq!(single_quote(c""), c"''");
-        assert_eq!(single_quote(c"a'b"), c"'a'\\''b'");
-        assert_eq!(single_quote(c"raw-\xff\n"), c"'raw-\xff\n'");
+        assert_eq!(single_quote(c"").as_c_str(), c"''");
+        assert_eq!(single_quote(c"a'b").as_c_str(), c"'a'\\''b'");
+        assert_eq!(single_quote(c"raw-\xff\n").as_c_str(), c"'raw-\xff\n'");
         assert_eq!(
-            double_quote(c"$`\"\\\n\x01\x7f\xff"),
+            double_quote(c"$`\"\\\n\x01\x7f\xff").as_c_str(),
             c"\"\\$\\`\\\"\\\\\n\x01\x01\x01\x7f\xff\""
         );
         assert_eq!(
-            backslash_quote_for_double_quotes(c"$\n\x01\x7f"),
+            backslash_quote_for_double_quotes(c"$\n\x01\x7f").as_c_str(),
             c"\\$\\\n\x01\x01\x01\x7f"
         );
-        assert_eq!(make_double_quoted(c"a\"$b", false), c"\"a\"$b\"");
-        assert_eq!(make_double_quoted(c"a\"$b", true), c"\"a\\\"$b\"");
+        assert_eq!(make_double_quoted(c"a\"$b", false).as_c_str(), c"\"a\"$b\"");
+        assert_eq!(
+            make_double_quoted(c"a\"$b", true).as_c_str(),
+            c"\"a\\\"$b\""
+        );
     }
 
     #[test]
     fn undouble_quoting_does_not_unescape_twice() {
-        assert_eq!(un_double_quote(c"\\$\\`\\\"\\\\\\q\\"), c"$`\"\\\\q\\");
-        assert_eq!(un_double_quote(c"\\\\$"), c"\\$");
-        assert_eq!(un_double_quote(c"\\\n"), c"\n");
+        assert_eq!(
+            un_double_quote(c"\\$\\`\\\"\\\\\\q\\").as_c_str(),
+            c"$`\"\\\\q\\"
+        );
+        assert_eq!(un_double_quote(c"\\\\$").as_c_str(), c"\\$");
+        assert_eq!(un_double_quote(c"\\\n").as_c_str(), c"\n");
     }
 
     #[test]
     fn backslash_quoting_keeps_the_baseline_limitations() {
-        assert_eq!(backslash_quote(c"#a #b ~\n,"), c"\\#a\\ #b\\ ~\\\n\\,");
+        assert_eq!(
+            backslash_quote(c"#a #b ~\n,").as_c_str(),
+            c"\\#a\\ #b\\ ~\\\n\\,"
+        );
         for s in [c"", c"a,b", c"foo#bar", c"foo~bar", c"raw-\xff"] {
             assert!(!contains_shell_metas(s), "{s:?}");
         }

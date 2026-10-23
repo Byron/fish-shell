@@ -1,4 +1,5 @@
 name: Install sphinx
+description: Install the documentation generator and its Fish documentation dependencies.
 
 permissions:
   contents: read
