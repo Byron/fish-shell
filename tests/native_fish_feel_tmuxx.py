@@ -450,6 +450,9 @@ def main():
             expect("<FEEL_paste_🐟")
             expect("line>")
             expect("FEEL_paste_second")
+            # Command output precedes the next reader's bracketed-paste mode
+            # negotiation. Wait for that frame before asking tmuxx to paste.
+            expect_input("")
 
             literal("echo ")
             paste("FEEL_paste_undo\necho FEEL_paste_never")

@@ -37,7 +37,6 @@ pub mod common;
 #[cfg(not(windows))]
 pub mod wutil;
 
-#[cfg(not(windows))]
 pub mod abbrs;
 #[cfg(not(windows))]
 pub mod ast;

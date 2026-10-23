@@ -369,6 +369,7 @@ mod windows {
                     KeyEvent(KeyCode::Char(' '), Modifiers::NONE),
                     pager.wrap(Some(EventHandler::Conditional(Box::new(InputKey {
                         abbreviations: Arc::clone(&abbreviations),
+                        service: Arc::clone(&editor.helper().unwrap().service),
                         pager: pager.clone(),
                         space: true,
                         input_language: Arc::clone(&input_language),
@@ -434,6 +435,7 @@ mod windows {
                         key,
                         pager.wrap(Some(EventHandler::Conditional(Box::new(InputKey {
                             abbreviations: Arc::clone(&abbreviations),
+                            service: Arc::clone(&editor.helper().unwrap().service),
                             pager: pager.clone(),
                             space: false,
                             input_language: Arc::clone(&input_language),
@@ -584,6 +586,7 @@ mod windows {
 
     struct InputKey {
         abbreviations: Arc<Mutex<Abbreviations>>,
+        service: Arc<Mutex<CompletionService>>,
         pager: PagerBindings,
         space: bool,
         input_language: Arc<Mutex<InputLanguage>>,
@@ -615,12 +618,14 @@ mod windows {
                     )
                 });
             }
-            if let Some(mut expansion) = self
-                .abbreviations
-                .lock()
-                .ok()?
-                .expansion(ctx.line(), ctx.pos())
-            {
+            let mut service = self.service.lock().ok()?;
+            let expansion = service.abbreviation(ctx.line(), ctx.pos());
+            if service.reader_should_end() {
+                return Some(Cmd::Interrupt);
+            }
+            *self.abbreviations.lock().ok()? = service.abbreviations();
+            drop(service);
+            if let Some(mut expansion) = expansion {
                 if self.space {
                     expansion.text.push(' ');
                 } else {
@@ -643,12 +648,12 @@ mod windows {
                         _ => return Some(Cmd::Noop),
                     }
                 }
-                return Some(self.pager.queue_completion(
-                    ctx.line(),
-                    ctx.pos(),
-                    expansion.range.start,
-                    expansion.text,
-                ));
+                let cursor = expansion
+                    .cursor
+                    .unwrap_or(expansion.range.start + expansion.text.len());
+                let mut buffer = ctx.line().to_owned();
+                buffer.replace_range(expansion.range, &expansion.text);
+                return Some(Cmd::SetBuffer { buffer, cursor });
             }
             if self.space {
                 // Let the native keymap self-insert an ordinary Space. Its
@@ -748,6 +753,7 @@ mod windows {
                 .command(ctx.line()),
                 Action::Execute => InputKey {
                     abbreviations: Arc::clone(&self.abbreviations),
+                    service: Arc::clone(&self.service),
                     pager: self.pager.clone(),
                     space: false,
                     input_language: Arc::clone(&self.input_language),

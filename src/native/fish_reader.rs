@@ -108,6 +108,21 @@ mod tests {
     }
 
     #[test]
+    fn function_abbreviation_receives_token_and_falls_back_after_failure() {
+        let mut session = Session::new().unwrap();
+        let mut host = Capture::default();
+        session.eval("function make_abbr; set -g observed_token $argv[1]; printf 'echo %s' $argv[1]; end; function deny_abbr; return 1; end; abbr --add --regex 'g[0-9]+' --function make_abbr generated; abbr --add --regex 'g[0-9]+' --function deny_abbr declined", &mut host).unwrap();
+        let expansion = session
+            .reader_abbreviation("g42", 3, &mut host)
+            .unwrap()
+            .unwrap();
+        assert_eq!(expansion.text, "echo g42");
+        assert_eq!(session.values("observed_token"), ["g42"]);
+        assert_eq!(session.status, 0);
+        assert!(session.completion_line.is_none());
+    }
+
+    #[test]
     fn nested_completion_cannot_edit_the_readers_buffer() {
         let mut session = Session::new().unwrap();
         session.reader_state = Some(ReaderState {
@@ -126,6 +141,53 @@ mod tests {
 }
 
 impl Session {
+    pub(in crate::native) fn reader_abbreviation(
+        &mut self,
+        line: &str,
+        cursor: usize,
+        host: &mut impl Host,
+    ) -> Result<Option<crate::native::interactive_abbreviations::Expansion>> {
+        let candidates = self.abbreviations.candidates(line, cursor);
+        let saved_context = self.completion_line.replace(CompletionContext {
+            line: line.into(),
+            cursor,
+        });
+        let saved_interactive = std::mem::replace(&mut self.interactive, false);
+        let status = self.status;
+        let pipeline = self.pipeline.clone();
+        let result = (|| {
+            for candidate in candidates {
+                if !candidate.function {
+                    return Ok(Some(candidate));
+                }
+                let quote =
+                    |value: &str| format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"));
+                let words = self.expand(
+                    &format!("({} {})", quote(&candidate.text), quote(&candidate.token)),
+                    host,
+                )?;
+                if host.cancelled() {
+                    return Ok(None);
+                }
+                if self.status == 0 {
+                    let text = words.join("\n");
+                    if text.len() > 1024 * 1024 || text.contains('\0') {
+                        return Err(Error::new(
+                            "abbr: generated expansion exceeds the native reader limit or contains a null character",
+                        ));
+                    }
+                    return Ok(Some(candidate.finish(text)));
+                }
+            }
+            Ok(None)
+        })();
+        self.completion_line = saved_context;
+        self.interactive = saved_interactive;
+        self.status = status;
+        self.pipeline = pipeline;
+        result
+    }
+
     pub(in crate::native) fn reader_callback(
         &mut self,
         sources: &[String],

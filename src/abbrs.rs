@@ -3,7 +3,7 @@ use std::{
     sync::{LazyLock, Mutex, MutexGuard},
 };
 
-use crate::prelude::*;
+use fish_widestring::prelude::*;
 
 use crate::parse_constants::SourceRange;
 use pcre2::utf32::Regex;
@@ -108,9 +108,7 @@ impl Abbreviation {
         }
 
         match &self.regex {
-            Some(r) => r
-                .is_match(token.as_char_slice())
-                .expect("regex match should not error"),
+            Some(r) => r.is_match(token.as_char_slice()).unwrap_or(false),
             None => self.key == token,
         }
     }
@@ -171,7 +169,7 @@ impl Replacement {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct AbbreviationSet {
     /// List of abbreviations, in definition order.
     abbrs: Vec<Abbreviation>,
@@ -290,7 +288,7 @@ pub fn abbrs_match(token: &wstr, position: Position, cmd: &wstr) -> Vec<Replacer
         .collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 mod tests {
     use super::{Abbreviation, Position, abbrs_match, with_abbrs_mut};
     use crate::editable_line::{Edit, apply_edit};

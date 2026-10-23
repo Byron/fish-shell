@@ -743,9 +743,13 @@ impl<H: Helper, I: History> Editor<H, I> {
             #[cfg(windows)]
             if let Cmd::SetBuffer { buffer, cursor } = cmd {
                 if cursor <= buffer.len() && buffer.is_char_boundary(cursor) {
-                    s.changes.begin();
-                    s.line.update(&buffer, cursor, &mut s.changes);
-                    s.changes.end();
+                    if s.line.as_str() != buffer {
+                        s.changes.begin();
+                        s.line.update(&buffer, cursor, &mut s.changes);
+                        s.changes.end();
+                    } else {
+                        s.line.set_pos(cursor);
+                    }
                     s.refresh_line()?;
                 }
                 continue;

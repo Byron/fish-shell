@@ -158,6 +158,33 @@ impl CompletionService {
         line: &str,
         cursor: usize,
     ) -> Option<super::fish::reader_builtin::ReaderState> {
+        self.evaluate(|session, host| session.reader_callback(sources, line, cursor, host))
+    }
+
+    pub(super) fn abbreviation(
+        &mut self,
+        line: &str,
+        cursor: usize,
+    ) -> Option<super::interactive_abbreviations::Expansion> {
+        let candidate = self
+            .runtime
+            .as_ref()?
+            .session
+            .abbreviations
+            .candidates(line, cursor)
+            .into_iter()
+            .next()?;
+        if !candidate.function {
+            return Some(candidate);
+        }
+        self.evaluate(|session, host| session.reader_abbreviation(line, cursor, host))
+            .flatten()
+    }
+
+    fn evaluate<T>(
+        &mut self,
+        callback: impl FnOnce(&mut Session, &mut CompletionHost<'_>) -> Result<T>,
+    ) -> Option<T> {
         if self.runtime.is_none() {
             return None;
         }
@@ -184,9 +211,7 @@ impl CompletionService {
         }
         let runtime = self.runtime.as_mut().unwrap();
         let mut host = CompletionHost::new(&mut runtime.host, self.io.as_ref().unwrap());
-        let result = runtime
-            .session
-            .reader_callback(sources, line, cursor, &mut host);
+        let result = callback(&mut runtime.session, &mut host);
         let cancelled = runtime.host.take_console_interrupt();
         if let Err(error) = console.restore() {
             self.read_error = Some(error);
