@@ -31,6 +31,9 @@ decoded key and elapsed time; the Windows console transport does not retain the
 original input byte sequence. Bracketed paste is reported as data, and unsupported
 key events are identified without suggesting an unusable binding.
 
+Both tools return an error status when their output pipe closes. Diagnostic
+output is best effort if stderr is also closed; neither tool panics in that case.
+
 ## Portable bundles and installation
 
 From the repository, run `just package target/dist/fish-native.zip`. The package

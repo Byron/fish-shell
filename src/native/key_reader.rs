@@ -13,13 +13,15 @@ pub fn main() -> i32 {
     match run() {
         Ok(()) => 0,
         Err(error) => {
-            eprintln!("fish_key_reader: {error}");
+            let _ = writeln!(io::stderr().lock(), "fish_key_reader: {error}");
             1
         }
     }
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let mut stdout = io::stdout().lock();
+    let mut stderr = io::stderr().lock();
     let mut continuous = false;
     let mut verbose = false;
     let mut options = true;
@@ -29,11 +31,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         match argument.as_str() {
             "--help" => {
-                print!("{HELP}");
+                write!(stdout, "{HELP}")?;
+                stdout.flush()?;
                 return Ok(());
             }
             "--version" => {
-                println!("fish_key_reader, version {}", crate::BUILD_VERSION);
+                writeln!(stdout, "fish_key_reader, version {}", crate::BUILD_VERSION)?;
+                stdout.flush()?;
                 return Ok(());
             }
             "--continuous" => continuous = true,
@@ -45,11 +49,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         'c' => continuous = true,
                         'V' => verbose = true,
                         'h' => {
-                            print!("{HELP}");
+                            write!(stdout, "{HELP}")?;
+                            stdout.flush()?;
                             return Ok(());
                         }
                         'v' => {
-                            println!("fish_key_reader, version {}", crate::BUILD_VERSION);
+                            writeln!(stdout, "fish_key_reader, version {}", crate::BUILD_VERSION)?;
+                            stdout.flush()?;
                             return Ok(());
                         }
                         _ => return Err(format!("unknown option: {argument}").into()),
@@ -64,9 +70,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut reader = RawKeyReader::new()?;
     if continuous {
-        eprintln!("Type exit or quit, or press ctrl-c or ctrl-d twice, to exit.");
+        writeln!(
+            stderr,
+            "Type exit or quit, or press ctrl-c or ctrl-d twice, to exit."
+        )?;
     }
-    eprintln!("Press a key:");
+    writeln!(stderr, "Press a key:")?;
     let mut recent = Recent::default();
     let mut previous = Instant::now();
     loop {
@@ -77,20 +86,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Err(error) => return Err(error.into()),
         };
         if verbose {
-            println!(
+            writeln!(
+                stdout,
                 "# decoded key: {key:?}; elapsed: {:.3} ms",
                 previous.elapsed().as_secs_f64() * 1000.0
-            );
+            )?;
         }
         previous = Instant::now();
         if let Some(text) = reader.read_paste(key)? {
-            println!("# bracketed paste: {}", text.escape_debug());
+            writeln!(stdout, "# bracketed paste: {}", text.escape_debug())?;
         } else if let Some(name) = key_name(key) {
-            println!("bind {} 'do something'", quote_key(&name));
+            writeln!(stdout, "bind {} 'do something'", quote_key(&name))?;
         } else {
-            println!("# Key is not supported by native bind: {key:?}");
+            writeln!(stdout, "# Key is not supported by native bind: {key:?}")?;
         }
-        io::stdout().flush()?;
+        stdout.flush()?;
         if !continuous || recent.should_exit(key) {
             break;
         }

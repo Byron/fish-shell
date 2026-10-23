@@ -8,6 +8,7 @@ use fish_widestring::{
 };
 use std::{
     collections::BTreeMap,
+    fmt::Write as _,
     fs,
     io::{self, Read as _, Write as _},
 };
@@ -28,13 +29,15 @@ pub fn main() -> i32 {
     match run() {
         Ok(status) => status,
         Err(error) => {
-            eprintln!("fish_indent: {error}");
+            let _ = writeln!(io::stderr().lock(), "fish_indent: {error}");
             1
         }
     }
 }
 
 fn run() -> io::Result<i32> {
+    let mut stdout = io::stdout().lock();
+    let mut stderr = io::stderr().lock();
     if let Ok(features) = std::env::var("fish_features") {
         fish_feature_flags::set_from_string(WString::from(features).as_utfstr());
     }
@@ -62,11 +65,13 @@ fn run() -> io::Result<i32> {
     while let Some(option) = parser.next_opt() {
         match option {
             'h' => {
-                print!("{HELP}");
+                write!(stdout, "{HELP}")?;
+                stdout.flush()?;
                 return Ok(0);
             }
             'v' => {
-                println!("fish_indent, version {}", crate::BUILD_VERSION);
+                writeln!(stdout, "fish_indent, version {}", crate::BUILD_VERSION)?;
+                stdout.flush()?;
                 return Ok(0);
             }
             'P' => dump = true,
@@ -84,17 +89,21 @@ fn run() -> io::Result<i32> {
                 } else {
                     "unknown option"
                 };
-                eprintln!(
+                writeln!(
+                    stderr,
                     "fish_indent: {}: {reason}",
                     parser.argv[parser.wopt_index - 1]
-                );
+                )?;
                 return Ok(1);
             }
         }
     }
     let files = &parser.argv[parser.wopt_index..];
     if files.is_empty() && output == Output::Write {
-        eprintln!("fish_indent: expected file path to read/write for -w");
+        writeln!(
+            stderr,
+            "fish_indent: expected file path to read/write for -w"
+        )?;
         return Ok(1);
     }
     let variables = std::env::vars()
@@ -103,7 +112,6 @@ fn run() -> io::Result<i32> {
         .collect::<BTreeMap<_, _>>();
     let palette = Palette::from_variables(&variables);
     let mut status = 0i32;
-    let mut stdout = io::stdout().lock();
     for index in 0..files.len().max(1) {
         let mut input = vec![];
         if files.is_empty() {
@@ -117,7 +125,7 @@ fn run() -> io::Result<i32> {
             continue;
         }
         if dump {
-            eprint!("{}", crate::formatting::dump_parse_tree(&source));
+            write!(stderr, "{}", crate::formatting::dump_parse_tree(&source))?;
         }
         let formatted = if only_indent || only_unindent {
             let indents = compute_indents(&source);
@@ -132,18 +140,18 @@ fn run() -> io::Result<i32> {
         match output {
             Output::Check if source != formatted => {
                 if let Some(file) = files.get(index) {
-                    eprintln!("{file}");
+                    writeln!(stderr, "{file}")?;
                 }
                 status = status.saturating_add(1);
             }
             Output::Check => {}
             Output::Write if source != formatted => {
-                fs::write(wcs2osstring(files[index]), wcs2bytes(&formatted))?
+                fs::write(wcs2osstring(files[index]), wcs2bytes(&formatted))?;
             }
             Output::Write => {}
             Output::Plain => stdout.write_all(&wcs2bytes(&formatted))?,
             Output::Ansi | Output::Html => {
-                stdout.write_all(render(&formatted, output, &palette).as_bytes())?
+                stdout.write_all(render(&formatted, output, &palette).as_bytes())?;
             }
             Output::Pygments => unreachable!(),
         }
@@ -183,10 +191,10 @@ fn render(source: &wstr, output: Output, palette: &Palette) -> String {
                 .take_while(|&&next| next == role)
                 .count();
         if output == Output::Pygments {
-            result.push_str(&format!("{start},{end},{}\n", role_name(role)));
+            writeln!(result, "{start},{end},{}", role_name(role)).unwrap();
         } else {
             if output == Output::Html {
-                result.push_str(&format!("<span class=\"{}\">", role.variable()));
+                write!(result, "<span class=\"{}\">", role.variable()).unwrap();
             } else {
                 result.push_str(&palette.sequence(role.variable(), false));
             }
