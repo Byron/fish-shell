@@ -16,6 +16,11 @@ fn stdout(source: &str) -> String {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     String::from_utf8(output.stdout)
         .unwrap()
         .replace("\r\n", "\n")
@@ -60,17 +65,45 @@ fn abbreviations_do_not_change_noninteractive_command_execution() {
 }
 
 #[test]
-fn dynamic_and_argument_position_abbreviations_report_the_native_limit() {
+fn generated_and_argument_abbreviations_round_trip_all_definition_options() {
+    let definitions = r#"
+        function generate; echo generator-must-not-run-during-registration; end
+        abbr --add --regex 'g[0-9]+' --function generate generated
+        abbr --add --position anywhere --set-cursor=HERE --description 'insert a 🐟' argument 'left HERE right'
+        abbr --add --command git --command jj restricted main
+    "#;
+    let registration = stdout(&format!("{definitions}\nabbr --show"));
+    for option in [
+        "--regex 'g[0-9]+'",
+        "--function 'generate'",
+        "--position anywhere",
+        "--set-cursor='HERE'",
+        "--description 'insert a 🐟'",
+        "--command 'git' --command 'jj'",
+    ] {
+        assert!(registration.contains(option), "{option}: {registration}");
+    }
+    assert!(!registration.contains("generator-must-not-run"));
+    assert_eq!(
+        stdout(&format!("{registration}\nabbr --show")),
+        registration
+    );
+}
+
+#[test]
+fn invalid_abbreviation_definitions_report_the_specific_error() {
     for source in [
-        "abbr --add gco --function generate",
-        "abbr --add --regex 'g.*' generated 'git status'",
-        "abbr --add --position anywhere gco 'git checkout'",
+        "abbr --add --function",
+        "abbr --add --regex '[' broken text",
+        "abbr --add --position nowhere name text",
+        "abbr --add --set-cursor= name text",
+        "abbr --add=value name text",
     ] {
         let output = fish(source);
         assert!(!output.status.success(), "{source}");
         assert!(output.stdout.is_empty(), "{source}");
         assert!(
-            String::from_utf8_lossy(&output.stderr).contains("native abbreviations"),
+            String::from_utf8_lossy(&output.stderr).contains("abbr:"),
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
