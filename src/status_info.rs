@@ -3,6 +3,7 @@ use fish_feature_flags::{FeatureFlag, METADATA};
 use fish_widestring::{WString, wstr};
 use rust_embed::RustEmbed;
 use std::borrow::Cow;
+use std::fmt::Write as _;
 
 struct EmptyEmbed;
 impl RustEmbed for EmptyEmbed {
@@ -69,13 +70,15 @@ pub(crate) fn features(mut enabled: impl FnMut(FeatureFlag) -> bool) -> WString 
         + 1;
     let mut output = String::new();
     for metadata in METADATA {
-        output.push_str(&format!(
-            "{:<width$}{:<3} {} {}\n",
+        writeln!(
+            output,
+            "{:<width$}{:<3} {} {}",
             metadata.name.to_string(),
             if enabled(metadata.flag) { "on" } else { "off" },
             metadata.groups,
             metadata.description
-        ));
+        )
+        .unwrap();
     }
     WString::from(output)
 }
@@ -89,9 +92,9 @@ pub(crate) fn build_info() -> WString {
         crate::BUILD_VERSION
     );
     if target == host {
-        output.push_str(&format!("Target (and host): {target}\n"));
+        writeln!(output, "Target (and host): {target}").unwrap();
     } else {
-        output.push_str(&format!("Target: {target}\nHost: {host}\n"));
+        writeln!(output, "Target: {target}\nHost: {host}").unwrap();
     }
     let features: &[&str] = &[
         #[cfg(feature = "embed-manpages")]
@@ -101,10 +104,12 @@ pub(crate) fn build_info() -> WString {
         #[cfg(target_feature = "crt-static")]
         "crt-static",
     ];
-    output.push_str(&format!(
-        "Profile: {}\nFeatures: {}\n\n",
+    writeln!(
+        output,
+        "Profile: {}\nFeatures: {}\n",
         env!("BUILD_PROFILE"),
         features.join(" ")
-    ));
+    )
+    .unwrap();
     WString::from(output)
 }

@@ -17,10 +17,10 @@ pub fn git(parser: &mut Parser, streams: &mut IoStreams, args: &mut [&wstr]) -> 
     }
     #[cfg(feature = "git")]
     {
-        use crate::env::Environment;
+        use crate::env::Environment as _;
         use fish_widestring::{bytes2wcstring, wcs2bytes, wcs2osstring};
         use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::ffi::OsStrExt as _;
         // shortcut: accept byte arguments when extending the private query protocol.
         let arguments = args[1..]
             .iter()

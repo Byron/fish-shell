@@ -294,10 +294,10 @@ impl Session {
                 },
             );
         }
-        if !variables.contains_key("HOME") {
-            if let Some(profile) = variables.get("USERPROFILE").cloned() {
-                variables.insert("HOME".into(), profile);
-            }
+        if !variables.contains_key("HOME")
+            && let Some(profile) = variables.get("USERPROFILE").cloned()
+        {
+            variables.insert("HOME".into(), profile);
         }
         variables.insert(
             "PWD".into(),
@@ -820,24 +820,24 @@ impl Session {
             let bytes = std::fs::read(file.path())?;
             if !bytes.is_empty() {
                 let mut updated: Self = super::worker::decode(&bytes)?;
-                if updated.values("PWD") != self.values("PWD") {
-                    if let Some(cwd) = updated.values("PWD").first() {
-                        host.change_dir(cwd.as_bytes())?;
-                    }
+                if updated.values("PWD") != self.values("PWD")
+                    && let Some(cwd) = updated.values("PWD").first()
+                {
+                    host.change_dir(cwd.as_bytes())?;
                 }
                 // Evaluation depth belongs to the parent invocation, not its worker.
                 updated.depth = self.depth;
                 updated.input_mode_blocked = self.input_mode_blocked;
                 updated.refreshing_universals = self.refreshing_universals;
-                updated.completion_line = self.completion_line.clone();
+                updated.completion_line.clone_from(&self.completion_line);
                 updated.completion_depth = self.completion_depth;
-                updated.reader_state = self.reader_state.clone();
+                updated.reader_state.clone_from(&self.reader_state);
                 // The worker only adds temporary inner resource scopes. Keep
                 // the parent's reservations and process-local cleanup leases;
                 // these leases deliberately do not deserialize from snapshots.
                 updated.psub_resources = self.psub_resources.clone();
                 updated.substitution_depth = self.substitution_depth;
-                updated.source_origin = self.source_origin.clone();
+                updated.source_origin.clone_from(&self.source_origin);
                 *self = updated;
             }
         }
@@ -866,8 +866,7 @@ impl Session {
     fn binding(&self, name: &str, values: Vec<String>, exported: bool) -> Variable {
         let pathvar = self
             .variable(name)
-            .map(|variable| variable.pathvar)
-            .unwrap_or_else(|| name.ends_with("PATH"));
+            .map_or_else(|| name.ends_with("PATH"), |variable| variable.pathvar);
         let values = if pathvar {
             values
                 .into_iter()

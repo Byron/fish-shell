@@ -228,20 +228,19 @@ fn run(language: Language) -> i32 {
         return status;
     }
     let mut args = std::env::args_os().skip(1);
-    if let Some(arg) = args.next() {
-        if let Some(worker_language) = arg
+    if let Some(arg) = args.next()
+        && let Some(worker_language) = arg
             .to_str()
             .and_then(|a| a.strip_prefix("--native-worker="))
-        {
-            return match (args.next(), args.next()) {
-                (Some(path), None) => worker::run(worker_language, std::path::Path::new(&path))
-                    .unwrap_or_else(|error| report(language, error)),
-                _ => report(
-                    language,
-                    Error::new("invalid interpreter worker invocation"),
-                ),
-            };
-        }
+    {
+        return match (args.next(), args.next()) {
+            (Some(path), None) => worker::run(worker_language, std::path::Path::new(&path))
+                .unwrap_or_else(|error| report(language, error)),
+            _ => report(
+                language,
+                Error::new("invalid interpreter worker invocation"),
+            ),
+        };
     }
     let invocation = match parse_options(language, std::env::args_os().skip(1)) {
         Ok(invocation) => invocation,
@@ -277,9 +276,9 @@ fn run(language: Language) -> i32 {
 }
 
 enum Engine {
-    Rash(rash::Session),
+    Rash(Box<rash::Session>),
     #[cfg(windows)]
-    Fish(fish::Session),
+    Fish(Box<fish::Session>),
 }
 
 impl Engine {
@@ -303,10 +302,10 @@ impl Engine {
                         Ok((name, rash::os::to_bytes(&value)?))
                     })
                     .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
-                if !env.contains_key(b"HOME".as_slice()) {
-                    if let Some(home) = env.get(b"USERPROFILE".as_slice()).cloned() {
-                        env.insert(b"HOME".to_vec(), home);
-                    }
+                if !env.contains_key(b"HOME".as_slice())
+                    && let Some(home) = env.get(b"USERPROFILE".as_slice()).cloned()
+                {
+                    env.insert(b"HOME".to_vec(), home);
                 }
                 let cwd = rash::os::to_bytes(std::env::current_dir()?.as_os_str())?;
                 let mut session = rash::Session::new(env, cwd, interactive, options.login);
@@ -324,7 +323,7 @@ impl Engine {
                 session.positional = args
                     .map(|arg| rash::os::to_bytes(arg))
                     .collect::<Result<_>>()?;
-                Ok(Self::Rash(session))
+                Ok(Self::Rash(Box::new(session)))
             }
             #[cfg(windows)]
             Language::Fish => {
@@ -343,7 +342,7 @@ impl Engine {
                         })
                         .collect::<Result<_>>()?,
                 );
-                Ok(Self::Fish(session))
+                Ok(Self::Fish(Box::new(session)))
             }
             #[cfg(not(windows))]
             Language::Fish => Err(Error::new(
@@ -553,10 +552,12 @@ fn execute(options: Options) -> Result<i32> {
                 }
             }
         }
-        if options.startup && !options.no_config && !options.syntax_only {
-            if let Engine::Rash(session) = &mut engine {
-                execute_try!(session.startup(&mut host));
-            }
+        if options.startup
+            && !options.no_config
+            && !options.syntax_only
+            && let Engine::Rash(session) = &mut engine
+        {
+            execute_try!(session.startup(&mut host));
         }
         let mut status = engine.status();
         if !engine.exited() {
@@ -621,8 +622,8 @@ fn execute(options: Options) -> Result<i32> {
                     let read = match engine {
                         Engine::Fish(session) => {
                             let (session, returned_host, read) =
-                                editor.read_fish_line(&prompt, session, host);
-                            engine = Engine::Fish(session);
+                                editor.read_fish_line(&prompt, *session, host);
+                            engine = Engine::Fish(Box::new(session));
                             host = returned_host;
                             read
                         }
@@ -673,20 +674,18 @@ fn execute(options: Options) -> Result<i32> {
                     if engine.incomplete(&source) {
                         continue;
                     }
-                    if options.language == Language::Rash {
-                        if let Err(error) =
+                    if options.language == Language::Rash
+                        && let Err(error) =
                             editor.add_history(std::str::from_utf8(&source).unwrap_or_default())
-                        {
-                            report(options.language, error);
-                        }
+                    {
+                        report(options.language, error);
                     }
                     #[cfg(windows)]
-                    if let Engine::Fish(session) = &mut engine {
-                        if let Err(error) =
+                    if let Engine::Fish(session) = &mut engine
+                        && let Err(error) =
                             session.begin_history(std::str::from_utf8(&source).unwrap_or_default())
-                        {
-                            report(options.language, error);
-                        }
+                    {
+                        report(options.language, error);
                     }
                     #[cfg(windows)]
                     execute_try!(
@@ -696,10 +695,10 @@ fn execute(options: Options) -> Result<i32> {
                         .evaluate_input(&source, &mut host)
                         .unwrap_or_else(|error| report(options.language, error));
                     #[cfg(windows)]
-                    if let Engine::Fish(session) = &mut engine {
-                        if let Err(error) = session.finish_history() {
-                            report(options.language, error);
-                        }
+                    if let Engine::Fish(session) = &mut engine
+                        && let Err(error) = session.finish_history()
+                    {
+                        report(options.language, error);
                     }
                     #[cfg(windows)]
                     execute_try!(terminal.command_end(status));
@@ -736,26 +735,25 @@ fn execute(options: Options) -> Result<i32> {
                     execute_try!(engine.evaluate(&source, &mut host, options.syntax_only, origin));
             }
         }
-        if !options.syntax_only {
-            if let Engine::Rash(session) = &mut engine {
-                execute_try!(session.finish(&mut host));
-                status = session.status;
-            }
+        if !options.syntax_only
+            && let Engine::Rash(session) = &mut engine
+        {
+            execute_try!(session.finish(&mut host));
+            status = session.status;
         }
         Ok(status)
     };
     #[cfg(windows)]
-    if !options.syntax_only {
-        if let Engine::Fish(session) = &mut engine {
-            let status = result
-                .as_ref()
-                .copied()
-                .unwrap_or_else(|error| error.status);
-            host.clear_console_requests();
-            let finished =
-                session.finish_runtime(status, reader_started, result.is_err(), &mut host);
-            return result.and_then(|status| finished.map(|()| status));
-        }
+    if !options.syntax_only
+        && let Engine::Fish(session) = &mut engine
+    {
+        let status = result
+            .as_ref()
+            .copied()
+            .unwrap_or_else(|error| error.status);
+        host.clear_console_requests();
+        let finished = session.finish_runtime(status, reader_started, result.is_err(), &mut host);
+        return result.and_then(|status| finished.map(|()| status));
     }
     #[cfg(not(windows))]
     let _ = reader_started;

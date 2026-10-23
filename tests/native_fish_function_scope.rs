@@ -1,6 +1,6 @@
 //! Function destinations must bypass intervening block and source locals.
 #![cfg(windows)]
-use std::io::Write;
+use std::io::Write as _;
 use std::process::{Command, Output, Stdio};
 
 fn fish(source: &str, input: &[u8]) -> Output {

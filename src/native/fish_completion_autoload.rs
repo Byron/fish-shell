@@ -25,7 +25,7 @@ impl Default for Loader {
 
 mod serialization {
     use super::*;
-    use serde::{Deserialize, Serialize};
+    use serde::{Deserialize as _, Serialize as _};
 
     pub fn serialize<S: serde::Serializer>(
         loader: &Autoload,

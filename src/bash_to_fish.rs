@@ -146,12 +146,13 @@ impl<'a> Printer<'a> {
         if condition.is_empty() {
             return Err(Error::unsupported("an empty condition"));
         }
-        if let [item] = condition.as_slice() {
-            if !item.background && (!negate || item.chain.rest.is_empty()) {
-                self.chain(&item.chain)?;
-                self.put(b"\n");
-                return Ok(());
-            }
+        if let [item] = condition.as_slice()
+            && !item.background
+            && (!negate || item.chain.rest.is_empty())
+        {
+            self.chain(&item.chain)?;
+            self.put(b"\n");
+            return Ok(());
         }
         self.put(b"begin\n");
         self.list(condition)?;

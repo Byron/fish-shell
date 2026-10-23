@@ -116,13 +116,12 @@ pub fn load(name: &wstr, parser: &mut Parser) -> bool {
     // Lock around a local region.
     {
         let mut funcset: std::sync::MutexGuard<FunctionSet> = FUNCTION_SET.lock().unwrap();
-        if funcset.allow_autoload(name) {
-            if let AutoloadResult::Path(path) = funcset
+        if funcset.allow_autoload(name)
+            && let AutoloadResult::Path(path) = funcset
                 .autoloader
                 .resolve_command(name, EnvStack::globals())
-            {
-                path_to_autoload = Some(path);
-            }
+        {
+            path_to_autoload = Some(path);
         }
     }
 

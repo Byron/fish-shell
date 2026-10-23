@@ -1,6 +1,7 @@
 //! Shared random behavior and native worker state through the executable.
 #![cfg(windows)]
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -101,7 +102,7 @@ fn full_width_reversed_and_stepped_ranges_stay_within_their_boundaries() {
     ] {
         let mut source = "random 42\n".to_owned();
         for _ in 0..64 {
-            source.push_str(&format!("random -- {start} {step} {end}\n"));
+            writeln!(source, "random -- {start} {step} {end}").unwrap();
         }
         let output = fixture.text(&source);
         let (low, high) = (start.min(end), start.max(end));

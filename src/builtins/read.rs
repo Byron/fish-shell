@@ -169,21 +169,21 @@ fn parse_cmd_opts(
                     '\x01' => TokenOutputMode::Raw,
                     _ => unreachable!(),
                 };
-                if let Some(old_mode) = opts.token_mode {
-                    if old_mode != new_mode {
-                        err_fmt!(
-                            Error::INVALID_OPT_COMBO_WITH_CTX,
-                            wgettext_fmt!(
-                                "%s and %s are mutually exclusive",
-                                tokenize_flag(old_mode),
-                                tokenize_flag(new_mode),
-                            )
+                if let Some(old_mode) = opts.token_mode
+                    && old_mode != new_mode
+                {
+                    err_fmt!(
+                        Error::INVALID_OPT_COMBO_WITH_CTX,
+                        wgettext_fmt!(
+                            "%s and %s are mutually exclusive",
+                            tokenize_flag(old_mode),
+                            tokenize_flag(new_mode),
                         )
-                        .cmd(cmd)
-                        .full_trailer(parser)
-                        .finish(streams);
-                        return Err(STATUS_INVALID_ARGS);
-                    }
+                    )
+                    .cmd(cmd)
+                    .full_trailer(parser)
+                    .finish(streams);
+                    return Err(STATUS_INVALID_ARGS);
                 }
                 opts.token_mode = Some(new_mode);
             }
@@ -335,18 +335,18 @@ fn read_in_chunks(fd: RawFd, buff: &mut WString, split_null: bool, do_seek: bool
         if bytes_consumed < bytes_read {
             // We found a splitter. The +1 because we need to treat the splitter as consumed, but
             // not append it to the string.
-            if do_seek {
-                if let Err(err) = lseek(
+            if do_seek
+                && let Err(err) = lseek(
                     unsafe { BorrowedFd::borrow_raw(fd) },
                     libc::off_t::try_from(
                         isize::try_from(bytes_consumed).unwrap() - (bytes_read as isize) + 1,
                     )
                     .unwrap(),
                     Whence::SeekCur,
-                ) {
-                    perror_nix("lseek", err);
-                    return Err(STATUS_CMD_ERROR);
-                }
+                )
+            {
+                perror_nix("lseek", err);
+                return Err(STATUS_CMD_ERROR);
             }
             finished = true;
         } else if narrow_buff.len() > READ_BYTE_LIMIT.load(Ordering::Relaxed) {
@@ -416,10 +416,10 @@ fn read_one_char_at_a_time(
             buff.pop();
             break;
         }
-        if let Some(nchars) = nchars.map(usize::from) {
-            if nchars <= buff.len() {
-                break;
-            }
+        if let Some(nchars) = nchars.map(usize::from)
+            && nchars <= buff.len()
+        {
+            break;
         }
     }
 

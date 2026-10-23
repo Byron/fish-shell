@@ -11,7 +11,7 @@ pub(super) fn resolver() -> Autoload {
 
 pub(super) mod serialization {
     use super::*;
-    use serde::{Deserialize, Serialize};
+    use serde::{Deserialize as _, Serialize as _};
 
     pub(crate) fn serialize<S: serde::Serializer>(
         loader: &Autoload,

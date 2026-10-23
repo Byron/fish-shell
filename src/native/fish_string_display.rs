@@ -55,7 +55,7 @@ fn parse_options<'a>(command: &str, args: &mut [&'a wstr]) -> Result<(Options<'a
         match option {
             'c' => options.chars = parser.woptarg,
             'm' | 'w' => {
-                options.width = Some(nonnegative(command, parser.woptarg.unwrap(), "width")?)
+                options.width = Some(nonnegative(command, parser.woptarg.unwrap(), "width")?);
             }
             'l' => options.left = true,
             'r' => options.right = true,

@@ -424,10 +424,10 @@ pub fn format(
                 }
             };
             if b"sbqc".contains(&conversion) {
-                if conversion != b'c' {
-                    if let Some(precision) = precision {
-                        text.truncate(precision);
-                    }
+                if conversion != b'c'
+                    && let Some(precision) = precision
+                {
+                    text.truncate(precision);
                 }
                 // Bash 3.2's printstr returns before padding an empty %b result.
                 let padding = if conversion == b'b' && text.is_empty() {

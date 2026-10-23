@@ -55,12 +55,17 @@ version comes from the repository's Rust toolchain action rather than a second
 version in the workflow. The regular Windows job also runs the mocked release,
 package, and installation rollback checks without changing an installed bundle.
 
-Local checks cover the declared Rust 1.88 minimum and Rust 1.99.1. Strict Clippy
-is a remaining validation limit on Rust 1.99.1:
-`cargo clippy --locked -p fish -p rash --all-targets -- -D warnings` still reports
-style and structure warnings across shared code, native code, and tests. These
-include nested conditionals, anonymous trait imports, string formatting, and
-repeated platform module declarations. This broader lint backlog was not
-suppressed or rewritten as part of the native compatibility work. Running with
-`-- --cap-lints warn` inventories all targets; it does not establish that the
-strict check passes.
+Local checks cover the declared Rust 1.88 minimum and Rust 1.99.1. Native linting
+checks the shared crates, native shell, standalone tools, and executable tests
+with warnings treated as errors. Run both commands on POSIX and Windows to cover
+their platform-specific code:
+
+```sh
+cargo clippy --locked -p fish -p rash --all-targets -- -D warnings
+cargo clippy --locked -p fish -p rash --all-targets --no-default-features -- -D warnings
+```
+
+Keep lint fixes compatible with the declared minimum Rust version. Numeric
+parsing helpers are compiled once through the Windows utility module and reused
+by argument parsing, variable indexes, random, math, and test expressions; their
+shared parser tests continue to run alongside the executable behavior checks.

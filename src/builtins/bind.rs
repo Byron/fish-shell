@@ -88,11 +88,11 @@ impl BuiltinBind {
             out.push_utfstr(&escape(&bind.mode));
         }
 
-        if let Some(sets_mode) = &bind.sets_mode {
-            if *sets_mode != bind.mode {
-                out.push_str(" -m ");
-                out.push_utfstr(&escape(sets_mode));
-            }
+        if let Some(sets_mode) = &bind.sets_mode
+            && *sets_mode != bind.mode
+        {
+            out.push_str(" -m ");
+            out.push_utfstr(&escape(sets_mode));
         }
 
         out.push(' ');
@@ -217,21 +217,21 @@ impl BuiltinBind {
             let definition_file =
                 &self.bindings.get(&binding.seq, bind_mode, user)[0].definition_file;
 
-            if let Some(def_file) = definition_file {
-                if Some(def_file) != cur_file {
-                    out.push_utfstr(&L!("# Defined in "));
-                    out.push_utfstr(&**def_file);
-                    out.push_utfstr(&L!(":\n"));
-                    streams.out.append(&if streams.out_is_redirected {
-                        out
-                    } else {
-                        let mut colors = Vec::new();
-                        highlight_shell(&out, &mut colors, &mut parser.context(), false, None);
-                        let colored = colorize(&out, &colors, parser.vars());
-                        bytes2wcstring(&colored)
-                    });
-                    cur_file = Some(def_file);
-                }
+            if let Some(def_file) = definition_file
+                && Some(def_file) != cur_file
+            {
+                out.push_utfstr(&L!("# Defined in "));
+                out.push_utfstr(&**def_file);
+                out.push_utfstr(&L!(":\n"));
+                streams.out.append(&if streams.out_is_redirected {
+                    out
+                } else {
+                    let mut colors = Vec::new();
+                    highlight_shell(&out, &mut colors, &mut parser.context(), false, None);
+                    let colored = colorize(&out, &colors, parser.vars());
+                    bytes2wcstring(&colored)
+                });
+                cur_file = Some(def_file);
             }
             self.list_one(&binding.seq, Some(&binding.mode), user, parser, streams);
         }

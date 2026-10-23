@@ -1,7 +1,7 @@
 //! Process substitution files belong to the consuming command, not the capture.
 #![cfg(windows)]
 use std::fs;
-use std::io::Write;
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -180,10 +180,10 @@ fn background_consumers_retain_files_and_forced_job_cancellation_cleans_them() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         let ready = fixture.0.join("ready");
         let path = loop {
-            if let Ok(text) = fs::read_to_string(&ready) {
-                if !text.is_empty() {
-                    break PathBuf::from(text);
-                }
+            if let Ok(text) = fs::read_to_string(&ready)
+                && !text.is_empty()
+            {
+                break PathBuf::from(text);
             }
             if std::time::Instant::now() >= deadline {
                 child.kill().unwrap();

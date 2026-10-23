@@ -2,10 +2,10 @@
 //! Not connected to the interactive reader until terminal and signal semantics are proven.
 
 use std::collections::BTreeMap;
-use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
+use std::io::{self, Read as _, Write as _};
+use std::os::fd::AsRawFd as _;
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 

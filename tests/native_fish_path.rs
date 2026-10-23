@@ -1,6 +1,7 @@
 //! Native path helpers retain Windows roots and compose in shared Fish scripts.
 #![cfg(windows)]
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -254,10 +255,12 @@ fn invalid_options_and_namespaces_report_failure_without_stopping_the_caller() {
         r"\??\C:\Windows",
         r"\\server",
     ] {
-        source.push_str(&format!(
+        write!(
+            source,
             "path normalize -- {}; echo rejected:$status; ",
             quote(path)
-        ));
+        )
+        .unwrap();
     }
     source.push_str("path resolve NUL; echo device:$status; echo continued");
     let output = fixture.run(&source);

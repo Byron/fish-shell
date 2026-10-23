@@ -6,28 +6,10 @@ use fish_feature_flags::{FeatureFlag, feature_test};
 use std::{collections::HashMap, sync::LazyLock};
 
 #[cfg(windows)]
-#[path = "wutil/errors.rs"]
-mod number_errors;
-#[cfg(windows)]
-pub use number_errors::Error;
-#[cfg(windows)]
-#[path = "wutil/hex_float.rs"]
-mod hex_float;
-#[cfg(windows)]
-#[path = "wutil/wcstod.rs"]
-#[allow(dead_code)]
-mod wcstod;
-#[cfg(windows)]
-#[path = "wutil/wcstoi.rs"]
-#[allow(dead_code)]
-mod wcstoi;
+pub use crate::wutil::Error;
 #[cfg(not(windows))]
-use crate::wutil::{Error, fish_wcstol, wcstod::wcstod, wcstoi, wcstoi_opts};
-#[cfg(windows)]
-use {
-    wcstod::wcstod,
-    wcstoi::{fish_wcstol, wcstoi_opts},
-};
+use crate::wutil::Error;
+use crate::wutil::{fish_wcstol, wcstod::wcstod, wcstoi, wcstoi_opts};
 
 pub(crate) trait Context {
     fn file_stat(&mut self, predicate: StatPredicate, path: &wstr) -> Result<bool, WString>;

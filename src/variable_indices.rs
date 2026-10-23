@@ -1,16 +1,6 @@
 //! Fish `set` variable indexes, shared by both environment backends.
 use fish_widestring::prelude::*;
 
-#[cfg(windows)]
-#[path = "wutil/errors.rs"]
-mod errors;
-#[cfg(windows)]
-pub use errors::Error;
-#[cfg(windows)]
-#[path = "wutil/wcstoi.rs"]
-#[allow(dead_code)]
-mod wcstoi;
-#[cfg(not(windows))]
 use crate::wutil::wcstoi;
 
 #[derive(Debug)]

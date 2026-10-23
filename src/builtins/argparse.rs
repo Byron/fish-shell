@@ -73,17 +73,17 @@ impl Context for PosixContext<'_, '_, '_> {
                 }
                 Error::from(&localize_implicit_int_flag_already_defined(flag))
                     .cmd(name)
-                    .finish(streams)
+                    .finish(streams);
             }
             ParseError::EmptyOptionSpec => {
                 err_str!("An option spec must have at least a short or a long flag")
                     .cmd(name)
-                    .finish(streams)
+                    .finish(streams);
             }
             ParseError::InvalidShort(flag) => {
                 err_fmt!("Short flag '%c' invalid, must be alphanum or '#'", flag)
                     .cmd(name)
-                    .finish(streams)
+                    .finish(streams);
             }
             ParseError::DuplicateLong(flag) => err_fmt!("Long flag '%s' already defined", flag)
                 .cmd(name)
@@ -94,7 +94,7 @@ impl Context for PosixContext<'_, '_, '_> {
             ParseError::InvalidUnknownArguments(value) => {
                 err_fmt!("Invalid --unknown-arguments value '%s'", value)
                     .cmd(name)
-                    .finish(streams)
+                    .finish(streams);
             }
             ParseError::InvalidMinArgs(value) => err_fmt!("Invalid --min-args value '%s'", value)
                 .cmd(name)
@@ -103,16 +103,16 @@ impl Context for PosixContext<'_, '_, '_> {
                 .cmd(name)
                 .finish(streams),
             ParseError::MissingArgument(option) => {
-                builtin_missing_argument(self.parser, streams, name, None, option, false)
+                builtin_missing_argument(self.parser, streams, name, None, option, false);
             }
             ParseError::MissingUnknownArgument(option) => err_fmt!(Error::MISSING_OPT_ARG, option)
                 .cmd(name)
                 .finish(streams),
             ParseError::UnexpectedArgument(option) => {
-                builtin_unexpected_argument(self.parser, streams, name, option, false)
+                builtin_unexpected_argument(self.parser, streams, name, option, false);
             }
             ParseError::UnknownOption(option) => {
-                builtin_unknown_option(self.parser, streams, name, option, false)
+                builtin_unknown_option(self.parser, streams, name, option, false);
             }
             ParseError::MinArgs(min, actual) => err_fmt!(Error::MIN_ARG_COUNT, min, actual)
                 .cmd(name)

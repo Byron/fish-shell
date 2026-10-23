@@ -4,6 +4,7 @@ use crate::function_options::{self, Context, ParseError};
 use crate::parser_keywords::parser_keywords_is_reserved;
 use fish_wgetopt::{ArgType, WGetopter, WOption, wopt};
 use fish_widestring::L;
+use std::fmt::Write as _;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct Function {
@@ -33,17 +34,17 @@ impl Function {
     pub(super) fn definition(&self, name: &str) -> String {
         let mut definition = format!("function {}", quote(name));
         for target in &self.wrap_targets {
-            definition.push_str(&format!(" --wraps={}", quote(target)));
+            write!(definition, " --wraps={}", quote(target)).unwrap();
         }
         if !self.description.is_empty() {
-            definition.push_str(&format!(" --description {}", quote(&self.description)));
+            write!(definition, " --description {}", quote(&self.description)).unwrap();
         }
         if !self.shadow_scope {
             definition.push_str(" --no-scope-shadowing");
         }
         for event in &self.events {
             let (option, name) = event.description.option();
-            definition.push_str(&format!(" {option} {}", quote(name)));
+            write!(definition, " {option} {}", quote(name)).unwrap();
         }
         if !self.named_arguments.is_empty() {
             definition.push_str(" --argument-names");
@@ -53,7 +54,7 @@ impl Function {
             }
         }
         for (name, values) in &self.inherit_vars {
-            definition.push_str(&format!("\n    set -l {}", quote(name)));
+            write!(definition, "\n    set -l {}", quote(name)).unwrap();
             for value in values {
                 definition.push(' ');
                 definition.push_str(&quote(value));
@@ -296,7 +297,7 @@ impl Session {
         // to the original name. The new definition is attributed to the copy site.
         function.events.clear();
         function.wrap_targets.clear();
-        function.origin = self.source_origin.clone();
+        function.origin.clone_from(&self.source_origin);
         self.autoload_tombstones.remove(destination);
         self.autoloaded_functions.remove(destination);
         self.functions.insert(destination.clone(), function);

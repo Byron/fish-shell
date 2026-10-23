@@ -4,19 +4,7 @@ use fish_wgetopt::{ArgType, NON_OPTION_CHAR, WGetopter, WOption, wopt};
 use fish_widestring::prelude::*;
 use std::{borrow::Cow, collections::HashMap};
 
-#[cfg(windows)]
-#[path = "wutil/errors.rs"]
-mod errors;
-#[cfg(windows)]
-pub use errors::Error;
-#[cfg(windows)]
-#[path = "wutil/wcstoi.rs"]
-#[allow(dead_code)]
-mod wcstoi;
-#[cfg(not(windows))]
 use crate::wutil::fish_wcstol;
-#[cfg(windows)]
-use wcstoi::fish_wcstol;
 
 const VAR_NAME_PREFIX: &wstr = L!("_flag_");
 

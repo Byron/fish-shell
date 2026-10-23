@@ -4,8 +4,8 @@ use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap};
 use std::time::Instant;
 
-use gix::bstr::ByteSlice;
-use gix::prelude::ObjectIdExt;
+use gix::bstr::ByteSlice as _;
+use gix::prelude::ObjectIdExt as _;
 
 pub(super) fn query(
     repository: &gix::Repository,

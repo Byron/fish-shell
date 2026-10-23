@@ -30,10 +30,7 @@ use std::{
     ops::{BitAnd, BitOr, BitXor},
 };
 
-#[cfg(windows)]
-use crate::native::fish::builtins::numeric::{Error as wcstodError, wcstod::wcstod_underscores};
 use crate::prelude::*;
-#[cfg(not(windows))]
 use crate::wutil::{Error as wcstodError, wcstod::wcstod_underscores};
 #[cfg(not(windows))]
 use fish_common::assert_sorted_by_name;

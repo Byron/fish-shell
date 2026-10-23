@@ -1,7 +1,7 @@
 //! Shared user PATH reconstruction and fish_add_path through native startup.
 #![cfg(windows)]
 
-use std::io::Write;
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};

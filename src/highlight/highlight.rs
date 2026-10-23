@@ -185,23 +185,23 @@ impl HighlightColorResolver {
         }
 
         // Handle modifiers.
-        if highlight.valid_path {
-            if let Some(valid_path_var) = vars.get(L!("fish_color_valid_path")) {
-                let valid_path_face = parse_text_face(valid_path_var.as_list());
-                if valid_path_face.reset {
-                    face = TextFace::terminal_default();
-                }
-                if let Some(fg) = valid_path_face.fg {
-                    face.fg = fg;
-                }
-                if let Some(bg) = valid_path_face.bg {
-                    face.bg = bg;
-                }
-                if let Some(underline_color) = valid_path_face.underline_color {
-                    face.underline_color = underline_color;
-                }
-                face.style = face.style.union_prefer_right(valid_path_face.style);
+        if highlight.valid_path
+            && let Some(valid_path_var) = vars.get(L!("fish_color_valid_path"))
+        {
+            let valid_path_face = parse_text_face(valid_path_var.as_list());
+            if valid_path_face.reset {
+                face = TextFace::terminal_default();
             }
+            if let Some(fg) = valid_path_face.fg {
+                face.fg = fg;
+            }
+            if let Some(bg) = valid_path_face.bg {
+                face.bg = bg;
+            }
+            if let Some(underline_color) = valid_path_face.underline_color {
+                face.underline_color = underline_color;
+            }
+            face.style = face.style.union_prefer_right(valid_path_face.style);
         }
 
         if highlight.force_underline {
@@ -320,10 +320,10 @@ fn autosuggest_parse_command(
     if let Some(expanded_command) = statement_get_expanded_command(buff, first_statement, ctx) {
         let mut arg = WString::new();
         // Check if the first argument or redirection is, in fact, an argument.
-        if let Some(arg_or_redir) = first_statement.args_or_redirs.first() {
-            if arg_or_redir.is_argument() {
-                arg = arg_or_redir.argument().source(buff).to_owned();
-            }
+        if let Some(arg_or_redir) = first_statement.args_or_redirs.first()
+            && arg_or_redir.is_argument()
+        {
+            arg = arg_or_redir.argument().source(buff).to_owned();
         }
 
         return Some((expanded_command, arg));

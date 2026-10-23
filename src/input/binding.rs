@@ -806,24 +806,24 @@ impl<'a> Reader<'a> {
                         });
 
                         // Hackish: mark the input style.
-                        if readline_event.cmd == ReadlineCmd::SelfInsertNotFirst {
-                            if let CharEvent::Key(kevt) = &mut res {
-                                kevt.input_style = CharInputStyle::NotFirst;
-                            }
+                        if readline_event.cmd == ReadlineCmd::SelfInsertNotFirst
+                            && let CharEvent::Key(kevt) = &mut res
+                        {
+                            kevt.input_style = CharInputStyle::NotFirst;
                         }
-                        if readline_event.cmd == ReadlineCmd::GetKey {
-                            if let CharEvent::Key(kevt) = res {
-                                return CharEvent::Command(sprintf!(
-                                    "set -g fish_key %s",
-                                    escape(
-                                        &kevt
-                                            .key
-                                            .text_to_insert()
-                                            .map(WString::from_iter)
-                                            .unwrap_or_default()
-                                    )
-                                ));
-                            }
+                        if readline_event.cmd == ReadlineCmd::GetKey
+                            && let CharEvent::Key(kevt) = res
+                        {
+                            return CharEvent::Command(sprintf!(
+                                "set -g fish_key %s",
+                                escape(
+                                    &kevt
+                                        .key
+                                        .text_to_insert()
+                                        .map(WString::from_iter)
+                                        .unwrap_or_default()
+                                )
+                            ));
                         }
                         return res;
                     }
@@ -960,12 +960,12 @@ impl<'a> Reader<'a> {
             let arg: char;
             loop {
                 let evt = self.readch();
-                if let Some(kevt) = evt.get_key() {
-                    if let Some(mut cs) = kevt.key.text_to_insert() {
-                        // TODO forward the whole key
-                        arg = cs.next().unwrap();
-                        break;
-                    }
+                if let Some(kevt) = evt.get_key()
+                    && let Some(mut cs) = kevt.key.text_to_insert()
+                {
+                    // TODO forward the whole key
+                    arg = cs.next().unwrap();
+                    break;
                 }
                 skipped.push(evt);
             }

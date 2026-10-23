@@ -217,12 +217,12 @@ fn native_file_access_checks_do_not_change_contents_or_timestamps() {
     );
     assert_eq!(fs::read(&file).unwrap(), b"preserved contents");
     assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), modified);
-    let mut permissions = fs::metadata(&file).unwrap().permissions();
+    let original_permissions = fs::metadata(&file).unwrap().permissions();
+    let mut permissions = original_permissions.clone();
     permissions.set_readonly(true);
-    fs::set_permissions(&file, permissions.clone()).unwrap();
-    let output = run(&format!("test -w {path}; echo readonly=$status"));
-    permissions.set_readonly(false);
     fs::set_permissions(&file, permissions).unwrap();
+    let output = run(&format!("test -w {path}; echo readonly=$status"));
+    fs::set_permissions(&file, original_permissions).unwrap();
     assert_eq!(output, "readonly=1\n");
 }
 

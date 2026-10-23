@@ -101,10 +101,10 @@ fn ifs(context: &mut (impl Context + ?Sized)) -> Result<Vec<u8>> {
 fn join(values: &[Vec<u8>], separator: Option<u8>) -> Vec<u8> {
     let mut result = Vec::new();
     for (i, value) in values.iter().enumerate() {
-        if i != 0 {
-            if let Some(c) = separator {
-                result.push(c);
-            }
+        if i != 0
+            && let Some(c) = separator
+        {
+            result.push(c);
         }
         result.extend_from_slice(value);
     }
@@ -853,55 +853,51 @@ fn match_pattern(
             }
             continue;
         };
-        if extended && b"?*+@!".contains(&token) && pattern.get(p + 1) == Some(&b'(') {
-            if let Some((end, alternatives)) = pattern_group(pattern, p) {
-                let starts = if token == b'*' || token == b'+' {
-                    let mut reached = std::collections::BTreeSet::new();
-                    let mut todo = vec![v];
-                    if token == b'*' {
-                        reached.insert(v);
+        if extended
+            && b"?*+@!".contains(&token)
+            && pattern.get(p + 1) == Some(&b'(')
+            && let Some((end, alternatives)) = pattern_group(pattern, p)
+        {
+            let starts = if token == b'*' || token == b'+' {
+                let mut reached = std::collections::BTreeSet::new();
+                let mut todo = vec![v];
+                if token == b'*' {
+                    reached.insert(v);
+                }
+                let mut explored = std::collections::HashSet::new();
+                while let Some(start) = todo.pop() {
+                    if !explored.insert(start) {
+                        continue;
                     }
-                    let mut explored = std::collections::HashSet::new();
-                    while let Some(start) = todo.pop() {
-                        if !explored.insert(start) {
-                            continue;
-                        }
-                        for count in boundaries(&value[start..], unicode) {
-                            let finish = start + count;
-                            if alternatives.iter().any(|alt| {
-                                match_pattern(
-                                    alt,
-                                    &value[start..finish],
-                                    unicode,
-                                    extended,
-                                    depth + 1,
-                                )
-                            }) {
-                                reached.insert(finish);
-                                if finish > start {
-                                    todo.push(finish);
-                                }
+                    for count in boundaries(&value[start..], unicode) {
+                        let finish = start + count;
+                        if alternatives.iter().any(|alt| {
+                            match_pattern(alt, &value[start..finish], unicode, extended, depth + 1)
+                        }) {
+                            reached.insert(finish);
+                            if finish > start {
+                                todo.push(finish);
                             }
                         }
                     }
-                    reached.into_iter().collect::<Vec<_>>()
-                } else {
-                    boundaries(&value[v..], unicode)
-                        .into_iter()
-                        .filter_map(|count| {
-                            let finish = v + count;
-                            let matched = alternatives.iter().any(|alt| {
-                                match_pattern(alt, &value[v..finish], unicode, extended, depth + 1)
-                            });
-                            ((token == b'?' && count == 0)
-                                || if token == b'!' { !matched } else { matched })
-                            .then_some(finish)
-                        })
-                        .collect()
-                };
-                pending.extend(starts.into_iter().map(|finish| (end, finish)));
-                continue;
-            }
+                }
+                reached.into_iter().collect::<Vec<_>>()
+            } else {
+                boundaries(&value[v..], unicode)
+                    .into_iter()
+                    .filter_map(|count| {
+                        let finish = v + count;
+                        let matched = alternatives.iter().any(|alt| {
+                            match_pattern(alt, &value[v..finish], unicode, extended, depth + 1)
+                        });
+                        ((token == b'?' && count == 0)
+                            || if token == b'!' { !matched } else { matched })
+                        .then_some(finish)
+                    })
+                    .collect()
+            };
+            pending.extend(starts.into_iter().map(|finish| (end, finish)));
+            continue;
         }
         match token {
             b'*' => {
@@ -982,10 +978,10 @@ fn character(input: &[u8], unicode: bool) -> (u32, usize) {
         0xf0..=0xf4 => 4,
         _ => 1,
     };
-    if let Some(bytes) = input.get(..size) {
-        if let Ok(text) = std::str::from_utf8(bytes) {
-            return (text.chars().next().unwrap() as u32, size);
-        }
+    if let Some(bytes) = input.get(..size)
+        && let Ok(text) = std::str::from_utf8(bytes)
+    {
+        return (text.chars().next().unwrap() as u32, size);
     }
     (u32::from(input[0]), 1)
 }
@@ -1000,28 +996,28 @@ fn bracket(pattern: &[u8], value: Option<u32>, unicode: bool) -> Option<(usize, 
         if pattern[at] == b']' && at != first {
             return Some((at + 1, matched != invert));
         }
-        if pattern[at..].starts_with(b"[:") {
-            if let Some(end) = pattern[at + 2..].windows(2).position(|s| s == b":]") {
-                let class = &pattern[at + 2..at + 2 + end];
-                matched |= value.and_then(char::from_u32).is_some_and(|c| match class {
-                    b"alnum" => c.is_alphanumeric(),
-                    b"alpha" => c.is_alphabetic(),
-                    b"ascii" => c.is_ascii(),
-                    b"blank" => c == ' ' || c == '\t',
-                    b"cntrl" => c.is_control(),
-                    b"digit" => c.is_ascii_digit(),
-                    b"graph" => !c.is_control() && !c.is_whitespace(),
-                    b"lower" => c.is_lowercase(),
-                    b"print" => !c.is_control(),
-                    b"punct" => c.is_ascii_punctuation(),
-                    b"space" => c.is_whitespace(),
-                    b"upper" => c.is_uppercase(),
-                    b"xdigit" => c.is_ascii_hexdigit(),
-                    _ => false,
-                });
-                at += end + 4;
-                continue;
-            }
+        if pattern[at..].starts_with(b"[:")
+            && let Some(end) = pattern[at + 2..].windows(2).position(|s| s == b":]")
+        {
+            let class = &pattern[at + 2..at + 2 + end];
+            matched |= value.and_then(char::from_u32).is_some_and(|c| match class {
+                b"alnum" => c.is_alphanumeric(),
+                b"alpha" => c.is_alphabetic(),
+                b"ascii" => c.is_ascii(),
+                b"blank" => c == ' ' || c == '\t',
+                b"cntrl" => c.is_control(),
+                b"digit" => c.is_ascii_digit(),
+                b"graph" => !c.is_control() && !c.is_whitespace(),
+                b"lower" => c.is_lowercase(),
+                b"print" => !c.is_control(),
+                b"punct" => c.is_ascii_punctuation(),
+                b"space" => c.is_whitespace(),
+                b"upper" => c.is_uppercase(),
+                b"xdigit" => c.is_ascii_hexdigit(),
+                _ => false,
+            });
+            at += end + 4;
+            continue;
         }
         if pattern[at] == b'\\' && at + 1 < pattern.len() {
             at += 1;
@@ -1100,12 +1096,13 @@ fn replace_pattern(
 
 fn unicode_locale(context: &mut (impl Context + ?Sized)) -> Result<bool> {
     for name in [b"LC_ALL".as_slice(), b"LC_CTYPE", b"LANG"] {
-        if let Some(locale) = context.get(name)? {
-            if !locale.is_empty() {
-                let locale = locale.to_ascii_lowercase();
-                return Ok(locale.windows(5).any(|s| s == b"utf-8")
-                    || locale.windows(4).any(|s| s == b"utf8"));
-            }
+        if let Some(locale) = context.get(name)?
+            && !locale.is_empty()
+        {
+            let locale = locale.to_ascii_lowercase();
+            return Ok(
+                locale.windows(5).any(|s| s == b"utf-8") || locale.windows(4).any(|s| s == b"utf8")
+            );
         }
     }
     Ok(false)

@@ -224,9 +224,7 @@ impl CompletionService {
         &mut self,
         callback: impl FnOnce(&mut Session, &mut CompletionHost<'_>) -> Result<T>,
     ) -> Option<T> {
-        if self.runtime.is_none() {
-            return None;
-        }
+        self.runtime.as_ref()?;
         let mut console = match CompletionInput::new() {
             Ok(console) => console,
             Err(error) => {
@@ -276,10 +274,10 @@ impl CompletionService {
     }
 
     fn collect_output(&mut self) {
-        if let Some(io) = &mut self.io {
-            if let Err(error) = io.collect(&mut self.pending) {
-                self.diagnostic(error);
-            }
+        if let Some(io) = &mut self.io
+            && let Err(error) = io.collect(&mut self.pending)
+        {
+            self.diagnostic(error);
         }
     }
 

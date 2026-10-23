@@ -403,12 +403,11 @@ impl Session {
         let mut files = vec![];
         let posix = runner.session.value(b"POSIXLY_CORRECT")?.is_some();
         if posix {
-            if runner.session.interactive {
-                if let Some(path) = runner.session.value(b"ENV")? {
-                    if !path.is_empty() {
-                        files.push(expand::expand_scalar(&path, &mut runner)?);
-                    }
-                }
+            if runner.session.interactive
+                && let Some(path) = runner.session.value(b"ENV")?
+                && !path.is_empty()
+            {
+                files.push(expand::expand_scalar(&path, &mut runner)?);
             }
         } else {
             if runner.session.login {
@@ -424,12 +423,11 @@ impl Session {
             } else if runner.session.interactive {
                 files.push(path_join(&home, b".bashrc")?);
             }
-            if !runner.session.interactive {
-                if let Some(path) = runner.session.value(b"BASH_ENV")? {
-                    if !path.is_empty() {
-                        files.push(expand::expand_scalar(&path, &mut runner)?);
-                    }
-                }
+            if !runner.session.interactive
+                && let Some(path) = runner.session.value(b"BASH_ENV")?
+                && !path.is_empty()
+            {
+                files.push(expand::expand_scalar(&path, &mut runner)?);
             }
         }
         for path in files {
@@ -1077,18 +1075,17 @@ impl<'a> Runner<'a> {
                     b"local",
                 ]
                 .contains(&name.as_slice())
-            }) {
-                if let Some((name, raw, append)) = assignment(&word.raw) {
-                    if raw.starts_with(b"(") && raw.ends_with(b")") {
-                        argv.push(word.raw.clone());
-                    } else {
-                        let value = expand::expand_scalar(raw, self)?;
-                        argv.push(
-                            [name, if append { b"+=".as_slice() } else { b"=" }, &value].concat(),
-                        );
-                    }
-                    continue;
+            }) && let Some((name, raw, append)) = assignment(&word.raw)
+            {
+                if raw.starts_with(b"(") && raw.ends_with(b")") {
+                    argv.push(word.raw.clone());
+                } else {
+                    let value = expand::expand_scalar(raw, self)?;
+                    argv.push(
+                        [name, if append { b"+=".as_slice() } else { b"=" }, &value].concat(),
+                    );
                 }
+                continue;
             }
             argv.extend(self.expand(word, Mode::Word)?);
         }
@@ -1350,15 +1347,14 @@ impl<'a> Runner<'a> {
                     i += 1;
                 }
                 let mut text = join(args[i..].iter().cloned(), b" ");
-                if escapes {
-                    if let Some(decoded) =
+                if escapes
+                    && let Some(decoded) =
                         crate::ansi_c::decode(&cstring(&text)?, crate::ansi_c::ECHO, true, |c| {
                             c.to_ascii_uppercase()
                         })
-                    {
-                        text = decoded.bytes;
-                        newline &= !decoded.saw_c;
-                    }
+                {
+                    text = decoded.bytes;
+                    newline &= !decoded.saw_c;
                 }
                 if newline {
                     text.push(b'\n');
@@ -1775,10 +1771,10 @@ impl<'a> Runner<'a> {
     }
 
     fn source_path(&self, file: &[u8]) -> Result<Vec<u8>> {
-        if !has_path_separator(file) {
-            if let Some(path) = self.find_command(file) {
-                return Ok(path);
-            }
+        if !has_path_separator(file)
+            && let Some(path) = self.find_command(file)
+        {
+            return Ok(path);
         }
         path_join(&self.session.cwd, file)
     }
@@ -1877,17 +1873,19 @@ impl<'a> Runner<'a> {
         if args[0] == b"!" {
             return self.test(&args[1..], conditional).map(|v| !v);
         }
-        if let Some(i) = args.iter().position(|a| a == b"||" || a == b"-o") {
-            if i > 0 {
-                return Ok(self.test(&args[..i], conditional)?
-                    || self.test(&args[i + 1..], conditional)?);
-            }
+        if let Some(i) = args.iter().position(|a| a == b"||" || a == b"-o")
+            && i > 0
+        {
+            return Ok(
+                self.test(&args[..i], conditional)? || self.test(&args[i + 1..], conditional)?
+            );
         }
-        if let Some(i) = args.iter().position(|a| a == b"&&" || a == b"-a") {
-            if i > 0 {
-                return Ok(self.test(&args[..i], conditional)?
-                    && self.test(&args[i + 1..], conditional)?);
-            }
+        if let Some(i) = args.iter().position(|a| a == b"&&" || a == b"-a")
+            && i > 0
+        {
+            return Ok(
+                self.test(&args[..i], conditional)? && self.test(&args[i + 1..], conditional)?
+            );
         }
         match args {
             [value] => Ok(!value.is_empty()),
@@ -2215,10 +2213,10 @@ impl<'a> Runner<'a> {
         let format = args
             .first()
             .ok_or_else(|| Error::new("printf: format required"))?;
-        if let Some(target) = &target {
-            if !valid_name(target) {
-                return Err(Error::new("printf: invalid variable name"));
-            }
+        if let Some(target) = &target
+            && !valid_name(target)
+        {
+            return Err(Error::new("printf: invalid variable name"));
         }
         let output = crate::builtins_printf::format(format, &args[1..], self)?;
         if let Some(target) = target {

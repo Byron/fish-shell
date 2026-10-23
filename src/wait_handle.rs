@@ -89,10 +89,10 @@ impl WaitHandleStore {
     /// Remove a given wait handle, if present in this store.
     pub fn remove(&mut self, wh: &WaitHandleRef) {
         // Note: this differs from remove_by_pid because we verify that the handle is the same.
-        if let Some(key) = self.cache.peek(&wh.pid) {
-            if Rc::ptr_eq(key, wh) {
-                self.cache.pop(&wh.pid);
-            }
+        if let Some(key) = self.cache.peek(&wh.pid)
+            && Rc::ptr_eq(key, wh)
+        {
+            self.cache.pop(&wh.pid);
         }
     }
 

@@ -408,12 +408,12 @@ fn highlight_word(
                     colors.roles[offset + index] = Role::Operator;
                 }
                 '}' | ']' => {
-                    if let Some(&(open, at)) = brackets.last() {
-                        if matches!((open, character), ('{', '}') | ('[', ']')) {
-                            brackets.pop();
-                            colors.roles[offset + index] = Role::Operator;
-                            colors.pairs.push((offset + at, offset + index));
-                        }
+                    if let Some(&(open, at)) = brackets.last()
+                        && matches!((open, character), ('{', '}') | ('[', ']'))
+                    {
+                        brackets.pop();
+                        colors.roles[offset + index] = Role::Operator;
+                        colors.pairs.push((offset + at, offset + index));
                     }
                 }
                 '*' => colors.roles[offset + index] = Role::Operator,

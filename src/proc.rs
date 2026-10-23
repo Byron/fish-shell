@@ -843,11 +843,11 @@ impl Job {
             // finished.
             let procs = self.processes();
             let p = procs.last().unwrap();
-            if p.status().normal_exited() || p.status().signal_exited() {
-                if let Some(statuses) = self.statuses() {
-                    parser.set_last_statuses(statuses);
-                    parser.libdata_mut().status_count += 1;
-                }
+            if (p.status().normal_exited() || p.status().signal_exited())
+                && let Some(statuses) = self.statuses()
+            {
+                parser.set_last_statuses(statuses);
+                parser.libdata_mut().status_count += 1;
             }
         }
     }
@@ -1380,10 +1380,10 @@ fn generate_job_exit_events(j: &Job, out_evts: &mut Vec<Event>) {
     // Generate proc and job exit events, except for foreground jobs originating in event handlers.
     if !j.from_event_handler() || !j.is_foreground() {
         // job_exit events.
-        if j.posts_job_exit_events() {
-            if let Some(last_pid) = j.last_pid() {
-                out_evts.push(Event::job_exit(last_pid, j.internal_job_id));
-            }
+        if j.posts_job_exit_events()
+            && let Some(last_pid) = j.last_pid()
+        {
+            out_evts.push(Event::job_exit(last_pid, j.internal_job_id));
         }
     }
     // Generate caller_exit events.

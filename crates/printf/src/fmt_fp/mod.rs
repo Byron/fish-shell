@@ -66,7 +66,7 @@ fn trailing_decimal_zeros(mut d: u32) -> i32 {
         return 9;
     }
     let mut zeros = 0;
-    while d % 10 == 0 {
+    while d.is_multiple_of(10) {
         zeros += 1;
         d /= 10;
     }

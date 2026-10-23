@@ -472,13 +472,13 @@ mod decoder {
                 return Some(replace_if_pua_encoded(c_0));
             }
             if let Some(c_1) = get_next_char() {
-                if ENCODED_PUA_CHAR_SECOND_CHAR_RANGE.contains(&c_1) {
-                    if let Some(c_2) = get_next_char() {
-                        if let Some(decoded_pua_char) = try_pua_decoding(&[c_0, c_1, c_2]) {
-                            return Some(decoded_pua_char);
-                        }
-                        self.buffer_front.push(c_2);
+                if ENCODED_PUA_CHAR_SECOND_CHAR_RANGE.contains(&c_1)
+                    && let Some(c_2) = get_next_char()
+                {
+                    if let Some(decoded_pua_char) = try_pua_decoding(&[c_0, c_1, c_2]) {
+                        return Some(decoded_pua_char);
                     }
+                    self.buffer_front.push(c_2);
                 }
                 self.buffer_front.push(c_1);
             }
@@ -501,16 +501,16 @@ mod decoder {
             if !PUA_ENCODE_RANGE.contains(&c_2) {
                 return Some(c_2);
             }
-            if let Some(c_1) = get_next_char() {
-                if PUA_ENCODE_RANGE.contains(&c_1) {
-                    if let Some(c_0) = get_next_char() {
-                        if let Some(decoded_pua_char) = try_pua_decoding(&[c_0, c_1, c_2]) {
-                            return Some(decoded_pua_char);
-                        }
-                        self.buffer_back.push(c_0);
+            if let Some(c_1) = get_next_char()
+                && PUA_ENCODE_RANGE.contains(&c_1)
+            {
+                if let Some(c_0) = get_next_char() {
+                    if let Some(decoded_pua_char) = try_pua_decoding(&[c_0, c_1, c_2]) {
+                        return Some(decoded_pua_char);
                     }
-                    self.buffer_back.push(c_1);
+                    self.buffer_back.push(c_0);
                 }
+                self.buffer_back.push(c_1);
             }
             // If decoding 3 consecutive PUA chars into the encoded PUA char fails, `c_2` should be
             // returned. `c_2` is in `PUA_ENCODE_RANGE` if we reach this point, so return the

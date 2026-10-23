@@ -269,7 +269,7 @@ impl Abbreviations {
                 else {
                     return Ok((1, String::new()));
                 };
-                entry.name = words[1].clone();
+                entry.name.clone_from(&words[1]);
                 self.compiled.take();
                 Ok((0, String::new()))
             }
@@ -377,10 +377,10 @@ impl Abbreviations {
             let command = &source[command_range.as_usize()];
             let mut ranges = vec![(command_range.as_usize(), Position::Command)];
             for argument in &statement.args_or_redirs {
-                if let ast::ArgumentOrRedirection::Argument(argument) = argument {
-                    if let Some(range) = argument.range() {
-                        ranges.push((range.as_usize(), Position::Anywhere));
-                    }
+                if let ast::ArgumentOrRedirection::Argument(argument) = argument
+                    && let Some(range) = argument.range()
+                {
+                    ranges.push((range.as_usize(), Position::Anywhere));
                 }
             }
             for (range, position) in ranges {

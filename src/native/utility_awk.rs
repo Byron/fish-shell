@@ -188,7 +188,9 @@ fn parse(args: &[String]) -> Result<Options> {
         index += 1;
     }
     if !source_files {
-        options.source = args.get(index).ok_or("no program provided")?.clone();
+        options
+            .source
+            .clone_from(args.get(index).ok_or("no program provided")?);
         index += 1;
     }
     for operand in &args[index..] {

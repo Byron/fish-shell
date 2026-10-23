@@ -155,10 +155,10 @@ impl Session {
                 return Err(Error::new(format!("read: {name} is read-only")));
             }
         }
-        if host.fd_is_terminal(0, &output.redirects, output.capture)? {
-            if let Some(prompt) = &options.prompt {
-                self.write(prompt.as_bytes(), host, output)?;
-            }
+        if host.fd_is_terminal(0, &output.redirects, output.capture)?
+            && let Some(prompt) = &options.prompt
+        {
+            self.write(prompt.as_bytes(), host, output)?;
         }
         let terminator = if options.null { b'\0' } else { b'\n' };
         let ifs = self.variable("IFS").map_or_else(WString::new, |variable| {

@@ -131,6 +131,33 @@ fn read_envelope(path: &Path) -> Result<Envelope> {
     decode(&bytes[MAGIC.len()..])
 }
 
+pub fn run(language: &str, path: &Path) -> Result<i32> {
+    let Envelope {
+        state,
+        jobs,
+        scratch,
+    } = read_envelope(path)?;
+    // Declared before the host so owned children and their resource leases are
+    // released first. The parent independently handles forced worker death.
+    let _scratch = super::temporary::EmptyDirectory(scratch);
+    let mut host = super::host::NativeHost::new_worker(jobs)?;
+    match language {
+        "rash" => {
+            // Validate before unlinking. The parent guard tolerates the file's removal.
+            let snapshot = rash::Session::decode_worker(&state)?;
+            std::fs::remove_file(path)?;
+            rash::Session::run_worker(snapshot, &mut host)
+        }
+        #[cfg(windows)]
+        "fish" => {
+            let snapshot = decode(&state)?;
+            std::fs::remove_file(path)?;
+            super::fish::Session::run_worker(snapshot, _scratch.0.clone(), &mut host)
+        }
+        _ => Err(Error::new("unknown interpreter snapshot language")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,34 +192,5 @@ mod tests {
         file.set_len(LIMIT + MAGIC.len() as u64 + 1).unwrap();
         drop(file);
         assert!(read_envelope(payload.path()).is_err());
-    }
-}
-
-pub fn run(language: &str, path: &Path) -> Result<i32> {
-    let Envelope {
-        state,
-        jobs,
-        scratch,
-    } = read_envelope(path)?;
-    // Declared before the host so owned children and their resource leases are
-    // released first. The parent independently handles forced worker death.
-    let _scratch = super::temporary::EmptyDirectory(scratch.clone());
-    #[cfg(not(windows))]
-    let _ = scratch;
-    let mut host = super::host::NativeHost::new_worker(jobs)?;
-    match language {
-        "rash" => {
-            // Validate before unlinking. The parent guard tolerates the file's removal.
-            let snapshot = rash::Session::decode_worker(&state)?;
-            std::fs::remove_file(path)?;
-            rash::Session::run_worker(snapshot, &mut host)
-        }
-        #[cfg(windows)]
-        "fish" => {
-            let snapshot = decode(&state)?;
-            std::fs::remove_file(path)?;
-            super::fish::Session::run_worker(snapshot, scratch, &mut host)
-        }
-        _ => Err(Error::new("unknown interpreter snapshot language")),
     }
 }

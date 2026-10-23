@@ -398,10 +398,10 @@ fn path_transform(
             continue;
         }
         let mut transformed = func(&arg);
-        if opts.no_ext {
-            if let Some(idx) = find_extension(&transformed) {
-                transformed.truncate(idx);
-            }
+        if opts.no_ext
+            && let Some(idx) = find_extension(&transformed)
+        {
+            transformed.truncate(idx);
         }
         if transformed != arg {
             n_transformed += 1;
@@ -571,13 +571,13 @@ fn path_change_extension(
 
         // Only add on the extension "." if we have something.
         // That way specifying an empty extension strips it.
-        if let Some(replacement) = opts.arg1 {
-            if !replacement.is_empty() {
-                if replacement.char_at(0) != '.' {
-                    ext.push('.');
-                }
-                ext.push_utfstr(replacement);
+        if let Some(replacement) = opts.arg1
+            && !replacement.is_empty()
+        {
+            if replacement.char_at(0) != '.' {
+                ext.push('.');
             }
+            ext.push_utfstr(replacement);
         }
         path_out(streams, &opts, ext);
 

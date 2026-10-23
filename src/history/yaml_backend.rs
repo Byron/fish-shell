@@ -301,10 +301,10 @@ pub fn offset_of_next_item_fish_2_0(
                     .or_else(|| parse_timestamp_line(LAST_ADDED_TIMESTAMP_KEY, interior_line));
             }
 
-            if let Some(timestamp_first_added) = timestamp_first_added.or(timestamp_last_added) {
-                if timestamp_first_added > cutoff_timestamp {
-                    continue;
-                }
+            if let Some(timestamp_first_added) = timestamp_first_added.or(timestamp_last_added)
+                && timestamp_first_added > cutoff_timestamp
+            {
+                continue;
             }
         }
 

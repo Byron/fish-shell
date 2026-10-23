@@ -114,10 +114,8 @@ impl Session {
                     .first()
                     .ok_or_else(|| Error::new("contains: expected a value"))?;
                 let found = args[1..].iter().position(|value| value == needle);
-                if index {
-                    if let Some(index) = found {
-                        self.write(format!("{}\n", index + 1).as_bytes(), host, output)?;
-                    }
+                if index && let Some(index) = found {
+                    self.write(format!("{}\n", index + 1).as_bytes(), host, output)?;
                 }
                 self.status = i32::from(found.is_none());
             }

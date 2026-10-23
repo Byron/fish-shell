@@ -171,7 +171,7 @@ fn write_part(
 
     if bash_buffer {
         let ranges = if range_is_single_token {
-            vec![range.clone()]
+            vec![range]
         } else {
             crate::bash_syntax::Syntax::for_input(
                 &buffer[range.clone()],
@@ -456,8 +456,8 @@ pub fn commandline(
             _ => panic!(),
         }
     }
-    if let Some(view) = &projected_view {
-        if w.argv.len() > w.wopt_index
+    if let Some(view) = &projected_view
+        && (w.argv.len() > w.wopt_index
             || append_mode.is_some()
             || function_mode
             || search_field_mode
@@ -467,11 +467,10 @@ pub fn commandline(
             || forward_jump
             || forward_jump_till
             || backward_jump
-            || backward_jump_till
-        {
-            view.rejected_edit.set(true);
-            return Err(STATUS_CMD_ERROR);
-        }
+            || backward_jump_till)
+    {
+        view.rejected_edit.set(true);
+        return Err(STATUS_CMD_ERROR);
     }
     if forward_jump || forward_jump_till || backward_jump || backward_jump_till {
         let direction = if forward_jump || forward_jump_till {

@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-use gix::bstr::ByteSlice;
+use gix::bstr::ByteSlice as _;
 
 type QueryResult = Result<Vec<u8>, i32>;
 
@@ -59,7 +59,7 @@ pub(crate) fn query(
             | "--noglob-pathspecs"
             | "--icase-pathspecs" => {}
             _ if arg.starts_with("-C") && arg.len() > 2 => {
-                routing_args.extend(["-C".into(), arg[2..].into()])
+                routing_args.extend(["-C".into(), arg[2..].into()]);
             }
             _ if arg.starts_with("-c") && arg.len() > 2 => overrides.push(arg[2..].into()),
             _ => return Err(2),
@@ -120,10 +120,10 @@ pub(crate) fn query(
         }
     }
     let mut repo = routing.open_with_config(&env_overrides);
-    if let Some(repo) = repo.as_mut() {
-        if !super::reference_storage_supported(repo) {
-            return Err(1);
-        }
+    if let Some(repo) = repo.as_mut()
+        && !super::reference_storage_supported(repo)
+    {
+        return Err(1);
     }
     let mut config = configuration(&routing.cwd, environment, repo.as_ref())?;
     for value in &env_overrides {
@@ -257,13 +257,12 @@ fn configuration(
     let mut paths = Vec::new();
     let no_system = variable("GIT_CONFIG_NOSYSTEM")
         .and_then(OsStr::to_str)
-        .map(|value| {
+        .is_some_and(|value| {
             !matches!(
                 value.to_ascii_lowercase().as_str(),
                 "" | "0" | "false" | "no" | "off"
             )
-        })
-        .unwrap_or(false);
+        });
     if !no_system {
         let path = variable("GIT_CONFIG_SYSTEM").or_else(|| {
             if cfg!(windows) {
@@ -789,7 +788,7 @@ mod tests {
             .append(true)
             .open(repo.git_dir().join("config"))
             .unwrap();
-        use std::io::Write;
+        use std::io::Write as _;
         writeln!(
             file,
             "[alias]\n same = local\n[remote \"origin\"]\n url = a\n fetch = one\n fetch = two"
@@ -967,7 +966,7 @@ mod tests {
             .append(true)
             .open(repo.git_dir().join("config"))
             .unwrap();
-        use std::io::Write;
+        use std::io::Write as _;
         writeln!(file, "[extensions]\n refStorage = reftable").unwrap();
         assert_eq!(
             query(

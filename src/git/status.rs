@@ -479,12 +479,12 @@ pub(super) fn query(
     arguments: &[String],
 ) -> Result<Vec<u8>, i32> {
     let mut options = Options::default();
-    if command == "status" {
-        if let Some(value) = repo.config_snapshot().string("status.showUntrackedFiles") {
-            options.untracked = gix::config::tree::Status::SHOW_UNTRACKED_FILES
-                .try_into_show_untracked_files(value)
-                .map_err(|_| 128)?;
-        }
+    if command == "status"
+        && let Some(value) = repo.config_snapshot().string("status.showUntrackedFiles")
+    {
+        options.untracked = gix::config::tree::Status::SHOW_UNTRACKED_FILES
+            .try_into_show_untracked_files(value)
+            .map_err(|_| 128)?;
     }
     let mut porcelain_v2 = false;
     let mut nul = false;
@@ -509,13 +509,13 @@ pub(super) fn query(
             "--porcelain=2" => porcelain_v2 = true,
             "-z" => nul = true,
             "-uno" | "--untracked-files=no" => {
-                options.untracked = gix::status::UntrackedFiles::None
+                options.untracked = gix::status::UntrackedFiles::None;
             }
             "-unormal" | "--untracked-files=normal" => {
-                options.untracked = gix::status::UntrackedFiles::Collapsed
+                options.untracked = gix::status::UntrackedFiles::Collapsed;
             }
             "-uall" | "--untracked-files=all" => {
-                options.untracked = gix::status::UntrackedFiles::Files
+                options.untracked = gix::status::UntrackedFiles::Files;
             }
             "--ignored" => options.ignored = true,
             "--ignore-submodules=all" => options.submodules = Some(Ignore::All),

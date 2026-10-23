@@ -493,7 +493,7 @@ impl Host for NativeHost {
         redirects: &[Redirection],
         capture: bool,
     ) -> Result<bool> {
-        use std::io::IsTerminal;
+        use std::io::IsTerminal as _;
         match &targets(redirects, capture)?[descriptor(fd)?] {
             Target::Inherited(0) => Ok(io::stdin().is_terminal()),
             Target::Inherited(1) => Ok(io::stdout().is_terminal()),
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn terminal_queries_resolve_capture_and_ordered_descriptor_duplication() {
-        use std::io::IsTerminal;
+        use std::io::IsTerminal as _;
         let mut host = NativeHost::new().unwrap();
         let stderr_is_terminal = std::io::stderr().is_terminal();
         assert!(!host.fd_is_terminal(1, &[], true).unwrap());
@@ -636,7 +636,7 @@ mod tests {
             action: RedirectAction::Dup(2),
         };
         assert_eq!(
-            host.fd_is_terminal(1, &[stdout_to_stderr.clone()], true)
+            host.fd_is_terminal(1, std::slice::from_ref(&stdout_to_stderr), true)
                 .unwrap(),
             stderr_is_terminal
         );
@@ -712,12 +712,12 @@ mod tests {
         };
         // MSYS2 Rust test executables load runtime DLLs through PATH. Preserve
         // that loader path while still checking that other parent exports clear.
-        if std::env::consts::OS == "cygwin" {
-            if let Some(path) = std::env::var_os("PATH") {
-                command
-                    .env
-                    .insert(b"PATH".to_vec(), rash::os::to_bytes(&path).unwrap());
-            }
+        if std::env::consts::OS == "cygwin"
+            && let Some(path) = std::env::var_os("PATH")
+        {
+            command
+                .env
+                .insert(b"PATH".to_vec(), rash::os::to_bytes(&path).unwrap());
         }
         if let Some((name, _)) = std::env::vars_os().find(|(name, _)| {
             let name = name.to_string_lossy();

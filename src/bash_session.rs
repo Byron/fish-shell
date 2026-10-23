@@ -504,65 +504,66 @@ impl rash::host::Host for FishHost<'_> {
                 "job control inside subshells requires process isolation and is not supported",
             ));
         }
-        if let [stage] = stages {
-            if stage.builtin && stage.argv.first().is_some_and(|arg| arg == b"kill") {
-                let mut args = &stage.argv[1..];
-                let mut signal = libc::SIGTERM;
-                if let Some(option) = args.first() {
-                    let name = if option == b"-s" {
-                        args = &args[1..];
-                        Some(
-                            args.first()
-                                .ok_or_else(|| rash::Error::new("kill: expected signal"))?
-                                .as_slice(),
-                        )
-                    } else if option != b"--" {
-                        option.strip_prefix(b"-")
+        if let [stage] = stages
+            && stage.builtin
+            && stage.argv.first().is_some_and(|arg| arg == b"kill")
+        {
+            let mut args = &stage.argv[1..];
+            let mut signal = libc::SIGTERM;
+            if let Some(option) = args.first() {
+                let name = if option == b"-s" {
+                    args = &args[1..];
+                    Some(
+                        args.first()
+                            .ok_or_else(|| rash::Error::new("kill: expected signal"))?
+                            .as_slice(),
+                    )
+                } else if option != b"--" {
+                    option.strip_prefix(b"-")
+                } else {
+                    None
+                };
+                if let Some(name) = name {
+                    signal = if name == b"0" {
+                        0
                     } else {
-                        None
+                        crate::signal::RawSignal::parse(&bytes2wcstring(name))
+                            .ok_or_else(|| rash::Error::new("kill: invalid signal"))?
+                            .code()
                     };
-                    if let Some(name) = name {
-                        signal = if name == b"0" {
-                            0
-                        } else {
-                            crate::signal::RawSignal::parse(&bytes2wcstring(name))
-                                .ok_or_else(|| rash::Error::new("kill: invalid signal"))?
-                                .code()
-                        };
-                        args = &args[1..];
-                    }
-                }
-                if args.first().is_some_and(|arg| arg == b"--") {
                     args = &args[1..];
                 }
-                if args.is_empty() {
-                    return Err(rash::Error::new("kill: expected process or job"));
-                }
-                let mut status = 0;
-                for arg in args {
-                    if self.signals.in_subshell() && arg.starts_with(b"%") {
-                        return Err(rash::Error::new(
-                            "job references inside subshells are not supported",
-                        ));
-                    }
-                    let pid = job_pid(self.parser, arg)?;
-                    let pid = std::str::from_utf8(&pid)
-                        .ok()
-                        .and_then(|pid| pid.parse::<i32>().ok())
-                        .ok_or_else(|| rash::Error::new("kill: invalid process id"))?;
-                    // The OS validates the requested signal and process/group id.
-                    if unsafe { libc::kill(pid, signal) } != 0 {
-                        status = 1;
-                        let message = format!("kill: {}\n", io::Error::last_os_error());
-                        self.write(2, message.as_bytes(), &stage.redirects, false)?;
-                    }
-                }
-                return Ok(RunResult {
-                    status,
-                    pipeline: vec![status],
-                    ..RunResult::default()
-                });
             }
+            if args.first().is_some_and(|arg| arg == b"--") {
+                args = &args[1..];
+            }
+            if args.is_empty() {
+                return Err(rash::Error::new("kill: expected process or job"));
+            }
+            let mut status = 0;
+            for arg in args {
+                if self.signals.in_subshell() && arg.starts_with(b"%") {
+                    return Err(rash::Error::new(
+                        "job references inside subshells are not supported",
+                    ));
+                }
+                let pid = job_pid(self.parser, arg)?;
+                let pid = std::str::from_utf8(&pid)
+                    .ok()
+                    .and_then(|pid| pid.parse::<i32>().ok())
+                    .ok_or_else(|| rash::Error::new("kill: invalid process id"))?;
+                // The OS validates the requested signal and process/group id.
+                if unsafe { libc::kill(pid, signal) } != 0 {
+                    status = 1;
+                    let message = format!("kill: {}\n", io::Error::last_os_error());
+                    self.write(2, message.as_bytes(), &stage.redirects, false)?;
+                }
+            }
+            return Ok(RunResult {
+                status,
+                pipeline: vec![status],
+                ..RunResult::default()
+            });
         }
         if stages.is_empty() {
             return Ok(RunResult::default());
@@ -830,28 +831,25 @@ impl rash::host::Host for FishHost<'_> {
         );
         parser.libdata_mut().bash_job_display = None;
         let mut statuses = parser.last_statuses();
-        if !background {
-            if let Some(job) = parser
+        if !background
+            && let Some(job) = parser
                 .jobs()
                 .iter()
                 .find(|job| job.is_stopped() && !old_jobs.iter().any(|old| Rc::ptr_eq(job, old)))
-            {
-                if let Some(stopped_statuses) = job.statuses() {
-                    statuses = stopped_statuses;
-                }
-            }
+            && let Some(stopped_statuses) = job.statuses()
+        {
+            statuses = stopped_statuses;
         }
-        if let Some(job) = final_job {
-            if result.status.is_success() {
-                if let Some(job_statuses) = job.statuses() {
-                    statuses = job_statuses;
-                }
-            }
+        if let Some(job) = final_job
+            && result.status.is_success()
+            && let Some(job_statuses) = job.statuses()
+        {
+            statuses = job_statuses;
         }
-        if result.status.is_success() {
-            if let Some(status) = wait_handle.and_then(|handle| handle.status()) {
-                statuses = Statuses::just(status);
-            }
+        if result.status.is_success()
+            && let Some(status) = wait_handle.and_then(|handle| handle.status())
+        {
+            statuses = Statuses::just(status);
         }
         let last_pid = if background {
             parser

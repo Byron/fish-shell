@@ -1,14 +1,6 @@
 //! Numeric parsing and math use the same platform-independent code as POSIX Fish.
-#[path = "../wutil/errors.rs"]
-mod errors;
-pub(super) use errors::Error;
-#[path = "../wutil/hex_float.rs"]
-mod hex_float;
 #[path = "../tinyexpr.rs"]
 mod tinyexpr;
-#[path = "../wutil/wcstod.rs"]
-#[allow(dead_code)]
-pub(super) mod wcstod;
 
 pub(super) fn math(args: &[String]) -> rash::Result<Vec<u8>> {
     let mut scale = 6usize;

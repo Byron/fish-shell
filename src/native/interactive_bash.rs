@@ -195,11 +195,11 @@ impl View {
                 continue;
             }
             if matches!(character, '<' | '>') {
-                if let Some(start) = frame.word {
-                    if source[start..at].chars().all(|c| c.is_ascii_digit()) {
-                        frame.word = None;
-                        result.paint(start..at, Role::Redirection);
-                    }
+                if let Some(start) = frame.word
+                    && source[start..at].chars().all(|c| c.is_ascii_digit())
+                {
+                    frame.word = None;
+                    result.paint(start..at, Role::Redirection);
                 }
                 result.finish_word(source, at, &mut frame);
                 let mut end = end;

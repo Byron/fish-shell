@@ -15,6 +15,7 @@ use crate::git::{GitRef, GitRefs, RefKind as GitRefKind};
 use rustyline::completion::Pair;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 #[path = "interactive_completion_paths.rs"]
@@ -536,7 +537,7 @@ impl CompletionEngine {
                     files = context.files;
                     match context.target {
                         Target::Subcommand => {
-                            add_choices(matches, subcommand_choices("git").unwrap())
+                            add_choices(matches, subcommand_choices("git").unwrap());
                         }
                         Target::Options(choices) => add_choices(matches, choices),
                         #[cfg(feature = "git")]
@@ -555,11 +556,11 @@ impl CompletionEngine {
                 if let Some(entries) = option_choices(command) {
                     add_choices(matches, entries);
                 }
-            } else if positional == 0 {
-                if let Some(entries) = subcommand_choices(command) {
-                    add_choices(matches, entries);
-                    files = false;
-                }
+            } else if positional == 0
+                && let Some(entries) = subcommand_choices(command)
+            {
+                add_choices(matches, entries);
+                files = false;
             }
             if command == "set"
                 && !options
@@ -1114,7 +1115,7 @@ impl Candidates {
             });
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "git"))]
     fn finish(self, quote: bool, append_space: bool) -> Vec<Pair> {
         self.finish_style(quote, append_space, false)
     }
@@ -1177,7 +1178,7 @@ fn quote_completion(value: &str) -> String {
     let mut result = String::new();
     for (index, character) in value.chars().enumerate() {
         if character.is_control() {
-            result.push_str(&format!("\\u{:04x}", character as u32));
+            write!(result, "\\u{:04x}", character as u32).unwrap();
             continue;
         }
         if !(character.is_alphanumeric()

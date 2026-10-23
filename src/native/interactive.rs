@@ -339,16 +339,16 @@ mod windows {
                 .build();
             let mut editor = rustyline::Editor::with_config(config).map_err(readline_error)?;
             editor.set_helper(Some(Completion::new(language)));
-            if language == "fish" {
-                if let Ok(printer) = editor.create_external_printer() {
-                    editor
-                        .helper()
-                        .unwrap()
-                        .service
-                        .lock()
-                        .unwrap()
-                        .set_printer(printer);
-                }
+            if language == "fish"
+                && let Ok(printer) = editor.create_external_printer()
+            {
+                editor
+                    .helper()
+                    .unwrap()
+                    .service
+                    .lock()
+                    .unwrap()
+                    .set_printer(printer);
             }
             let pager = editor.helper().unwrap().pager.clone();
             let abbreviations = Arc::clone(&editor.helper().unwrap().abbreviations);
@@ -568,10 +568,10 @@ mod windows {
             if !output.is_empty() {
                 use rash::host::Host as _;
                 // Rustyline has restored console modes and finished its frame.
-                if let Err(error) = runtime.host.write(2, &output, &[], false) {
-                    if result.is_ok() {
-                        result = Err(error);
-                    }
+                if let Err(error) = runtime.host.write(2, &output, &[], false)
+                    && result.is_ok()
+                {
+                    result = Err(error);
                 }
             }
             (runtime.session, runtime.host, result)

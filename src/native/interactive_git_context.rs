@@ -135,19 +135,19 @@ pub(super) fn context(args: &[String], current: &str) -> Option<Context> {
         } else if !state.separator && arg.starts_with('-') && arg != "-" {
             let (kind, attached, _) = option(command, arg)?;
             state.apply(kind);
-            if let Kind::Value(argument) = kind {
-                if attached.is_none() {
-                    index += 1;
-                    if args.get(index).is_none() {
-                        let (target, files) = argument.target();
-                        return Some(result(
-                            globals,
-                            target,
-                            files,
-                            String::new(),
-                            config_override,
-                        ));
-                    }
+            if let Kind::Value(argument) = kind
+                && attached.is_none()
+            {
+                index += 1;
+                if args.get(index).is_none() {
+                    let (target, files) = argument.target();
+                    return Some(result(
+                        globals,
+                        target,
+                        files,
+                        String::new(),
+                        config_override,
+                    ));
                 }
             }
         } else {

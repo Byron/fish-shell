@@ -764,10 +764,10 @@ impl RawSignal {
             }
         }
 
-        if let Ok(num) = fish_wcstoi(name) {
-            if num > 0 {
-                return Some(RawSignal::new(num));
-            }
+        if let Ok(num) = fish_wcstoi(name)
+            && num > 0
+        {
+            return Some(RawSignal::new(num));
         }
         None
     }

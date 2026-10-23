@@ -512,22 +512,22 @@ fn setup_user(global_exported_mode: EnvSetMode, vars: &EnvStack) {
         // is ok.
         // https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap03.html#tag_03_437
         // https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap03.html#tag_03_282
-        if let Ok(Some(userinfo)) = User::from_name(&user_var.as_string().to_string()) {
-            if userinfo.uid == uid {
-                // The uid matches but we still might need to set $HOME.
-                if vars.get_unless_empty(L!("HOME")).is_none() {
-                    if !userinfo.dir.is_empty() {
-                        vars.set_one(
-                            L!("HOME"),
-                            global_exported_mode,
-                            osstr2wcstring(userinfo.dir),
-                        );
-                    } else {
-                        vars.set_empty(L!("HOME"), global_exported_mode);
-                    }
+        if let Ok(Some(userinfo)) = User::from_name(&user_var.as_string().to_string())
+            && userinfo.uid == uid
+        {
+            // The uid matches but we still might need to set $HOME.
+            if vars.get_unless_empty(L!("HOME")).is_none() {
+                if !userinfo.dir.is_empty() {
+                    vars.set_one(
+                        L!("HOME"),
+                        global_exported_mode,
+                        osstr2wcstring(userinfo.dir),
+                    );
+                } else {
+                    vars.set_empty(L!("HOME"), global_exported_mode);
                 }
-                return;
             }
+            return;
         }
     }
 

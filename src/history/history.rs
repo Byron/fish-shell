@@ -42,7 +42,7 @@ use fish_wcstringutil::trim_in_place;
 use fish_widestring::{bytes2wcstring, cstr2wcstring, subslice_position};
 use lru::LruCache;
 use rand::RngExt as _;
-use std::os::unix::ffi::OsStringExt;
+use std::os::unix::ffi::OsStringExt as _;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet},
@@ -968,24 +968,24 @@ fn format_history_record(
     #[allow(deprecated)]
     let seconds = seconds as libc::time_t;
     let mut timestamp = MaybeUninit::uninit();
-    if let Some(show_time_format) = show_time_format.and_then(|s| CString::new(s).ok()) {
-        if !unsafe { libc::localtime_r(&seconds, timestamp.as_mut_ptr()).is_null() } {
-            const MAX_TIMESTAMP_LENGTH: usize = 100;
-            let mut timestamp_str = [0_u8; MAX_TIMESTAMP_LENGTH];
-            if unsafe {
-                libc::strftime(
-                    timestamp_str.as_mut_ptr().cast(),
-                    MAX_TIMESTAMP_LENGTH,
-                    show_time_format.as_ptr(),
-                    timestamp.as_ptr(),
-                )
-            } != 0
-            {
-                // SAFETY: strftime terminates the string with a null byte. If there is insufficient
-                // space, strftime returns 0.
-                let timestamp_cstr = CStr::from_bytes_until_nul(&timestamp_str).unwrap();
-                result.push_utfstr(&cstr2wcstring(timestamp_cstr));
-            }
+    if let Some(show_time_format) = show_time_format.and_then(|s| CString::new(s).ok())
+        && !unsafe { libc::localtime_r(&seconds, timestamp.as_mut_ptr()).is_null() }
+    {
+        const MAX_TIMESTAMP_LENGTH: usize = 100;
+        let mut timestamp_str = [0_u8; MAX_TIMESTAMP_LENGTH];
+        if unsafe {
+            libc::strftime(
+                timestamp_str.as_mut_ptr().cast(),
+                MAX_TIMESTAMP_LENGTH,
+                show_time_format.as_ptr(),
+                timestamp.as_ptr(),
+            )
+        } != 0
+        {
+            // SAFETY: strftime terminates the string with a null byte. If there is insufficient
+            // space, strftime returns 0.
+            let timestamp_cstr = CStr::from_bytes_until_nul(&timestamp_str).unwrap();
+            result.push_utfstr(&cstr2wcstring(timestamp_cstr));
         }
     }
 

@@ -62,10 +62,10 @@ fn resolve_description(
         return description;
     }
 
-    if let Some(f) = description_func {
-        if expand_flags.gen_descriptions {
-            return f(full_completion);
-        }
+    if let Some(f) = description_func
+        && expand_flags.gen_descriptions
+    {
+        return f(full_completion);
     }
 
     WString::new()

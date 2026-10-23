@@ -261,13 +261,13 @@ pub fn history(parser: &mut Parser, streams: &mut IoStreams, args: &mut [&wstr])
     // If a history command hasn't already been specified via a flag check the first word.
     // Note that this can be simplified after we eliminate allowing subcommands as flags.
     // See the TODO above regarding the `long_options` array.
-    if optind < args.len() {
-        if let Ok(subcmd) = HistCmd::try_from(args[optind]) {
-            if !set_hist_cmd(cmd, &mut opts.hist_cmd, subcmd, streams) {
-                return Err(STATUS_INVALID_ARGS);
-            }
-            optind += 1;
+    if optind < args.len()
+        && let Ok(subcmd) = HistCmd::try_from(args[optind])
+    {
+        if !set_hist_cmd(cmd, &mut opts.hist_cmd, subcmd, streams) {
+            return Err(STATUS_INVALID_ARGS);
         }
+        optind += 1;
     }
 
     // Every argument that we haven't consumed already is an argument for a subcommand (e.g., a

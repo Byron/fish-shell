@@ -248,10 +248,10 @@ pub fn function(
             }
             EventDescription::JobExit { pid: Some(pid), .. } => {
                 let wh = parser.wait_handles().get_by_pid(pid);
-                if let Some(wh) = wh {
-                    if wh.is_completed() {
-                        event::fire(parser, event::Event::job_exit(pid, wh.internal_job_id));
-                    }
+                if let Some(wh) = wh
+                    && wh.is_completed()
+                {
+                    event::fire(parser, event::Event::job_exit(pid, wh.internal_job_id));
                 }
             }
             _ => (),

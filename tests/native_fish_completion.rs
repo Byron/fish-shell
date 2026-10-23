@@ -635,7 +635,7 @@ fn callback_local_scopes_expire_but_caller_variables_can_be_updated() {
 
 #[test]
 fn cli_completions_do_not_consume_pending_standard_input() {
-    use std::io::Write;
+    use std::io::Write as _;
     use std::process::Stdio;
     let mut child = Command::new(env!("CARGO_BIN_EXE_fish"))
         .args(["-N", "-c", "complete -c native_probe -f; complete -c native_probe -n 'read stolen' -a wrong; complete -C 'native_probe '; read pending; echo input:$pending"])

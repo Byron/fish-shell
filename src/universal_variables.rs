@@ -445,7 +445,6 @@ mod tests {
         let flag_export_pathvar = EnvVarFlags {
             exported: true,
             pathvar: true,
-            ..Default::default()
         };
 
         let mut vars = VarTable::new();
@@ -522,7 +521,6 @@ mod tests {
         let flag_export_pathvar = EnvVarFlags {
             exported: true,
             pathvar: true,
-            ..Default::default()
         };
 
         let mut vars = VarTable::new();

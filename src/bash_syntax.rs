@@ -238,13 +238,13 @@ impl Syntax {
             };
             let start = self.positions[range.start + newline];
             let mut end = self.positions[range.end];
-            if let Some(last) = node.child(node.child_count().saturating_sub(1)) {
-                if matches!(last.kind(), "fi" | "done" | "esac" | "}" | ")") {
-                    let line_start = self.text[..last.start_byte()]
-                        .rfind('\n')
-                        .map_or(0, |i| i + 1);
-                    end = self.positions[line_start];
-                }
+            if let Some(last) = node.child(node.child_count().saturating_sub(1))
+                && matches!(last.kind(), "fi" | "done" | "esac" | "}" | ")")
+            {
+                let line_start = self.text[..last.start_byte()]
+                    .rfind('\n')
+                    .map_or(0, |i| i + 1);
+                end = self.positions[line_start];
             }
             for indent in &mut indents[start..end.max(start)] {
                 *indent += 1;
@@ -289,9 +289,7 @@ pub fn unquote_for_input(text: &wstr, fish: bool) -> Option<WString> {
         } else if quote.is_none() && matches!(c, '\'' | '"') {
             quote = Some(c);
         } else if c == '\\' && quote != Some('\'') {
-            let Some(next) = chars.next() else {
-                return None;
-            };
+            let next = chars.next()?;
             if quote == Some('"')
                 && (!matches!(next, '$' | '`' | '"' | '\\' | '\n') || fish && next == '`')
             {

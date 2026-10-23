@@ -102,12 +102,12 @@ impl Group {
             Signal::Continue => libc::SIGCONT,
             Signal::Check => 0,
         };
-        if let Some(pid) = self.pid {
-            if unsafe { libc::kill(-(pid as i32), signal) } != 0 {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() != Some(libc::ESRCH) {
-                    return Err(error);
-                }
+        if let Some(pid) = self.pid
+            && unsafe { libc::kill(-(pid as i32), signal) } != 0
+        {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(error);
             }
         }
         Ok(())

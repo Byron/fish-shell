@@ -69,7 +69,7 @@ impl Session {
                 match host.read_line(&output.redirects, false) {
                     Ok(ReadResult::Line(line)) if line.is_empty() => break,
                     Ok(ReadResult::Line(line) | ReadResult::Interrupted(line)) => {
-                        bytes.extend(line)
+                        bytes.extend(line);
                     }
                     Err(error) => return self.source_failure(1, &error.message, host, output),
                 }

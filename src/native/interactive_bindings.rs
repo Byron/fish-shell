@@ -309,20 +309,20 @@ impl Key {
             )
         };
         let mut chars = source.chars();
-        if let Some(character) = chars.next() {
-            if chars.next().is_none() {
-                return Self::from_event(character_key(character)).ok_or_else(unsupported);
-            }
+        if let Some(character) = chars.next()
+            && chars.next().is_none()
+        {
+            return Self::from_event(character_key(character)).ok_or_else(unsupported);
         }
         // Legacy Fish \eX syntax is one Alt key, not a two-key binding.
         if let Some(tail) = source.strip_prefix('\x1b') {
             let mut chars = tail.chars();
-            if let Some(character) = chars.next() {
-                if chars.next().is_none() {
-                    let mut event = character_key(character);
-                    event.1 |= Modifiers::ALT;
-                    return Self::from_event(event).ok_or_else(unsupported);
-                }
+            if let Some(character) = chars.next()
+                && chars.next().is_none()
+            {
+                let mut event = character_key(character);
+                event.1 |= Modifiers::ALT;
+                return Self::from_event(event).ok_or_else(unsupported);
             }
             return Err(unsupported());
         }
@@ -499,6 +499,11 @@ fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
+/// Use the same spelling in standalone key diagnostics and bind listings.
+pub(super) fn key_name(event: KeyEvent) -> Option<String> {
+    Key::from_event(event).map(|key| key.name())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,9 +648,4 @@ mod tests {
         assert!(Action::Execute.command().is_none());
         assert!(Action::HistorySearchBackward.command().is_none());
     }
-}
-
-/// Use the same spelling in standalone key diagnostics and bind listings.
-pub(super) fn key_name(event: KeyEvent) -> Option<String> {
-    Key::from_event(event).map(|key| key.name())
 }

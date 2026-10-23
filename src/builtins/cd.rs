@@ -36,10 +36,8 @@ pub(crate) fn try_chdir(parser: &mut Parser, dir: &wstr, deref_symlink: bool) ->
     parser.libdata_mut().cwd_fd = Some(Arc::new(fd));
 
     let mut new_pwd = norm_dir;
-    if deref_symlink {
-        if let Ok(real_dir) = wrealpath(&new_pwd) {
-            new_pwd = real_dir;
-        }
+    if deref_symlink && let Ok(real_dir) = wrealpath(&new_pwd) {
+        new_pwd = real_dir;
     }
 
     parser.set_var_and_fire(
@@ -92,10 +90,10 @@ fn try_cd_to_dirs(
         // we prefer *that* error because it's more specific
         if err == Errno::ENOENT {
             // If this is the first broken symlink, record it.
-            if broken_symlink.is_none() {
-                if let Some(symlink_dest) = wreadlink(&norm_dir) {
-                    broken_symlink = Some((norm_dir, symlink_dest));
-                }
+            if broken_symlink.is_none()
+                && let Some(symlink_dest) = wreadlink(&norm_dir)
+            {
+                broken_symlink = Some((norm_dir, symlink_dest));
             }
             if best_errno.is_none() {
                 best_errno = Some(err);
@@ -207,13 +205,11 @@ pub fn cd(parser: &mut Parser, streams: &mut IoStreams, args: &mut [&wstr]) -> B
 
     // If given -P, deref PWD before applying any CDPATH.
     let mut pwd = vars.get_pwd_slash();
-    if deref_symlink {
-        if let Ok(mut real_pwd) = wrealpath(&pwd) {
-            if !real_pwd.ends_with('/') {
-                real_pwd.push('/');
-            }
-            pwd = real_pwd;
+    if deref_symlink && let Ok(mut real_pwd) = wrealpath(&pwd) {
+        if !real_pwd.ends_with('/') {
+            real_pwd.push('/');
         }
+        pwd = real_pwd;
     }
 
     // Walk over candidate directories, respecting CDPATH.
@@ -228,20 +224,21 @@ pub fn cd(parser: &mut Parser, streams: &mut IoStreams, args: &mut [&wstr]) -> B
     // actual cwd via realpath("."). We only do this for arguments that explicitly refer to the
     // current directory; absolute paths and bare relative names are reported as
     // ordinary errors. zsh's `cd_try_chdir` has an equivalent fallback.
-    if err.error == Errno::ENOENT && is_relative_cd_path(dir_in) {
-        if let Ok(mut real_pwd) = wrealpath(L!(".")) {
-            if !real_pwd.ends_with('/') {
-                real_pwd.push('/');
-            }
-            if real_pwd != pwd {
-                let dirs = path_apply_cdpath(dir_in, &real_pwd, parser.vars());
-                // If the real PWD is different, then any new errors are likely to be better,
-                // so overwrite the old error.
-                err = match try_cd_to_dirs(parser, &dirs, deref_symlink) {
-                    Ok(res) => return Ok(res), // Success
-                    Err(err) => err,
-                };
-            }
+    if err.error == Errno::ENOENT
+        && is_relative_cd_path(dir_in)
+        && let Ok(mut real_pwd) = wrealpath(L!("."))
+    {
+        if !real_pwd.ends_with('/') {
+            real_pwd.push('/');
+        }
+        if real_pwd != pwd {
+            let dirs = path_apply_cdpath(dir_in, &real_pwd, parser.vars());
+            // If the real PWD is different, then any new errors are likely to be better,
+            // so overwrite the old error.
+            err = match try_cd_to_dirs(parser, &dirs, deref_symlink) {
+                Ok(res) => return Ok(res), // Success
+                Err(err) => err,
+            };
         }
     }
 

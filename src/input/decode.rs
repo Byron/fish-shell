@@ -696,10 +696,10 @@ pub(crate) trait InputEventQueuerExt: InputEventQueuer {
         };
         if key == SCROLL_CONTENT_UP_TERMINFO_CODE.as_bytes() {
             maybe_set_scroll_content_up_capability();
-        } else if key == XTGETTCAP_QUERY_OS_NAME.as_bytes() {
-            if let Some(value) = value {
-                TERMINAL_OS_NAME.get_or_init(|| Some(bytes2wcstring(&value)));
-            }
+        } else if key == XTGETTCAP_QUERY_OS_NAME.as_bytes()
+            && let Some(value) = value
+        {
+            TERMINAL_OS_NAME.get_or_init(|| Some(bytes2wcstring(&value)));
         }
         None
     }
@@ -832,7 +832,7 @@ impl<'a> std::fmt::Display for DisplayBytes<'a> {
 impl<'a> FloggableDisplay for DisplayBytes<'a> {}
 
 fn parse_hex(hex: &[u8]) -> Option<Vec<u8>> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return None;
     }
     let mut result = vec![0; hex.len() / 2];

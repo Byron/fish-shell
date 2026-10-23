@@ -1,5 +1,5 @@
 #![cfg(windows)]
-use std::io::Write;
+use std::io::Write as _;
 use std::process::{Command, Stdio};
 
 fn run(source: &str, input: &[u8]) -> std::process::Output {

@@ -11,185 +11,6 @@ pub(in crate::native) struct ReaderState {
     pub(in crate::native) actions: Vec<Action>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rash::host::{ReadResult, RunResult};
-
-    #[derive(Default)]
-    struct Capture(Vec<u8>);
-    impl Host for Capture {
-        fn run_pipeline(&mut self, _: &[Command], _: bool, _: bool) -> Result<RunResult> {
-            Err(Error::new("unexpected external command"))
-        }
-        fn change_dir(&mut self, _: &[u8]) -> Result<Vec<u8>> {
-            unreachable!()
-        }
-        fn read_line(&mut self, _: &[Redirection], _: bool) -> Result<ReadResult> {
-            unreachable!()
-        }
-        fn write(
-            &mut self,
-            _: i32,
-            bytes: &[u8],
-            _: &[Redirection],
-            capture: bool,
-        ) -> Result<Vec<u8>> {
-            if capture {
-                Ok(bytes.to_vec())
-            } else {
-                self.0.extend(bytes);
-                Ok(Vec::new())
-            }
-        }
-        fn cancelled(&self) -> bool {
-            false
-        }
-        fn jobs(&self) -> Vec<Vec<u8>> {
-            Vec::new()
-        }
-    }
-
-    #[test]
-    fn callback_edits_unicode_token_preserves_suffix_and_session_changes() {
-        let mut session = Session::new().unwrap();
-        let mut host = Capture::default();
-        let line = "echo 🐟 old";
-        let cursor = "echo 🐟".len();
-        let state = session.reader_callback(&["set -g callback_seen (commandline -ct); commandline -rt 🦀; commandline -C 5; commandline -i fish; commandline -f repaint".into()], line, cursor, &mut host).unwrap();
-        assert_eq!(state.line, "echo fish🦀 old");
-        assert_eq!(state.cursor, 9);
-        assert_eq!(session.values("callback_seen"), ["🐟"]);
-        assert_eq!(state.actions, [Action::Repaint]);
-        assert!(session.completion_line.is_none());
-        assert!(session.reader_state.is_none());
-    }
-
-    #[test]
-    fn append_preserves_cursor_and_queued_functions_preserve_order() {
-        let mut session = Session::new().unwrap();
-        let state = session
-            .reader_callback(
-                &[
-                    "commandline -a tail; commandline -f backward-char repaint".into(),
-                    "execute".into(),
-                ],
-                "echo ",
-                2,
-                &mut Capture::default(),
-            )
-            .unwrap();
-        assert_eq!(state.line, "echo tail");
-        assert_eq!(state.cursor, 2);
-        assert_eq!(
-            state.actions,
-            [Action::BackwardChar, Action::Repaint, Action::Execute]
-        );
-    }
-
-    #[test]
-    fn callback_queries_observe_edits_and_do_not_replace_command_status() {
-        let mut session = Session::new().unwrap();
-        session.status = 42;
-        let mut host = Capture::default();
-        session
-            .reader_callback(
-                &[
-                    "commandline -r 'echo changed'; set -g callback_line (commandline); false"
-                        .into(),
-                ],
-                "old",
-                3,
-                &mut host,
-            )
-            .unwrap();
-        assert_eq!(session.values("callback_line"), ["echo changed"]);
-        assert_eq!(session.status, 42);
-    }
-
-    #[test]
-    fn function_abbreviation_receives_token_and_falls_back_after_failure() {
-        let mut session = Session::new().unwrap();
-        let mut host = Capture::default();
-        session.eval("function make_abbr; set -g observed_token $argv[1]; printf 'echo %s' $argv[1]; end; function deny_abbr; return 1; end; abbr --add --regex 'g[0-9]+' --function make_abbr generated; abbr --add --regex 'g[0-9]+' --function deny_abbr declined", &mut host).unwrap();
-        let expansion = session
-            .reader_abbreviation("g42", 3, &mut host)
-            .unwrap()
-            .unwrap();
-        assert_eq!(expansion.text, "echo g42");
-        assert_eq!(session.values("observed_token"), ["g42"]);
-        assert_eq!(session.status, 0);
-        assert!(session.completion_line.is_none());
-    }
-
-    #[test]
-    fn nested_completion_cannot_edit_the_readers_buffer() {
-        let mut session = Session::new().unwrap();
-        session.reader_state = Some(ReaderState {
-            line: "original".into(),
-            cursor: 8,
-            actions: Vec::new(),
-        });
-        session.completion_depth = 1;
-        assert!(
-            session
-                .reader_commandline(&["-r".into(), "bad".into()])
-                .is_err()
-        );
-        assert_eq!(session.reader_state.unwrap().line, "original");
-    }
-
-    #[test]
-    fn prompts_receive_final_rendering_and_preserve_previous_status() {
-        let mut session = Session::new().unwrap();
-        let mut host = Capture::default();
-        session
-            .eval(
-                "function fish_prompt; printf '%s|%s' $status (string join , -- $argv); false; end",
-                &mut host,
-            )
-            .unwrap();
-        session.status = 42;
-        session.pipeline = vec![3, 42];
-        assert_eq!(
-            session
-                .render_reader_prompt("fish_prompt", true, &mut host)
-                .unwrap()
-                .as_deref(),
-            Some("42|--final-rendering")
-        );
-        assert_eq!(session.status, 42);
-        assert_eq!(session.pipeline, [3, 42]);
-        assert!(!session.input_mode_blocked);
-        assert!(!session.transient_prompt_enabled());
-        session
-            .eval("set -g fish_transient_prompt 1", &mut host)
-            .unwrap();
-        assert!(session.transient_prompt_enabled());
-    }
-
-    #[test]
-    fn startup_bindings_and_prompt_exit_keep_their_session_effects() {
-        let mut session = Session::new().unwrap();
-        let mut host = Capture::default();
-        session.eval("function fish_user_key_bindings; set -g hook_seen yes; bind ctrl-g 'commandline -i hook'; false; end", &mut host).unwrap();
-        session.status = 17;
-        session.pipeline = vec![0, 17];
-        session.initialize_reader_bindings(&mut host).unwrap();
-        assert_eq!(session.values("hook_seen"), ["yes"]);
-        assert_eq!(session.status, 17);
-        assert_eq!(session.pipeline, [0, 17]);
-        session
-            .eval("function fish_right_prompt; exit 23; end", &mut host)
-            .unwrap();
-        session
-            .render_reader_prompt("fish_right_prompt", false, &mut host)
-            .unwrap();
-        assert!(session.exit_requested());
-        assert_eq!(session.status, 23);
-    }
-}
-
 impl Session {
     pub(in crate::native) fn initialize_reader_bindings(
         &mut self,
@@ -466,5 +287,184 @@ impl Session {
         }
         self.status = 0;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rash::host::{ReadResult, RunResult};
+
+    #[derive(Default)]
+    struct Capture(Vec<u8>);
+    impl Host for Capture {
+        fn run_pipeline(&mut self, _: &[Command], _: bool, _: bool) -> Result<RunResult> {
+            Err(Error::new("unexpected external command"))
+        }
+        fn change_dir(&mut self, _: &[u8]) -> Result<Vec<u8>> {
+            unreachable!()
+        }
+        fn read_line(&mut self, _: &[Redirection], _: bool) -> Result<ReadResult> {
+            unreachable!()
+        }
+        fn write(
+            &mut self,
+            _: i32,
+            bytes: &[u8],
+            _: &[Redirection],
+            capture: bool,
+        ) -> Result<Vec<u8>> {
+            if capture {
+                Ok(bytes.to_vec())
+            } else {
+                self.0.extend(bytes);
+                Ok(Vec::new())
+            }
+        }
+        fn cancelled(&self) -> bool {
+            false
+        }
+        fn jobs(&self) -> Vec<Vec<u8>> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn callback_edits_unicode_token_preserves_suffix_and_session_changes() {
+        let mut session = Session::new().unwrap();
+        let mut host = Capture::default();
+        let line = "echo 🐟 old";
+        let cursor = "echo 🐟".len();
+        let state = session.reader_callback(&["set -g callback_seen (commandline -ct); commandline -rt 🦀; commandline -C 5; commandline -i fish; commandline -f repaint".into()], line, cursor, &mut host).unwrap();
+        assert_eq!(state.line, "echo fish🦀 old");
+        assert_eq!(state.cursor, 9);
+        assert_eq!(session.values("callback_seen"), ["🐟"]);
+        assert_eq!(state.actions, [Action::Repaint]);
+        assert!(session.completion_line.is_none());
+        assert!(session.reader_state.is_none());
+    }
+
+    #[test]
+    fn append_preserves_cursor_and_queued_functions_preserve_order() {
+        let mut session = Session::new().unwrap();
+        let state = session
+            .reader_callback(
+                &[
+                    "commandline -a tail; commandline -f backward-char repaint".into(),
+                    "execute".into(),
+                ],
+                "echo ",
+                2,
+                &mut Capture::default(),
+            )
+            .unwrap();
+        assert_eq!(state.line, "echo tail");
+        assert_eq!(state.cursor, 2);
+        assert_eq!(
+            state.actions,
+            [Action::BackwardChar, Action::Repaint, Action::Execute]
+        );
+    }
+
+    #[test]
+    fn callback_queries_observe_edits_and_do_not_replace_command_status() {
+        let mut session = Session::new().unwrap();
+        session.status = 42;
+        let mut host = Capture::default();
+        session
+            .reader_callback(
+                &[
+                    "commandline -r 'echo changed'; set -g callback_line (commandline); false"
+                        .into(),
+                ],
+                "old",
+                3,
+                &mut host,
+            )
+            .unwrap();
+        assert_eq!(session.values("callback_line"), ["echo changed"]);
+        assert_eq!(session.status, 42);
+    }
+
+    #[test]
+    fn function_abbreviation_receives_token_and_falls_back_after_failure() {
+        let mut session = Session::new().unwrap();
+        let mut host = Capture::default();
+        session.eval("function make_abbr; set -g observed_token $argv[1]; printf 'echo %s' $argv[1]; end; function deny_abbr; return 1; end; abbr --add --regex 'g[0-9]+' --function make_abbr generated; abbr --add --regex 'g[0-9]+' --function deny_abbr declined", &mut host).unwrap();
+        let expansion = session
+            .reader_abbreviation("g42", 3, &mut host)
+            .unwrap()
+            .unwrap();
+        assert_eq!(expansion.text, "echo g42");
+        assert_eq!(session.values("observed_token"), ["g42"]);
+        assert_eq!(session.status, 0);
+        assert!(session.completion_line.is_none());
+    }
+
+    #[test]
+    fn nested_completion_cannot_edit_the_readers_buffer() {
+        let mut session = Session::new().unwrap();
+        session.reader_state = Some(ReaderState {
+            line: "original".into(),
+            cursor: 8,
+            actions: Vec::new(),
+        });
+        session.completion_depth = 1;
+        assert!(
+            session
+                .reader_commandline(&["-r".into(), "bad".into()])
+                .is_err()
+        );
+        assert_eq!(session.reader_state.unwrap().line, "original");
+    }
+
+    #[test]
+    fn prompts_receive_final_rendering_and_preserve_previous_status() {
+        let mut session = Session::new().unwrap();
+        let mut host = Capture::default();
+        session
+            .eval(
+                "function fish_prompt; printf '%s|%s' $status (string join , -- $argv); false; end",
+                &mut host,
+            )
+            .unwrap();
+        session.status = 42;
+        session.pipeline = vec![3, 42];
+        assert_eq!(
+            session
+                .render_reader_prompt("fish_prompt", true, &mut host)
+                .unwrap()
+                .as_deref(),
+            Some("42|--final-rendering")
+        );
+        assert_eq!(session.status, 42);
+        assert_eq!(session.pipeline, [3, 42]);
+        assert!(!session.input_mode_blocked);
+        assert!(!session.transient_prompt_enabled());
+        session
+            .eval("set -g fish_transient_prompt 1", &mut host)
+            .unwrap();
+        assert!(session.transient_prompt_enabled());
+    }
+
+    #[test]
+    fn startup_bindings_and_prompt_exit_keep_their_session_effects() {
+        let mut session = Session::new().unwrap();
+        let mut host = Capture::default();
+        session.eval("function fish_user_key_bindings; set -g hook_seen yes; bind ctrl-g 'commandline -i hook'; false; end", &mut host).unwrap();
+        session.status = 17;
+        session.pipeline = vec![0, 17];
+        session.initialize_reader_bindings(&mut host).unwrap();
+        assert_eq!(session.values("hook_seen"), ["yes"]);
+        assert_eq!(session.status, 17);
+        assert_eq!(session.pipeline, [0, 17]);
+        session
+            .eval("function fish_right_prompt; exit 23; end", &mut host)
+            .unwrap();
+        session
+            .render_reader_prompt("fish_right_prompt", false, &mut host)
+            .unwrap();
+        assert!(session.exit_requested());
+        assert_eq!(session.status, 23);
     }
 }

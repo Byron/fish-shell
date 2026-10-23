@@ -652,10 +652,9 @@ impl Session {
             if opts.no_extension
                 && !value.contains(['\\', '/'])
                 && !matches!(value.as_str(), "." | "..")
+                && let Some(index) = value.rfind('.').filter(|&index| index != 0)
             {
-                if let Some(index) = value.rfind('.').filter(|&index| index != 0) {
-                    value.truncate(index);
-                }
+                value.truncate(index);
             }
             if operation == "normalize" && value.starts_with('-') {
                 value.insert_str(0, ".\\");

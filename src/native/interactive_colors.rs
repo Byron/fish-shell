@@ -163,10 +163,10 @@ impl Palette {
     pub(super) fn from_variables(variables: &BTreeMap<String, Vec<String>>) -> Self {
         let mut palette = Self::default();
         for (name, style) in &mut palette.styles {
-            if let Some(arguments) = variables.get(*name) {
-                if let Ok(parsed) = parse_style(arguments.iter().map(String::as_str)) {
-                    *style = parsed;
-                }
+            if let Some(arguments) = variables.get(*name)
+                && let Ok(parsed) = parse_style(arguments.iter().map(String::as_str))
+            {
+                *style = parsed;
             }
         }
         // Fish's keyword and option colors inherit their parent role when

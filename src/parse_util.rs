@@ -700,25 +700,25 @@ fn detect_errors_in_backgrounded_job(
             .expect("Should have found the job in the list");
 
         // Try getting the next job and check its decorator.
-        if let Some(next) = jlist.get(index + 1) {
-            if let Some(deco) = &next.decorator {
-                assert!(
-                    [ParseKeyword::And, ParseKeyword::Or].contains(&deco.keyword()),
-                    "Unexpected decorator keyword"
-                );
-                let deco_name = if deco.keyword() == ParseKeyword::And {
-                    L!("and")
-                } else {
-                    L!("or")
-                };
-                errored = append_syntax_error!(
-                    parse_errors,
-                    deco.source_range().start(),
-                    deco.source_range().length(),
-                    BOOL_AFTER_BACKGROUND_ERROR_MSG,
-                    deco_name
-                );
-            }
+        if let Some(next) = jlist.get(index + 1)
+            && let Some(deco) = &next.decorator
+        {
+            assert!(
+                [ParseKeyword::And, ParseKeyword::Or].contains(&deco.keyword()),
+                "Unexpected decorator keyword"
+            );
+            let deco_name = if deco.keyword() == ParseKeyword::And {
+                L!("and")
+            } else {
+                L!("or")
+            };
+            errored = append_syntax_error!(
+                parse_errors,
+                deco.source_range().start(),
+                deco.source_range().length(),
+                BOOL_AFTER_BACKGROUND_ERROR_MSG,
+                deco_name
+            );
         }
     }
     errored

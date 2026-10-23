@@ -206,10 +206,10 @@ pub fn exec_job(parser: &mut Parser, job: &Job, block_io: IoChain) -> bool {
 
     // Ok, at least one thing got launched.
     // Handle any deferred process.
-    if let Some(dp) = deferred_process {
-        if
+    if let Some(dp) = deferred_process
+        &&
         // Some other process already aborted our pipeline.
-        aborted_pipeline
+        (aborted_pipeline
             // The deferred proc itself failed to launch.
             || exec_process_in_job(
                 parser,
@@ -220,10 +220,9 @@ pub fn exec_job(parser: &mut Parser, job: &Job, block_io: IoChain) -> bool {
                 &PartialPipes::default(),
                 true,
             )
-            .is_err()
-        {
-            job.processes()[dp].mark_aborted_before_launch();
-        }
+            .is_err())
+    {
+        job.processes()[dp].mark_aborted_before_launch();
     }
 
     flogf!(
@@ -516,12 +515,11 @@ fn internal_exec(vars: &EnvStack, is_repainting: bool, j: &Job, block_io: IoChai
         if is_interactive_session() {
             let shlvl_var = vars.getf(L!("SHLVL"), EnvMode::GLOBAL_EXPORTED);
             let mut shlvl_str = L!("0").to_owned();
-            if let Some(shlvl_var) = shlvl_var {
-                if let Ok(shlvl) = fish_wcstol(&shlvl_var.as_string()) {
-                    if shlvl > 0 {
-                        shlvl_str = (shlvl - 1).to_wstring();
-                    }
-                }
+            if let Some(shlvl_var) = shlvl_var
+                && let Ok(shlvl) = fish_wcstol(&shlvl_var.as_string())
+                && shlvl > 0
+            {
+                shlvl_str = (shlvl - 1).to_wstring();
             }
             vars.set_one(
                 L!("SHLVL"),
@@ -624,24 +622,24 @@ fn run_internal_process(p: &Process, outdata: Vec<u8>, errdata: Vec<u8>, ios: &I
 
     exec_thread_pool().perform(move || {
         let mut status = f.success_status;
-        if !f.skip_out() {
-            if let Err(err) = write_loop(&f.src_outfd, &f.outdata) {
-                if err != Errno::EPIPE {
-                    perror_nix("write", err);
-                }
-                if status.is_success() {
-                    status = ProcStatus::from_exit_code(1);
-                }
+        if !f.skip_out()
+            && let Err(err) = write_loop(&f.src_outfd, &f.outdata)
+        {
+            if err != Errno::EPIPE {
+                perror_nix("write", err);
+            }
+            if status.is_success() {
+                status = ProcStatus::from_exit_code(1);
             }
         }
-        if !f.skip_err() {
-            if let Err(err) = write_loop(&f.src_errfd, &f.errdata) {
-                if err != Errno::EPIPE {
-                    perror_nix("write", err);
-                }
-                if status.is_success() {
-                    status = ProcStatus::from_exit_code(1);
-                }
+        if !f.skip_err()
+            && let Err(err) = write_loop(&f.src_errfd, &f.errdata)
+        {
+            if err != Errno::EPIPE {
+                perror_nix("write", err);
+            }
+            if status.is_success() {
+                status = ProcStatus::from_exit_code(1);
             }
         }
         f.internal_proc.mark_exited(status);
@@ -748,19 +746,18 @@ fn fork_child_for_process(
         PgroupPolicy::Inherit => None,
         PgroupPolicy::Join(pgid) => Some(pgid),
         PgroupPolicy::Lead => Some(pid),
-    } {
-        if let Err(err) = execute_setpgid(pid, pgid, is_parent) {
-            // Note this error is not fatal.
-            report_setpgid_error(
-                err,
-                is_parent,
-                pid,
-                pgid,
-                job_id,
-                &narrow_cmd,
-                &narrow_argv0,
-            );
-        }
+    } && let Err(err) = execute_setpgid(pid, pgid, is_parent)
+    {
+        // Note this error is not fatal.
+        report_setpgid_error(
+            err,
+            is_parent,
+            pid,
+            pgid,
+            job_id,
+            &narrow_cmd,
+            &narrow_argv0,
+        );
     }
 
     if !is_parent {

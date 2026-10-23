@@ -835,10 +835,11 @@ pub(super) fn next_input_event(
         // select() did not return an error, so we may have a readable fd.
         // The priority order is: uvars, stdin, ioport.
         // Check to see if we want a universal variable barrier.
-        if let Some(notifier_fd) = notifier_fd {
-            if fdset.test(notifier_fd) && notifier.notification_fd_became_readable(notifier_fd) {
-                return InputEventTrigger::UvarNotified;
-            }
+        if let Some(notifier_fd) = notifier_fd
+            && fdset.test(notifier_fd)
+            && notifier.notification_fd_became_readable(notifier_fd)
+        {
+            return InputEventTrigger::UvarNotified;
         }
 
         // Check stdin.

@@ -964,10 +964,10 @@ fn read_i(parser: &mut Parser) {
 
     // If we are the last reader, then kill remaining jobs before exiting.
     if reader_data_stack().is_empty() {
-        if let Some(session) = reader.parser.libdata().bash_session.clone() {
-            if let Err(error) = session.borrow_mut().finish(reader.parser) {
-                eprintf!("rash: %s\n", error.to_string());
-            }
+        if let Some(session) = reader.parser.libdata().bash_session.clone()
+            && let Err(error) = session.borrow_mut().finish(reader.parser)
+        {
+            eprintf!("rash: %s\n", error.to_string());
         }
         // Send the exit event and then commit to not executing any more fish script.
         EXIT_STATE.store(ExitState::RunningHandlers as u8, Ordering::Relaxed);
@@ -2247,10 +2247,10 @@ impl ReaderData {
     /// Apply the history search to the command line.
     fn update_command_line_from_history_search(&mut self) {
         assert!(self.history_search.active());
-        if let Some(transient_edit) = self.command_line_transient_edit.take() {
-            if transient_edit == TransientEdit::HistorySearch {
-                self.undo(EditableLineTag::Commandline);
-            }
+        if let Some(transient_edit) = self.command_line_transient_edit.take()
+            && transient_edit == TransientEdit::HistorySearch
+        {
+            self.undo(EditableLineTag::Commandline);
         }
         if !self.history_search.is_at_present() {
             let new_text = self.history_search.current_result().to_owned();
@@ -2739,16 +2739,15 @@ impl<'a> Reader<'a> {
         if EXIT_STATE.load(Ordering::Relaxed) != ExitState::FinishedHandlers as u8 {
             // The order of the two conditions below is important. Try to restore the mode
             // in all cases, but only complain if interactive.
-            if let Some(old_modes) = old_modes {
-                if let Err(err) = tcsetattr(
+            if let Some(old_modes) = old_modes
+                && let Err(err) = tcsetattr(
                     unsafe { BorrowedFd::borrow_raw(self.conf.inputfd) },
                     SetArg::TCSANOW,
                     &old_modes,
-                ) {
-                    if is_interactive_session() {
-                        perror_nix("tcsetattr", err);
-                    }
-                }
+                )
+                && is_interactive_session()
+            {
+                perror_nix("tcsetattr", err);
             }
             Outputter::stdoutput().borrow_mut().reset_text_face();
         }
@@ -3045,10 +3044,10 @@ impl<'a> Reader<'a> {
                             });
                             self.screen.set_position_in_viewport(whence, y);
                         }
-                        if let Some(background_color_query) = query.background_color {
-                            if let Some(background_color) = &background_color_query.result {
-                                self.parser.set_color_theme(Some(background_color));
-                            }
+                        if let Some(background_color_query) = query.background_color
+                            && let Some(background_color) = &background_color_query.result
+                        {
+                            self.parser.set_color_theme(Some(background_color));
                         }
                         self.blocking_query_mut()
                     }
@@ -4824,10 +4823,10 @@ impl ReaderData {
         // Update the cursor and command line.
         let mut cursor_pos = self.cycle_cursor_pos;
 
-        if let Some(transient_edit) = self.command_line_transient_edit.take() {
-            if transient_edit == TransientEdit::Pager {
-                self.undo(EditableLineTag::Commandline);
-            }
+        if let Some(transient_edit) = self.command_line_transient_edit.take()
+            && transient_edit == TransientEdit::Pager
+        {
+            self.undo(EditableLineTag::Commandline);
         }
 
         if let Some(completion) = self.pager.selected_completion(&self.current_page_rendering) {
@@ -6652,13 +6651,13 @@ fn check_for_orphaned_process(loop_count: usize, shell_pgid: NullablePid) -> boo
     // Try kill-0'ing the process whose pid corresponds to our process group ID. It's possible this
     // will fail because we don't have permission to signal it. But more likely it will fail because
     // it no longer exists, and we are orphaned.
-    if loop_count % 64 == 0 && signal::kill(shell_pgid, None) == Err(Errno::ESRCH) {
+    if loop_count.is_multiple_of(64) && signal::kill(shell_pgid, None) == Err(Errno::ESRCH) {
         we_think_we_are_orphaned = true;
     }
 
     // Try reading from the tty; if we get EIO we are orphaned. This is sort of bad because it
     // may block.
-    if !we_think_we_are_orphaned && loop_count % 128 == 0 {
+    if !we_think_we_are_orphaned && loop_count.is_multiple_of(128) {
         unsafe extern "C" {
             unsafe fn ctermid(buf: *mut c_char) -> *mut c_char;
         }
@@ -6850,7 +6849,7 @@ impl<'a> Reader<'a> {
             .chars()
             .next_back()
             .is_some_and(|c| matches!(c, ' ' | '\n'))
-            && count_preceding_backslashes(&text, text.len() - 1) % 2 == 0
+            && count_preceding_backslashes(&text, text.len() - 1).is_multiple_of(2)
         {
             text.pop();
         }
@@ -6951,8 +6950,9 @@ fn try_expand_wildcard(
     // Find the "current path component" by looking for an unescaped slash before and after
     // our position.
     // This is quite naive; for example it mishandles brackets.
-    let is_path_sep =
-        |offset| wc.char_at(offset) == '/' && count_preceding_backslashes(&wc, offset) % 2 == 0;
+    let is_path_sep = |offset| {
+        wc.char_at(offset) == '/' && count_preceding_backslashes(&wc, offset).is_multiple_of(2)
+    };
 
     let mut comp_start = position;
     while comp_start > 0 && !is_path_sep(comp_start - 1) {
@@ -7161,11 +7161,11 @@ pub fn completion_apply_to_command_line(
     let token_range = LazyCell::new(|| get_token_extent(command_line, cursor_pos).0);
 
     if flags.replaces_token() {
-        if let Some((suffix_type, suffix)) = suffix_builder.as_mut() {
-            if suffix_type.for_variable_name {
-                assert!(escape_flags.is_none());
-                maybe_add_slash(suffix, val_str);
-            }
+        if let Some((suffix_type, suffix)) = suffix_builder.as_mut()
+            && suffix_type.for_variable_name
+        {
+            assert!(escape_flags.is_none());
+            maybe_add_slash(suffix, val_str);
         }
         let mut move_cursor = 0;
         let range = &token_range;
@@ -7249,14 +7249,13 @@ pub fn completion_apply_to_command_line(
         if suffix_type.for_variable_name {
             maybe_add_slash(&mut suffix, &result[token_range.start..new_cursor_pos]);
         }
-        if suffix != '/' {
-            if let Some(quote) = quote {
-                if unescaped_quote(command_line, insertion_point) != Some(quote) {
-                    // This is a quoted parameter, first print a quote.
-                    result.insert(new_cursor_pos, quote);
-                    new_cursor_pos += 1;
-                }
-            }
+        if suffix != '/'
+            && let Some(quote) = quote
+            && unescaped_quote(command_line, insertion_point) != Some(quote)
+        {
+            // This is a quoted parameter, first print a quote.
+            result.insert(new_cursor_pos, quote);
+            new_cursor_pos += 1;
         }
 
         if !have_suffix {

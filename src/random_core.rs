@@ -3,19 +3,7 @@ use fish_wgetopt::{ArgType::NoArgument, WGetopter, WOption, wopt};
 use fish_widestring::prelude::*;
 use rand::{Rng as _, RngExt as _, SeedableRng as _};
 
-#[cfg(windows)]
-#[path = "wutil/errors.rs"]
-mod number_errors;
-#[cfg(windows)]
-pub use number_errors::Error;
-#[cfg(windows)]
-#[path = "wutil/wcstoi.rs"]
-#[allow(dead_code)]
-mod wcstoi;
-#[cfg(not(windows))]
 use crate::wutil::{fish_wcstol, fish_wcstoul};
-#[cfg(windows)]
-use wcstoi::{fish_wcstol, fish_wcstoul};
 
 // These are SmallRng's current engines, exposed directly so native workers can serialize them.
 #[cfg(any(target_pointer_width = "16", target_pointer_width = "32"))]

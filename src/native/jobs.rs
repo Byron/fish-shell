@@ -565,10 +565,8 @@ impl NativeHost {
                 State::Done(_) => {
                     let mut job = self.jobs.remove(&id).unwrap();
                     let mut result = job.result();
-                    if cancelled_wait {
-                        if let Ok(result) = &mut result {
-                            result.status = 130;
-                        }
+                    if cancelled_wait && let Ok(result) = &mut result {
+                        result.status = 130;
                     }
                     drop(terminal);
                     return result;
@@ -1045,17 +1043,17 @@ fn parse_kill(mut args: &[Vec<u8>]) -> Result<KillAction<'_>> {
         } else if let Some(name) = option.strip_prefix(b"--signal=") {
             signal = parse_signal(name)?;
             args = &args[1..];
-        } else if option != b"--" {
-            if let Some(name) = option.strip_prefix(b"-") {
-                signal = parse_signal(name).or_else(|error| {
-                    if let Some(name) = name.strip_prefix(b"s").filter(|name| !name.is_empty()) {
-                        parse_signal(name)
-                    } else {
-                        Err(error)
-                    }
-                })?;
-                args = &args[1..];
-            }
+        } else if option != b"--"
+            && let Some(name) = option.strip_prefix(b"-")
+        {
+            signal = parse_signal(name).or_else(|error| {
+                if let Some(name) = name.strip_prefix(b"s").filter(|name| !name.is_empty()) {
+                    parse_signal(name)
+                } else {
+                    Err(error)
+                }
+            })?;
+            args = &args[1..];
         }
     }
     if args.first().is_some_and(|arg| arg == b"--") {

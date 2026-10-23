@@ -585,12 +585,10 @@ fn throwing_main() -> i32 {
     // Stomp the exit status of any initialization commands (issue #635).
     parser.set_last_statuses(Statuses::just(STATUS_CMD_OK));
 
-    // TODO(MSRV>=1.88): feature(let_chains)
-    if let Some(path) = &opts.profile_startup_output {
-        if opts.profile_startup_output != opts.profile_output {
+    if let Some(path) = &opts.profile_startup_output
+        && opts.profile_startup_output != opts.profile_output {
             parser.flush_profiling(path);
         }
-    }
 
     PROFILING_ACTIVE.store(opts.profile_output.is_some());
 

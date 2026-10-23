@@ -1,5 +1,5 @@
 #![cfg(windows)]
-use std::io::Write;
+use std::io::Write as _;
 use std::process::{Command, Output, Stdio};
 
 mod string_cases;

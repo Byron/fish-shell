@@ -134,7 +134,7 @@ fn quote_fragment(value: &str, quote: Option<char>) -> String {
     for character in value.chars() {
         if character.is_control() {
             escaped.push(quote);
-            escaped.push_str(&format!("\\u{:04x}", character as u32));
+            write!(escaped, "\\u{:04x}", character as u32).unwrap();
             escaped.push(quote);
             continue;
         }

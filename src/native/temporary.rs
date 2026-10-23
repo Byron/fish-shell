@@ -28,7 +28,7 @@ impl Directory {
             let mut builder = std::fs::DirBuilder::new();
             #[cfg(unix)]
             {
-                use std::os::unix::fs::DirBuilderExt;
+                use std::os::unix::fs::DirBuilderExt as _;
                 builder.mode(0o700);
             }
             match builder.create(&path) {

@@ -165,7 +165,7 @@ impl Frame {
             row.text.push_str("\x1b[0m");
         }
         row.text
-            .extend(std::iter::repeat(' ').take(start - row.columns));
+            .extend(std::iter::repeat_n(' ', start - row.columns));
         row.text.push_str(&right_row.text);
         row.columns = columns - 1;
     }

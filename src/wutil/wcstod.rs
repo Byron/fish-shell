@@ -246,10 +246,10 @@ where
     let chars_no_uscore = chars.clone().filter(|&c| c != '_');
 
     // No spaces allowed after underscores.
-    if let Some(c) = chars_no_uscore.clone().next() {
-        if c.is_whitespace() {
-            return Err(Error::Empty);
-        }
+    if let Some(c) = chars_no_uscore.clone().next()
+        && c.is_whitespace()
+    {
+        return Err(Error::Empty);
     }
 
     let mut non_uscores_consumed = 0;

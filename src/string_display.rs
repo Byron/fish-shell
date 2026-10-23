@@ -26,9 +26,9 @@ impl WidthSettings {
                 .and_then(|value| value.trim().parse::<i32>().ok())
                 .unwrap_or(1)
                 .max(0) as usize,
-            emoji: emoji
-                .map(|value| value.trim().parse::<i32>().unwrap_or(1).clamp(1, 2))
-                .unwrap_or(2) as usize,
+            emoji: emoji.map_or(2, |value| {
+                value.trim().parse::<i32>().unwrap_or(1).clamp(1, 2)
+            }) as usize,
         }
     }
 

@@ -476,14 +476,14 @@ pub fn complete(parser: &mut Parser, streams: &mut IoStreams, argv: &mut [&wstr]
         }
     }
 
-    if !comp.is_empty() {
-        if let Err(err_text) = detect_errors_in_argument_list(&comp, cmd) {
-            let mut err = err_fmt!("%s: contains a syntax error", comp);
-            err.append_assign_to_msg('\n');
-            err.append_assign_to_msg(&err_text);
-            err.cmd(cmd).finish(streams);
-            return Err(STATUS_CMD_ERROR);
-        }
+    if !comp.is_empty()
+        && let Err(err_text) = detect_errors_in_argument_list(&comp, cmd)
+    {
+        let mut err = err_fmt!("%s: contains a syntax error", comp);
+        err.append_assign_to_msg('\n');
+        err.append_assign_to_msg(&err_text);
+        err.cmd(cmd).finish(streams);
+        return Err(STATUS_CMD_ERROR);
     }
 
     if do_complete {

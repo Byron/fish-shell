@@ -382,10 +382,10 @@ impl<'source, 'ast> PrettyPrinterState<'source, 'ast> {
                             if !job_cnt.variables.is_empty() {
                                 result.allow_escaped_newlines = true;
                             }
-                        } else if let Kind::NotStatement(not_stmt) = p.kind() {
-                            if !not_stmt.variables.is_empty() {
-                                result.allow_escaped_newlines = true;
-                            }
+                        } else if let Kind::NotStatement(not_stmt) = p.kind()
+                            && !not_stmt.variables.is_empty()
+                        {
+                            result.allow_escaped_newlines = true;
                         }
                     }
                     _ => (),
@@ -416,7 +416,7 @@ impl<'source, 'ast> PrettyPrinterState<'source, 'ast> {
         while idx >= 0 && self.output.as_char_slice()[usize::try_from(idx).unwrap()] == '\n' {
             let backslashes =
                 count_preceding_backslashes(self.source, usize::try_from(idx).unwrap());
-            if backslashes % 2 == 0 {
+            if backslashes.is_multiple_of(2) {
                 // Not escaped.
                 return false;
             }

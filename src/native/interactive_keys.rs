@@ -25,22 +25,22 @@ impl SuggestionKey {
     /// only the preset arrow bindings preserve vi's ordinary command map.
     pub(super) fn command(&self, n: RepeatCount, ctx: &EventContext<'_>) -> Cmd {
         let n = n.max(1);
-        if ctx.pos() == ctx.line().len() {
-            if let Some(hint) = ctx.hint_text().filter(|hint| !hint.is_empty()) {
-                return if self.word {
-                    // Cmd::Insert uses vi's paste cursor rule even in insert
-                    // mode. Completion inserts at an exact byte position and
-                    // keeps the cursor after the accepted word.
-                    self.pager.queue_completion(
-                        ctx.line(),
-                        ctx.pos(),
-                        ctx.pos(),
-                        suggestion_word(hint).into(),
-                    )
-                } else {
-                    Cmd::CompleteHint
-                };
-            }
+        if ctx.pos() == ctx.line().len()
+            && let Some(hint) = ctx.hint_text().filter(|hint| !hint.is_empty())
+        {
+            return if self.word {
+                // Cmd::Insert uses vi's paste cursor rule even in insert
+                // mode. Completion inserts at an exact byte position and
+                // keeps the cursor after the accepted word.
+                self.pager.queue_completion(
+                    ctx.line(),
+                    ctx.pos(),
+                    ctx.pos(),
+                    suggestion_word(hint).into(),
+                )
+            } else {
+                Cmd::CompleteHint
+            };
         }
         Cmd::Move(if self.word {
             Movement::ForwardWord(n, At::AfterEnd, Word::Emacs)
@@ -66,17 +66,17 @@ impl ConditionalEventHandler for EndOfLineKey {
 
 impl EndOfLineKey {
     pub(super) fn command(&self, ctx: &EventContext<'_>) -> Cmd {
-        if ctx.pos() == ctx.line().len() {
-            if let Some(hint) = ctx.hint_text().filter(|hint| !hint.is_empty()) {
-                return match hint.split_once('\n') {
-                    Some(("", _)) => Cmd::Noop,
-                    Some((line, _)) => {
-                        self.pager
-                            .queue_completion(ctx.line(), ctx.pos(), ctx.pos(), line.into())
-                    }
-                    None => Cmd::CompleteHint,
-                };
-            }
+        if ctx.pos() == ctx.line().len()
+            && let Some(hint) = ctx.hint_text().filter(|hint| !hint.is_empty())
+        {
+            return match hint.split_once('\n') {
+                Some(("", _)) => Cmd::Noop,
+                Some((line, _)) => {
+                    self.pager
+                        .queue_completion(ctx.line(), ctx.pos(), ctx.pos(), line.into())
+                }
+                None => Cmd::CompleteHint,
+            };
         }
         // The pager wrapper has dismissed a display-only menu. Moving at an
         // existing line end would not repaint, so explicitly erase its rows.

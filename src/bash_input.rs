@@ -75,12 +75,12 @@ impl Projection {
                 .iter()
                 .filter(|w| w.source.start >= range.start)
                 .collect::<Vec<_>>();
-            if let Some(word) = words.first() {
-                if self.source_cursor > word.source.end {
-                    let name = crate::bash_syntax::unquote(&self.source[word.source.clone()]);
-                    if name.is_some_and(|n| state.aliases.contains_key(&n)) {
-                        return Err(Unsupported::Expansion);
-                    }
+            if let Some(word) = words.first()
+                && self.source_cursor > word.source.end
+            {
+                let name = crate::bash_syntax::unquote(&self.source[word.source.clone()]);
+                if name.is_some_and(|n| state.aliases.contains_key(&n)) {
+                    return Err(Unsupported::Expansion);
                 }
             }
         }
@@ -780,10 +780,10 @@ mod tests {
                 "{source}: {candidates:?}"
             );
             for c in candidates {
-                if let Ok((applied, _)) = p.apply(&c, false) {
-                    if source.find(L!("${repo}")).is_some() {
-                        assert!(applied.find(L!("${repo}")).is_some());
-                    }
+                if let Ok((applied, _)) = p.apply(&c, false)
+                    && source.find(L!("${repo}")).is_some()
+                {
+                    assert!(applied.find(L!("${repo}")).is_some());
                 }
             }
         }
@@ -997,8 +997,8 @@ mod tests {
                     .unwrap();
                 projected.push(start.elapsed().as_micros());
             }
-            direct.sort();
-            projected.sort();
+            direct.sort_unstable();
+            projected.sort_unstable();
             eprintln!(
                 "completion latency us, {text}: direct p50={} p95={}; projected p50={} p95={}",
                 direct[12], direct[23], projected[12], projected[23]

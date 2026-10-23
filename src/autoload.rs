@@ -109,10 +109,10 @@ pub fn function_names(paths: &[WString], get_hidden: bool) -> HashSet<WString> {
                 continue;
             };
             while let Some(entry) = directory.next() {
-                if let Ok(entry) = entry {
-                    if !entry.is_dir() {
-                        insert(&mut names, &entry.name, get_hidden);
-                    }
+                if let Ok(entry) = entry
+                    && !entry.is_dir()
+                {
+                    insert(&mut names, &entry.name, get_hidden);
                 }
             }
         }
@@ -125,7 +125,7 @@ pub fn function_names(paths: &[WString], get_hidden: bool) -> HashSet<WString> {
                 if !entry.path().is_dir() {
                     insert(
                         &mut names,
-                        &fish_widestring::osstr2wcstring(&entry.file_name()),
+                        &fish_widestring::osstr2wcstring(entry.file_name()),
                         get_hidden,
                     );
                 }
@@ -384,11 +384,11 @@ impl Autoload {
         };
 
         // Is this file the same as what we previously autoloaded?
-        if let Some(loaded_file) = self.autoloaded_files.get(cmd) {
-            if loaded_file.as_ref() == file_id {
-                // The file has been autoloaded and is unchanged.
-                return AutoloadResult::Loaded;
-            }
+        if let Some(loaded_file) = self.autoloaded_files.get(cmd)
+            && loaded_file.as_ref() == file_id
+        {
+            // The file has been autoloaded and is unchanged.
+            return AutoloadResult::Loaded;
         }
 
         // We're going to (tell our caller to) autoload this command.

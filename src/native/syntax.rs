@@ -17,7 +17,7 @@ pub mod parser_keywords;
 pub mod redirection;
 #[path = "../tokenizer.rs"]
 pub mod tokenizer;
-#[path = "../wutil/printf.rs"]
+#[path = "wutil.rs"]
 pub mod wutil;
 
 pub mod prelude {

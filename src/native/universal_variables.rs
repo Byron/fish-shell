@@ -356,14 +356,14 @@ mod tests {
         let mut store = directory.store();
         store.update("previous", |_| value("cached")).unwrap();
         let before = fs::read(directory.path()).unwrap();
-        let mut permissions = fs::metadata(directory.path()).unwrap().permissions();
+        let original_permissions = fs::metadata(directory.path()).unwrap().permissions();
+        let mut permissions = original_permissions.clone();
         permissions.set_readonly(true);
-        fs::set_permissions(directory.path(), permissions.clone()).unwrap();
+        fs::set_permissions(directory.path(), permissions).unwrap();
         let mut reader = directory.store();
         reader.refresh().unwrap();
         let failed = reader.update("previous", |_| value("new"));
-        permissions.set_readonly(false);
-        fs::set_permissions(directory.path(), permissions).unwrap();
+        fs::set_permissions(directory.path(), original_permissions).unwrap();
         assert!(failed.is_err());
         assert_eq!(reader.vars, store.vars);
         assert_eq!(fs::read(directory.path()).unwrap(), before);

@@ -320,10 +320,10 @@ pub fn path_get_cdpath(dir: &wstr, wd: &wstr, vars: &dyn Environment) -> Option<
     let paths = path_apply_cdpath(dir, wd, vars);
 
     for a_dir in paths {
-        if let Ok(md) = wstat(&a_dir) {
-            if md.is_dir() {
-                return Some(a_dir);
-            }
+        if let Ok(md) = wstat(&a_dir)
+            && md.is_dir()
+        {
+            return Some(a_dir);
         }
     }
 

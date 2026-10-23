@@ -103,72 +103,69 @@ pub fn r#type(parser: &mut Parser, streams: &mut IoStreams, argv: &mut [&wstr]) 
     let optind = w.wopt_index;
     for arg in argv.iter().take(argc).skip(optind) {
         let mut found = 0;
-        if !opts.force_path && !opts.no_functions {
-            if let Some(props) = function::get_props_autoload(arg, parser) {
-                found += 1;
-                res = true;
-                // Early out - query means *any of the args exists*.
-                if opts.query {
-                    return Ok(SUCCESS);
-                }
-                if !opts.get_type {
-                    let path = props.definition_file().unwrap_or(L!(""));
-                    let mut comment = WString::new();
+        if !opts.force_path
+            && !opts.no_functions
+            && let Some(props) = function::get_props_autoload(arg, parser)
+        {
+            found += 1;
+            res = true;
+            // Early out - query means *any of the args exists*.
+            if opts.query {
+                return Ok(SUCCESS);
+            }
+            if !opts.get_type {
+                let path = props.definition_file().unwrap_or(L!(""));
+                let mut comment = WString::new();
 
-                    if path.is_empty() {
-                        comment.push_utfstr(&wgettext!("Defined interactively"));
-                    } else if path == "-" {
-                        comment.push_utfstr(&wgettext!("Defined via `source`"));
+                if path.is_empty() {
+                    comment.push_utfstr(&wgettext!("Defined interactively"));
+                } else if path == "-" {
+                    comment.push_utfstr(&wgettext!("Defined via `source`"));
+                } else {
+                    let lineno: i32 = props.definition_lineno();
+                    comment.push_utfstr(&wgettext_fmt!("Defined in %s @ line %d", path, lineno));
+                }
+
+                if opts.path {
+                    if let Some(orig_path) = props.definition_file() {
+                        streams.out.appendln(orig_path);
                     } else {
-                        let lineno: i32 = props.definition_lineno();
-                        comment.push_utfstr(&wgettext_fmt!(
-                            "Defined in %s @ line %d",
-                            path,
-                            lineno
-                        ));
+                        streams.out.appendln(path);
+                    }
+                } else if !opts.short_output {
+                    streams.out.append(&sprintf!(
+                        "%s %s\n",
+                        wgettext_fmt!("%s is a function", arg),
+                        wgettext!("with definition")
+                    ));
+                    let mut def = WString::new();
+                    def.push_utfstr(&sprintf!(
+                        "# %s\n%s",
+                        comment,
+                        props.annotated_definition(arg)
+                    ));
+                    if props.definition_file().is_none() {
+                        def = apply_indents(&def, &compute_indents(&def));
                     }
 
-                    if opts.path {
-                        if let Some(orig_path) = props.definition_file() {
-                            streams.out.appendln(orig_path);
-                        } else {
-                            streams.out.appendln(path);
-                        }
-                    } else if !opts.short_output {
-                        streams.out.append(&sprintf!(
-                            "%s %s\n",
-                            wgettext_fmt!("%s is a function", arg),
-                            wgettext!("with definition")
-                        ));
-                        let mut def = WString::new();
-                        def.push_utfstr(&sprintf!(
-                            "# %s\n%s",
-                            comment,
-                            props.annotated_definition(arg)
-                        ));
-                        if props.definition_file().is_none() {
-                            def = apply_indents(&def, &compute_indents(&def));
-                        }
-
-                        if opts.color.enabled(streams) {
-                            streams.out.append(&bytes2wcstring(&highlight_and_colorize(
-                                &def,
-                                &mut parser.context(),
-                            )));
-                        } else {
-                            streams.out.append(&def);
-                        }
+                    if opts.color.enabled(streams) {
+                        streams.out.append(&bytes2wcstring(&highlight_and_colorize(
+                            &def,
+                            &mut parser.context(),
+                        )));
                     } else {
-                        streams.out.append(&wgettext_fmt!("%s is a function", arg));
-                        streams.out.append(" ");
-                        streams.out.appendln(&wgettext_fmt!("(%s)", comment));
+                        streams.out.append(&def);
                     }
-                } else if opts.get_type {
-                    streams.out.appendln(L!("function"));
+                } else {
+                    streams.out.append(&wgettext_fmt!("%s is a function", arg));
+                    streams.out.append(" ");
+                    streams.out.appendln(&wgettext_fmt!("(%s)", comment));
                 }
-                if !opts.all {
-                    continue;
-                }
+            } else if opts.get_type {
+                streams.out.appendln(L!("function"));
+            }
+            if !opts.all {
+                continue;
             }
         }
 

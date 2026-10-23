@@ -57,14 +57,13 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        if let (Ok(root), Ok(temp)) = (self.0.canonicalize(), std::env::temp_dir().canonicalize()) {
-            if root.parent() == Some(temp.as_path())
-                && root
-                    .file_name()
-                    .is_some_and(|name| name.to_string_lossy().starts_with("fish-native-capture-"))
-            {
-                let _ = std::fs::remove_dir_all(root);
-            }
+        if let (Ok(root), Ok(temp)) = (self.0.canonicalize(), std::env::temp_dir().canonicalize())
+            && root.parent() == Some(temp.as_path())
+            && root
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("fish-native-capture-"))
+        {
+            let _ = std::fs::remove_dir_all(root);
         }
     }
 }

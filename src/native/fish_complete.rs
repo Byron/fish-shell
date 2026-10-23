@@ -5,7 +5,7 @@ use crate::tokenizer::{TokFlags, TokenType, Tokenizer};
 use fish_wcstringutil::escape::{UnescapeFlags, UnescapeStringStyle, unescape_string};
 use fish_wgetopt::{ArgType, WGetopter, WOption, wopt};
 use fish_widestring::L;
-use std::io::IsTerminal;
+use std::io::IsTerminal as _;
 
 impl Session {
     pub(super) fn complete_builtin(
@@ -390,7 +390,7 @@ impl Session {
                             self.scopes.pop();
                             let enabled = self.status == 0;
                             self.status = status;
-                            self.pipeline = pipeline.clone();
+                            self.pipeline.clone_from(&pipeline);
                             result?;
                             conditions.insert(key, enabled);
                             enabled
@@ -418,7 +418,7 @@ impl Session {
                         }
                     }
                     self.status = status;
-                    self.pipeline = pipeline.clone();
+                    self.pipeline.clone_from(&pipeline);
                     Ok(Some(values))
                 },
             )
@@ -582,7 +582,7 @@ impl Session {
                         });
                         match expanded {
                             Ok(words) if values.len().saturating_add(words.len()) <= 512 => {
-                                values.extend(words)
+                                values.extend(words);
                             }
                             _ => values.push(raw),
                         }

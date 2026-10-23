@@ -318,10 +318,10 @@ fn is_potential_path(
         // 2. If the cursor is not at the argument, it means the user is definitely not typing it,
         //    so we can skip the prefix-match.
         if must_be_full_dir || !at_cursor {
-            if let Ok(md) = wstat(abs_path) {
-                if !at_cursor || md.file_type().is_dir() {
-                    return true;
-                }
+            if let Ok(md) = wstat(abs_path)
+                && (!at_cursor || md.file_type().is_dir())
+            {
+                return true;
             }
         } else {
             // We do not end with a slash; it does not have to be a directory.

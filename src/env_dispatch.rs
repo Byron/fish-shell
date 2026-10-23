@@ -158,15 +158,14 @@ pub fn env_dispatch_var_change(milieu: VarChangeMilieu, key: &wstr, vars: &EnvSt
         dispatch_table.dispatch(key, vars, suppress_repaint);
     }
 
-    if !suppress_repaint {
-        if let Some(data) = reader_current_data() {
-            if string_prefixes_string(L!("fish_color_"), key) || {
-                // TODO Don't re-exec prompt when only pager color changed.
-                string_prefixes_string(L!("fish_pager_color_"), key)
-            } {
-                data.schedule_prompt_repaint();
-            }
-        }
+    if !suppress_repaint
+        && let Some(data) = reader_current_data()
+        && (string_prefixes_string(L!("fish_color_"), key) || {
+            // TODO Don't re-exec prompt when only pager color changed.
+            string_prefixes_string(L!("fish_pager_color_"), key)
+        })
+    {
+        data.schedule_prompt_repaint();
     }
 }
 

@@ -193,10 +193,10 @@ pub(crate) fn canonicalize_keyed_control_char(c: char) -> char {
     if c == ' ' {
         return SPACE;
     }
-    if let Some(tm) = get_terminal_mode_on_startup() {
-        if c == char::from(tm.c_cc[SpecialCharacterIndices::VERASE as usize]) {
-            return BACKSPACE;
-        }
+    if let Some(tm) = get_terminal_mode_on_startup()
+        && c == char::from(tm.c_cc[SpecialCharacterIndices::VERASE as usize])
+    {
+        return BACKSPACE;
     }
     if c == char::from(127) {
         // when it's not backspace

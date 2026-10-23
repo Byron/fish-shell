@@ -325,11 +325,12 @@ fn make_pygments_csv(src: &wstr) -> Vec<u8> {
     for (i, color) in colors.iter().copied().enumerate() {
         let role = color.foreground;
         // See if we can extend the last range.
-        if let Some(last) = token_ranges.last_mut() {
-            if last.role == role && last.end == i {
-                last.end = i + 1;
-                continue;
-            }
+        if let Some(last) = token_ranges.last_mut()
+            && last.role == role
+            && last.end == i
+        {
+            last.end = i + 1;
+            continue;
         }
         // We need a new range.
         token_ranges.push(TokenRange {

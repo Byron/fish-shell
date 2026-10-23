@@ -606,7 +606,7 @@ fn quoted_variable(
         if end == 0 && values.first().is_some_and(|value| !value.is_empty()) {
             return Err(Error::new("expected a Fish variable name after '$'"));
         }
-        name = joined[..end].to_owned();
+        joined[..end].clone_into(&mut name);
         suffix = joined[end..].to_owned();
     }
     unreachable!("a variable expansion has at least one level")
@@ -734,10 +734,10 @@ fn slice(
             }
         } else {
             let i = resolve(spec, 1)?;
-            if i >= 0 {
-                if let Some(value) = values.get(i as usize) {
-                    select_slice(&mut selected, &mut selected_bytes, value, limits)?;
-                }
+            if i >= 0
+                && let Some(value) = values.get(i as usize)
+            {
+                select_slice(&mut selected, &mut selected_bytes, value, limits)?;
             }
         }
     }

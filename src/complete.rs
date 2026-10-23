@@ -1907,7 +1907,7 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
                             continue;
                         }
                     }
-                    let family = WString::from(sprintf!("-%c", optchar));
+                    let family = sprintf!("-%c", optchar);
                     (family, Completion::with_desc(o.option.clone(), desc))
                 } else {
                     if o.typ != CompleteOptionType::SingleLong
@@ -2408,10 +2408,10 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
         // don't generate an autosuggestion, but do allow tab completion.
         let allow_empty = !self.flags.autosuggestion();
         let text_is_empty = variable_start == Some(s.len() - 1);
-        if let Some(variable_start) = variable_start {
-            if allow_empty || !text_is_empty {
-                return self.complete_variable(s, variable_start + 1);
-            }
+        if let Some(variable_start) = variable_start
+            && (allow_empty || !text_is_empty)
+        {
+            return self.complete_variable(s, variable_start + 1);
         }
 
         false
@@ -2801,10 +2801,12 @@ impl CmdString {
         let found = path_result.err.is_none();
         let mut path = path_result.path;
         // Resolve commands that use relative paths because we compare full paths with "complete -p".
-        if found && !path.is_empty() && path.as_char_slice().first() != Some(&'/') {
-            if let Ok(full_path) = wrealpath(&path) {
-                path = full_path;
-            }
+        if found
+            && !path.is_empty()
+            && path.as_char_slice().first() != Some(&'/')
+            && let Ok(full_path) = wrealpath(&path)
+        {
+            path = full_path;
         }
 
         // Make sure the path is not included in the command.
