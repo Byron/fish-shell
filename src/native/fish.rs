@@ -33,6 +33,8 @@ mod history_builtin;
 mod path_builtin;
 #[path = "fish_random.rs"]
 mod random_builtin;
+#[path = "fish_reader.rs"]
+pub(super) mod reader_builtin;
 #[path = "fish_runtime.rs"]
 mod runtime;
 #[path = "fish_source.rs"]
@@ -144,6 +146,8 @@ pub struct Session {
     completion_line: Option<super::interactive_completion::CompletionContext>,
     #[serde(default)]
     completion_depth: usize,
+    #[serde(skip)]
+    reader_state: Option<reader_builtin::ReaderState>,
     #[serde(default)]
     pub(super) abbreviations: super::interactive_abbreviations::Abbreviations,
     #[serde(default)]
@@ -314,6 +318,7 @@ impl Session {
             completion_autoload: Default::default(),
             completion_line: None,
             completion_depth: 0,
+            reader_state: None,
             abbreviations: Default::default(),
             bindings: Default::default(),
             history: None,
@@ -808,6 +813,7 @@ impl Session {
                 updated.refreshing_universals = self.refreshing_universals;
                 updated.completion_line = self.completion_line.clone();
                 updated.completion_depth = self.completion_depth;
+                updated.reader_state = self.reader_state.clone();
                 updated.substitution_depth = self.substitution_depth;
                 updated.source_origin = self.source_origin.clone();
                 *self = updated;

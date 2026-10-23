@@ -721,8 +721,33 @@ impl<H: Helper, I: History> Editor<H, I> {
         }
         s.refresh_line()?;
 
+        #[cfg(windows)]
+        let mut pending_commands = std::collections::VecDeque::new();
         loop {
+            #[cfg(not(windows))]
             let mut cmd = s.next_cmd(&mut input_state, &mut rdr, false, false)?;
+            #[cfg(windows)]
+            let mut cmd = match pending_commands.pop_front() {
+                Some(cmd) => cmd,
+                None => s.next_cmd(&mut input_state, &mut rdr, false, false)?,
+            };
+            #[cfg(windows)]
+            if let Cmd::Sequence(commands) = cmd {
+                for command in commands.into_iter().rev() {
+                    pending_commands.push_front(command);
+                }
+                continue;
+            }
+            #[cfg(windows)]
+            if let Cmd::SetBuffer { buffer, cursor } = cmd {
+                if cursor <= buffer.len() && buffer.is_char_boundary(cursor) {
+                    s.changes.begin();
+                    s.line.update(&buffer, cursor, &mut s.changes);
+                    s.changes.end();
+                    s.refresh_line()?;
+                }
+                continue;
+            }
 
             if cmd.should_reset_kill_ring() {
                 self.kill_ring.reset();

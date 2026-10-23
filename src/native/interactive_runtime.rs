@@ -61,6 +61,21 @@ impl CompletionService {
         self.runtime = Some(ReadRuntime { session, host });
     }
 
+    pub(super) fn abbreviations(&self) -> super::interactive_abbreviations::Abbreviations {
+        self.runtime
+            .as_ref()
+            .map(|runtime| runtime.session.abbreviations.clone())
+            .unwrap_or_default()
+    }
+
+    pub(super) fn reader_should_end(&self) -> bool {
+        self.read_error.is_some()
+            || self
+                .runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.session.exit_requested())
+    }
+
     /// Recover both owners before the caller propagates any reader error.
     pub(super) fn end_read(&mut self) -> (ReadRuntime, Option<Error>, Vec<u8>) {
         self.collect_output();
@@ -135,6 +150,60 @@ impl CompletionService {
         }
         self.print_output();
         Ok(result)
+    }
+
+    pub(super) fn binding(
+        &mut self,
+        sources: &[String],
+        line: &str,
+        cursor: usize,
+    ) -> Option<super::fish::reader_builtin::ReaderState> {
+        if self.runtime.is_none() {
+            return None;
+        }
+        let mut console = match CompletionInput::new() {
+            Ok(console) => console,
+            Err(error) => {
+                self.diagnostic(error);
+                self.print_output();
+                return None;
+            }
+        };
+        if self.io.is_none() {
+            match CompletionIo::new() {
+                Ok(io) => self.io = Some(io),
+                Err(error) => {
+                    self.diagnostic(error);
+                    if let Err(error) = console.restore() {
+                        self.read_error = Some(error);
+                    }
+                    self.print_output();
+                    return None;
+                }
+            }
+        }
+        let runtime = self.runtime.as_mut().unwrap();
+        let mut host = CompletionHost::new(&mut runtime.host, self.io.as_ref().unwrap());
+        let result = runtime
+            .session
+            .reader_callback(sources, line, cursor, &mut host);
+        let cancelled = runtime.host.take_console_interrupt();
+        if let Err(error) = console.restore() {
+            self.read_error = Some(error);
+        }
+        self.collect_output();
+        let result = match result {
+            Ok(state) if !cancelled => Some(state),
+            Ok(_) => None,
+            Err(error) => {
+                if !cancelled {
+                    self.diagnostic(error);
+                }
+                None
+            }
+        };
+        self.print_output();
+        result
     }
 
     fn diagnostic(&mut self, error: Error) {

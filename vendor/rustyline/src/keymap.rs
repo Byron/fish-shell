@@ -15,6 +15,17 @@ pub type RepeatCount = usize;
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum Cmd {
+    /// Apply commands in order without reading another terminal event.
+    #[cfg(windows)]
+    Sequence(Vec<Cmd>),
+    /// Replace the entire input and set an exact UTF-8 byte cursor position.
+    #[cfg(windows)]
+    SetBuffer {
+        /// Complete replacement input.
+        buffer: String,
+        /// Byte offset on a UTF-8 character boundary.
+        cursor: usize,
+    },
     /// abort
     Abort, // Miscellaneous Command
     /// accept-line

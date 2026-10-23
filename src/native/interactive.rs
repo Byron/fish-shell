@@ -264,9 +264,11 @@ mod windows {
             let pager = helper.pager.clone();
             let abbreviations = Arc::clone(&helper.abbreviations);
             let input_language = Arc::clone(&helper.input_language);
-            for (key, action) in bindings.entries() {
+            let service = Arc::clone(&helper.service);
+            for (key, sources) in bindings.entries() {
                 let handler = UserAction {
-                    action,
+                    sources,
+                    service: Arc::clone(&service),
                     pager: pager.clone(),
                     abbreviations: Arc::clone(&abbreviations),
                     search: Arc::clone(&self.search),
@@ -665,7 +667,8 @@ mod windows {
     }
 
     struct UserAction {
-        action: Action,
+        sources: Vec<String>,
+        service: Arc<Mutex<CompletionService>>,
         pager: PagerBindings,
         abbreviations: Arc<Mutex<Abbreviations>>,
         search: Arc<Mutex<HistorySearch>>,
@@ -680,7 +683,46 @@ mod windows {
             positive: bool,
             ctx: &EventContext<'_>,
         ) -> Option<Cmd> {
-            match self.action {
+            let action = if self.sources.len() == 1 {
+                Action::parse(&self.sources[0]).ok()
+            } else {
+                None
+            };
+            let Some(action) = action else {
+                let mut service = self.service.lock().ok()?;
+                let reader = service.binding(&self.sources, ctx.line(), ctx.pos());
+                if service.reader_should_end() {
+                    return Some(Cmd::Interrupt);
+                }
+                *self.abbreviations.lock().ok()? = service.abbreviations();
+                drop(service);
+                let Some(reader) = reader else {
+                    return Some(Cmd::Noop);
+                };
+                let mut commands = vec![Cmd::SetBuffer {
+                    buffer: reader.line,
+                    cursor: reader.cursor,
+                }];
+                commands.extend(reader.actions.into_iter().map(|action| match action {
+                    Action::Execute => Cmd::AcceptOrInsertLine {
+                        accept_in_the_middle: true,
+                    },
+                    Action::Complete => Cmd::Complete,
+                    Action::AcceptAutosuggestion => Cmd::CompleteHint,
+                    Action::ForwardChar => Cmd::Move(rustyline::Movement::ForwardChar(1)),
+                    Action::ForwardWord => Cmd::Move(rustyline::Movement::ForwardWord(
+                        1,
+                        rustyline::At::AfterEnd,
+                        rustyline::Word::Emacs,
+                    )),
+                    Action::EndOfLine => Cmd::Move(rustyline::Movement::EndOfLine),
+                    Action::HistorySearchBackward => Cmd::HistorySearchBackward,
+                    Action::HistorySearchForward => Cmd::HistorySearchForward,
+                    _ => action.command().unwrap_or(Cmd::Noop),
+                }));
+                return Some(Cmd::Sequence(commands));
+            };
+            match action {
                 Action::AcceptAutosuggestion => Some(if ctx.has_hint() {
                     Cmd::CompleteHint
                 } else {
@@ -688,7 +730,7 @@ mod windows {
                 }),
                 Action::ForwardChar | Action::ForwardWord => Some(
                     SuggestionKey {
-                        word: self.action == Action::ForwardWord,
+                        word: action == Action::ForwardWord,
                         pager: self.pager.clone(),
                     }
                     .command(count, ctx),
@@ -701,7 +743,7 @@ mod windows {
                 ),
                 Action::HistorySearchBackward | Action::HistorySearchForward => HistoryKey {
                     search: Arc::clone(&self.search),
-                    reverse: self.action == Action::HistorySearchBackward,
+                    reverse: action == Action::HistorySearchBackward,
                 }
                 .command(ctx.line()),
                 Action::Execute => InputKey {
@@ -714,7 +756,7 @@ mod windows {
                 Action::Complete => self
                     .pager
                     .handle(&KeyEvent(KeyCode::Tab, Modifiers::NONE).into(), ctx),
-                _ => self.action.command(),
+                _ => action.command(),
             }
         }
     }

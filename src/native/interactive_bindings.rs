@@ -1,7 +1,6 @@
 //! User key bindings for the native Windows editor.
 //!
-//! The registry contains one key and one named editor action per binding. It
-//! never evaluates shell source, and it does not change the POSIX binding set.
+//! Each single-key binding contains input functions or Fish callback scripts.
 
 use rustyline::{Anchor, At, Cmd, KeyCode, KeyEvent, Modifiers, Movement, Word};
 use std::collections::BTreeMap;
@@ -9,7 +8,7 @@ use std::fmt::Write as _;
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Bindings {
-    entries: BTreeMap<Key, Action>,
+    entries: BTreeMap<Key, Vec<String>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -85,7 +84,7 @@ impl Action {
         }
     }
 
-    fn parse(name: &str) -> Result<Self, String> {
+    pub(super) fn parse(name: &str) -> Result<Self, String> {
         Self::ALL
             .into_iter()
             .find(|action| action.name() == name)
@@ -128,10 +127,10 @@ impl Action {
 impl Bindings {
     /// Return a snapshot to install after restoring the previous user bindings.
     /// The reader wraps every action with its completion-pager handler.
-    pub fn entries(&self) -> Vec<(KeyEvent, Action)> {
+    pub fn entries(&self) -> Vec<(KeyEvent, Vec<String>)> {
         self.entries
             .iter()
-            .map(|(key, action)| (key.event(), *action))
+            .map(|(key, actions)| (key.event(), actions.clone()))
             .collect()
     }
 
@@ -166,7 +165,7 @@ impl Bindings {
                 }
                 _ if option.starts_with('-') && option != "-" => {
                     return Err(format!(
-                        "bind: unsupported option {option}; native bindings support single keys and static input functions"
+                        "bind: unsupported option {option}; native bindings support single keys"
                     ));
                 }
                 _ => break,
@@ -194,9 +193,11 @@ impl Bindings {
                         .map(|action| action.name().into())
                         .collect()
                 } else {
-                    KEY_NAMES.iter().map(|name| (*name).into()).chain(
-                        (1..=12).map(|number| format!("f{number}")),
-                    ).collect()
+                    KEY_NAMES
+                        .iter()
+                        .map(|name| (*name).into())
+                        .chain((1..=12).map(|number| format!("f{number}")))
+                        .collect()
                 };
                 names.sort();
                 Ok((0, names.into_iter().map(|name| name + "\n").collect()))
@@ -213,7 +214,10 @@ impl Bindings {
                     return Err("bind: a query or erase operation requires a key".into());
                 }
                 // Validate every key before mutating the registry.
-                let keys = words.iter().map(|word| Key::parse(word)).collect::<Result<Vec<_>, _>>()?;
+                let keys = words
+                    .iter()
+                    .map(|word| Key::parse(word))
+                    .collect::<Result<Vec<_>, _>>()?;
                 let missing = keys.iter().any(|key| !self.entries.contains_key(key));
                 if operation == Some(Operation::Erase) {
                     for key in keys {
@@ -225,20 +229,28 @@ impl Bindings {
             None if words.len() <= 1 => {
                 let selected = words.first().map(|word| Key::parse(word)).transpose()?;
                 let mut result = String::new();
-                for (key, action) in &self.entries {
+                for (key, actions) in &self.entries {
                     if selected.as_ref().is_none_or(|selected| selected == key) {
-                        writeln!(result, "bind -- {} {}", quote(&key.name()), action.name()).unwrap();
+                        writeln!(
+                            result,
+                            "bind -- {} {}",
+                            quote(&key.name()),
+                            actions
+                                .iter()
+                                .map(|action| quote(action))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        )
+                        .unwrap();
                     }
                 }
                 Ok((i32::from(selected.is_some() && result.is_empty()), result))
             }
-            None if words.len() == 2 => {
+            None => {
                 let key = Key::parse(&words[0])?;
-                let action = Action::parse(&words[1])?;
-                self.entries.insert(key, action);
+                self.entries.insert(key, words[1..].to_vec());
                 Ok((0, String::new()))
             }
-            None => Err("bind: native bindings accept exactly one key and one input function; shell scripts and action sequences are not supported".into()),
         }
     }
 }
@@ -552,12 +564,15 @@ mod tests {
         );
         assert_eq!(
             bindings.run_builtin(&words(&["ctrl-x"])).unwrap().1,
-            "bind -- 'ctrl-x' backward-char\n"
+            "bind -- 'ctrl-x' 'backward-char'\n"
         );
         bindings.run_builtin(&words(&["\x18", "undo"])).unwrap();
         assert_eq!(
             bindings.entries(),
-            vec![(KeyEvent::normalize(KeyEvent::ctrl('x')), Action::Undo)]
+            vec![(
+                KeyEvent::normalize(KeyEvent::ctrl('x')),
+                vec!["undo".into()]
+            )]
         );
         assert_eq!(
             bindings
@@ -581,12 +596,10 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_scripts_sequences_and_modes_do_not_change_existing_bindings() {
+    fn unsupported_key_sequences_and_modes_do_not_change_existing_bindings() {
         let mut bindings = Bindings::default();
         bindings.run_builtin(&words(&["ctrl-x", "undo"])).unwrap();
         for arguments in [
-            vec!["ctrl-x", "echo hello"],
-            vec!["ctrl-x", "undo", "repaint"],
             vec!["ctrl-x,ctrl-e", "undo"],
             vec!["\x1b[A", "undo"],
             vec!["--mode", "insert", "ctrl-x", "undo"],
@@ -598,7 +611,11 @@ mod tests {
             );
         }
         assert_eq!(bindings.entries().len(), 1);
-        assert_eq!(bindings.entries()[0].1, Action::Undo);
+        assert_eq!(bindings.entries()[0].1, vec!["undo"]);
+        bindings
+            .run_builtin(&words(&["ctrl-x", "echo hello", "repaint"]))
+            .unwrap();
+        assert_eq!(bindings.entries()[0].1, vec!["echo hello", "repaint"]);
     }
 
     #[test]

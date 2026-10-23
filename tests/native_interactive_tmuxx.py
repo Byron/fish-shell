@@ -148,6 +148,27 @@ def main():
             send(pane, "echo EDITOR_config:$editor_config")
             expect(pane, "EDITOR_config:configured")
 
+            # Bind callbacks run against the live session, while commandline
+            # edits are applied atomically before queued reader actions.
+            send(pane, "bind ctrl-g 'commandline -r \"echo EDITOR_script_binding\"; commandline -f execute'")
+            literal(pane, "discard this draft")
+            keys(pane, "C-g")
+            expect(pane, "EDITOR_script_binding")
+            send(pane, "function EDITOR_edit; set -g EDITOR_before (commandline -ct); commandline -rt 🦀; commandline -C 5; commandline -i fish; end; bind ctrl-g EDITOR_edit")
+            literal(pane, "echo 🐟 suffix")
+            keys(pane, "Home", "Right", "Right", "Right", "Right", "Right", "Right", "C-g", "End", "Enter")
+            expect(pane, "fish🦀 suffix")
+            send(pane, "echo EDITOR_callback:$EDITOR_before")
+            expect(pane, "EDITOR_callback:🐟")
+            send(pane, "bind ctrl-g 'printf pipeline | read -g EDITOR_pipeline; commandline -r \"echo EDITOR_pipeline:$EDITOR_pipeline\"; commandline -f execute'")
+            keys(pane, "C-g")
+            expect(pane, "EDITOR_pipeline:pipeline")
+            send(pane, "bind ctrl-g 'commandline -r \"echo EDITOR_undo\"'")
+            literal(pane, "echo EDITOR_original")
+            keys(pane, "C-g", "C-_", "Enter")
+            expect(pane, "EDITOR_original")
+            send(pane, "bind --erase ctrl-g")
+
             literal(pane, "echo EDITOR_lft")
             keys(pane, "Left", "Left")
             literal(pane, "e")
@@ -220,6 +241,13 @@ def main():
             expect(pane, "EDITOR_history_last")
             keys(pane, "C-d")
             wait_dead(pane)
+
+            binding_exit = new_session("binding_exit", "-N", "-i", "-P")
+            expect_prompt(binding_exit)
+            send(binding_exit, "bind ctrl-g 'exit 23'")
+            literal(binding_exit, "unsubmitted draft")
+            keys(binding_exit, "C-g")
+            wait_dead(binding_exit, 23)
 
             restored = new_session("restored", "-i")
             expect_prompt(restored)

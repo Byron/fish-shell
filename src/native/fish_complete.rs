@@ -452,6 +452,9 @@ impl Session {
         output: &mut Output,
     ) -> Result<()> {
         use crate::commandline_extent::{get_job_extent, get_process_extent, get_token_extent};
+        if self.reader_commandline(args)? {
+            return Ok(());
+        }
         let mut part = 'b';
         let mut tokens = None;
         let mut cut = false;
