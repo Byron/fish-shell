@@ -78,7 +78,11 @@ fn split_fields_support_ranges_repetition_and_missing_fields() {
             "a\nc\n",
         ),
         (vec!["string", "split", "-f1", ":", "abc"], 1, "abc\n"),
-        (vec!["string", "split", "-rm1", "-f1", ":", "a:b:c"], 0, "a:b\n"),
+        (
+            vec!["string", "split", "-rm1", "-f1", ":", "a:b:c"],
+            0,
+            "a:b\n",
+        ),
         (vec!["string", "split", "-nf2", ":", "a::b"], 0, "b\n"),
     ] {
         validate_case(&args, status, expected);
