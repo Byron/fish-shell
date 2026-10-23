@@ -30,7 +30,7 @@ pub(super) enum Role {
 }
 
 impl Role {
-    fn variable(self) -> &'static str {
+    pub(super) fn variable(self) -> &'static str {
         match self {
             Self::Normal => "fish_color_normal",
             Self::Command => "fish_color_command",
@@ -67,6 +67,16 @@ impl Colors {
             self.roles[range.start..end].fill(role);
         }
     }
+}
+
+/// Syntax roles for formatter output, with no command execution or PATH probes.
+pub(super) fn highlight_roles(source: &wstr) -> Vec<Role> {
+    let mut colors = Colors {
+        roles: vec![Role::Normal; source.len()],
+        pairs: vec![],
+    };
+    highlight_source(source, 0, &mut colors, &|_| true, 0);
+    colors.roles
 }
 
 /// Return terminal styling without changing any of the input's characters.

@@ -7,6 +7,8 @@ pub mod fish;
 #[cfg(windows)]
 mod history;
 pub mod host;
+#[cfg(windows)]
+pub mod indent;
 pub mod interactive;
 #[cfg(windows)]
 mod interactive_abbreviations;

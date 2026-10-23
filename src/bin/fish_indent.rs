@@ -8,5 +8,5 @@ fn main() {
 
 #[cfg(windows)]
 fn main() {
-    std::process::exit(fish::native::unsupported_tool("fish_indent"));
+    std::process::exit(fish::native::indent::main());
 }
