@@ -644,3 +644,8 @@ mod tests {
         assert!(Action::HistorySearchBackward.command().is_none());
     }
 }
+
+/// Use the same spelling in standalone key diagnostics and bind listings.
+pub(super) fn key_name(event: KeyEvent) -> Option<String> {
+    Key::from_event(event).map(|key| key.name())
+}

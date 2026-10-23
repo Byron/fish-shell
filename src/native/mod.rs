@@ -35,6 +35,8 @@ mod interactive_runtime;
 #[cfg(windows)]
 mod interactive_terminal;
 #[cfg(windows)]
+pub mod key_reader;
+#[cfg(windows)]
 mod startup;
 #[cfg(windows)]
 mod storage;
@@ -217,14 +219,6 @@ pub fn main(language: Language) -> i32 {
 fn report(language: Language, error: Error) -> i32 {
     let _ = writeln!(io::stderr(), "{}: {}", language.name(), error.message);
     error.status
-}
-
-pub fn unsupported_tool(name: &str) -> i32 {
-    let _ = writeln!(
-        io::stderr(),
-        "{name}: not yet supported by the native Windows backend"
-    );
-    2
 }
 
 fn run(language: Language) -> i32 {

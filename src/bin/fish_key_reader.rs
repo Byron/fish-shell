@@ -8,5 +8,5 @@ fn main() {
 
 #[cfg(windows)]
 fn main() {
-    std::process::exit(fish::native::unsupported_tool("fish_key_reader"));
+    std::process::exit(fish::native::key_reader::main());
 }

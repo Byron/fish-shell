@@ -17,3 +17,16 @@ Highlighting never executes substitutions or probes command availability.
 Its role classifications and default palette can differ from POSIX highlighting;
 plain formatting is shared. Exported `fish_color_*` variables configure ANSI
 colors. No startup scripts or universal variables are loaded by the formatter.
+
+`fish_key_reader.exe` reads individual console keys and prints sourceable `bind`
+commands. It shares the editor's Windows console/VT decoder and canonical binding
+names, so arrows, modifiers, function keys, Unicode, and Escape work the same way
+as at the prompt. It restores console modes when it exits, including after input
+errors. The command requires console input; help and version queries also work
+with redirected input.
+
+Use `--continuous` to read more than one key. Type `exit` or `quit`, or press
+Ctrl-C or Ctrl-D twice consecutively, to finish. `--verbose` reports the normalized
+decoded key and elapsed time; the Windows console transport does not retain the
+original input byte sequence. Bracketed paste is reported as data, and unsupported
+key events are identified without suggesting an unusable binding.

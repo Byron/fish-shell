@@ -29,6 +29,8 @@ pub mod error;
 pub mod highlight;
 pub mod hint;
 pub mod history;
+#[cfg(windows)]
+pub mod key_reader;
 mod keymap;
 mod keys;
 mod kill_ring;
