@@ -154,3 +154,51 @@ fn regex_captures_display_width_and_escape_round_trips_agree() {
         "a\nbb\nbb:a_b:a\ntwo words\na;echo wrong\nquote'slash\\\n3\n4\n..abc\n"
     );
 }
+
+#[test]
+fn function_redirects_do_not_replace_internal_pipe_descriptors() {
+    let fixture = FishFixture::new();
+    fixture.write("input", "outer input\n");
+    assert_eq!(
+        fixture.run(
+            r#"
+            function probe
+                printf 'inner input\n' | read -l value
+                printf '<%s>\n' $value > result
+            end
+            probe < input > discarded
+            string collect -N < result
+            "#
+        ),
+        "<inner input>\n"
+    );
+}
+
+#[test]
+fn inherited_duplication_is_resolved_before_inner_pipes_and_explicit_redirects() {
+    let fixture = FishFixture::new();
+    assert_eq!(
+        fixture.run(
+            r#"
+            function emit_both
+                echo normal
+                echo diagnostic >&2
+            end
+            function outer
+                emit_both | string upper > piped
+            end
+            outer > inherited 2>&1
+            string collect -N < piped
+            string collect -N < inherited
+            function explicit
+                echo explicit > override | read -l value
+                echo empty:(count $value) > explicit-result
+            end
+            explicit > discarded
+            string collect -N < override
+            string collect -N < explicit-result
+            "#
+        ),
+        "NORMAL\ndiagnostic\nexplicit\nempty:0\n"
+    );
+}

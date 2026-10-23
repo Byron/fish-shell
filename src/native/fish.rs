@@ -784,6 +784,12 @@ impl Session {
             let mut worker = self.clone();
             worker.worker_pipeline_input = index > 0;
             let mut redirects = output.redirects.clone();
+            if index > 0 {
+                redirects.push(Redirection {
+                    fd: 0,
+                    action: RedirectAction::Pipeline,
+                });
+            }
             let mut pipe_fd = None;
             if let Some(continuation) = node.continuation.get(index) {
                 let raw = WString::from(text(source, &continuation.pipe));
@@ -795,6 +801,10 @@ impl Session {
                     ));
                 }
                 pipe_fd = Some(pipe.fd);
+                redirects.push(Redirection {
+                    fd: pipe.fd,
+                    action: RedirectAction::Pipeline,
+                });
                 if pipe.stderr_merge {
                     redirects.push(Redirection {
                         fd: 2,

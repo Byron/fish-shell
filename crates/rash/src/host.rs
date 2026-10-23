@@ -18,6 +18,9 @@ pub enum OpenMode {
 
 #[derive(Clone, Debug)]
 pub enum RedirectAction {
+    /// Restore the descriptor chosen by the enclosing pipeline after applying
+    /// inherited scope redirects, before the command's explicit redirects.
+    Pipeline,
     File {
         path: Vec<u8>,
         mode: OpenMode,
@@ -142,12 +145,14 @@ pub trait Host {
         capture: bool,
     ) -> Result<Option<Vec<u8>>> {
         let mut captured = [false, capture, false];
+        let pipeline = captured;
         for redirect in redirects {
             let destination = usize::try_from(redirect.fd)
                 .ok()
                 .filter(|index| *index < captured.len())
                 .ok_or_else(|| crate::Error::new("invalid output descriptor"))?;
             captured[destination] = match redirect.action {
+                RedirectAction::Pipeline => pipeline[destination],
                 RedirectAction::Dup(source) => *captured
                     .get(source as usize)
                     .ok_or_else(|| crate::Error::new("invalid output descriptor"))?,

@@ -722,6 +722,11 @@ impl rash::host::Host for FishHost<'_> {
                 source.push(' ');
                 source.push_utfstr(&redirect.fd.to_wstring());
                 match &redirect.action {
+                    RedirectAction::Pipeline => {
+                        return Err(rash::Error::new(
+                            "native pipeline restoration cannot be encoded as Fish source",
+                        ));
+                    }
                     RedirectAction::File { path, mode } => {
                         source.push_utfstr(match mode {
                             OpenMode::Read => L!("<"),
@@ -1028,6 +1033,8 @@ fn redirect_targets(
             return Err(rash::Error::new("invalid redirection descriptor"));
         }
         let target = match &redirect.action {
+            RedirectAction::Pipeline if redirect.fd == 1 && capture => Target::Capture,
+            RedirectAction::Pipeline => Target::Fd(redirect.fd),
             RedirectAction::Close => Target::Closed,
             RedirectAction::Opened(file) => Target::File(file.clone()),
             RedirectAction::Dup(fd) => {

@@ -20,6 +20,12 @@ sourced scripts, final-stage pipeline reads, explicit substitution records,
 argument parsing, regular expressions, display width, and escaping. The reusable
 fixture is `tests/support/fish_fixture.rs`.
 
+Function and block redirections also have shared regression checks: an internal
+pipeline replaces inherited input/output descriptors while retaining earlier
+descriptor duplication and the commands' explicit redirections. This lets
+helpers such as `alias --save name command >/dev/null` use their internal
+read/source pipelines normally.
+
 The dynamic completion checks actually query the bundled Cargo generators,
 including binary, example, test, and target values; they also cover saved alias
 autoload, nested subcommand forwarding, completion conditions, and deferred

@@ -81,16 +81,18 @@ fn cargo_generators_parse_stderr_and_keep_option_context() {
 fn saved_aliases_autoload_and_complete_wrapped_generators_on_first_query() {
     let fixture = FishFixture::new();
     fixture.write("config/fish/functions/cargo.fish", CARGO);
-    let saved = fixture.run(
+    let output = fixture.run(
         r#"
             function mkdir
                 test "$argv" = "-p $__fish_config_dir/functions"
                 and test -d "$__fish_config_dir/functions"
             end
-            alias --save parity_run 'cargo run'
+            alias --save parity_run 'cargo run' > saved-message
             functions -q parity_run
             "#,
     );
+    assert!(output.is_empty(), "{output}");
+    let saved = std::fs::read_to_string(fixture.0.join("saved-message")).unwrap();
     assert!(saved.starts_with("funcsave: wrote "), "{saved}");
     assert!(
         fixture

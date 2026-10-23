@@ -201,10 +201,12 @@ fn targets(redirects: &[Redirection], capture: bool) -> Result<[Target; 3]> {
 }
 
 fn apply_redirects(redirects: &[Redirection], mut targets: [Target; 3]) -> Result<[Target; 3]> {
+    let pipeline = targets.clone();
     // Resolve duplication at its position in the list, before later replacements.
     for redirect in redirects {
         let fd = descriptor(redirect.fd)?;
         targets[fd] = match &redirect.action {
+            RedirectAction::Pipeline => pipeline[fd].clone(),
             RedirectAction::File { path, mode } => Target::File(open_file(path, *mode)?),
             RedirectAction::Opened(file) => Target::File(file.clone()),
             RedirectAction::Here(bytes) => Target::File(temporary_file(bytes, true)?),

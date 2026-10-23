@@ -170,12 +170,14 @@ fn destinations(
             .get_mut(fd as usize)
             .ok_or_else(|| Error::new("invalid pipe descriptor"))? = Destination::Ordinary;
     }
+    let pipeline = result.clone();
     for redirect in redirects {
         let destination = usize::try_from(redirect.fd)
             .ok()
             .filter(|fd| *fd < result.len())
             .ok_or_else(|| Error::new("invalid captured output descriptor"))?;
         result[destination] = match &redirect.action {
+            RedirectAction::Pipeline => pipeline[destination].clone(),
             RedirectAction::Dup(source) => result
                 .get(*source as usize)
                 .ok_or_else(|| Error::new("invalid captured output descriptor"))?
