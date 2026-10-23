@@ -848,7 +848,10 @@ impl Session {
                 updated.completion_line = self.completion_line.clone();
                 updated.completion_depth = self.completion_depth;
                 updated.reader_state = self.reader_state.clone();
-                updated.psub_resources.worker_root = self.psub_resources.worker_root.clone();
+                // The worker only adds temporary inner resource scopes. Keep
+                // the parent's reservations and process-local cleanup leases;
+                // these leases deliberately do not deserialize from snapshots.
+                updated.psub_resources = self.psub_resources.clone();
                 updated.substitution_depth = self.substitution_depth;
                 updated.source_origin = self.source_origin.clone();
                 *self = updated;

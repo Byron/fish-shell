@@ -174,6 +174,9 @@ pub fn run(language: &str, path: &Path) -> Result<i32> {
         jobs,
         scratch,
     } = read_envelope(path)?;
+    // Declared before the host so owned children and their resource leases are
+    // released first. The parent independently handles forced worker death.
+    let _scratch = super::temporary::EmptyDirectory(scratch.clone());
     #[cfg(not(windows))]
     let _ = scratch;
     let mut host = super::host::NativeHost::new_worker(jobs)?;

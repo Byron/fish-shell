@@ -44,11 +44,6 @@ impl Directory {
         &self.0
     }
 
-    /// The evaluator transfers a path it already reserved with `create`.
-    pub(super) fn from_reserved(path: PathBuf) -> Self {
-        Self(path)
-    }
-
     #[cfg(windows)]
     pub(super) fn persist(mut self) -> PathBuf {
         std::mem::take(&mut self.0)
@@ -62,5 +57,33 @@ impl Drop for Directory {
         if !self.0.as_os_str().is_empty() {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+}
+
+/// A worker removes its own scratch root after ordinary completion, even if
+/// its parent disowned it and exited. Never remove files still held by a
+/// detached inner job; the parent's recursive guard handles forced termination.
+pub(super) struct EmptyDirectory(pub(super) PathBuf);
+
+impl Drop for EmptyDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_cleanup_removes_only_empty_scratch_directories() {
+        let directory = Directory::create(&std::env::temp_dir()).unwrap();
+        let file = directory.path().join("still-in-use");
+        std::fs::write(&file, b"detached consumer").unwrap();
+        drop(EmptyDirectory(directory.path().to_owned()));
+        assert!(file.exists());
+        std::fs::remove_file(file).unwrap();
+        drop(EmptyDirectory(directory.path().to_owned()));
+        assert!(!directory.path().exists());
     }
 }

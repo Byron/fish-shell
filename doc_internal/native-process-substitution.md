@@ -23,7 +23,13 @@ by the usual `TMP`/`TEMP` environment settings. Interpreter workers share their
 caller's directory; the owning shell also keeps a cleanup guard for each worker.
 Normal completion, expansion errors and owned-job cancellation remove these
 directories. Stopped jobs retain their files until the job completes after a
-resume or termination. Abrupt termination of the shell itself can leave files,
+resume or termination; an enclosing function can continue using the same file
+until it returns. Completed background jobs release their temporary resources
+without requiring `wait`. Disowned workers also remove their empty scratch
+directories after completion when the originating shell has already exited.
+If a worker itself exits before a disowned inner job releases an inherited
+file, its nonempty scratch directory can remain; worker cleanup never removes
+those live files. Abrupt termination of the shell itself can also leave files,
 as with other temporary files on Windows.
 
 FIFO mode (`--fifo`) reports an explicit unsupported-mode error. General

@@ -559,12 +559,12 @@ impl Host for CompletionHost<'_> {
     fn jobs(&self) -> Vec<Vec<u8>> {
         self.host.jobs()
     }
-    fn retain_job_directories(
+    fn retain_job_resources(
         &mut self,
         last_pid: u32,
-        paths: &[std::path::PathBuf],
+        resources: &[rash::host::JobResource],
     ) -> Result<()> {
-        self.host.retain_job_directories(last_pid, paths)
+        self.host.retain_job_resources(last_pid, resources)
     }
 }
 

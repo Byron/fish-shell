@@ -224,3 +224,88 @@ fn background_consumers_retain_files_and_forced_job_cancellation_cleans_them() {
         fixture.assert_clean();
     }
 }
+
+#[test]
+fn foreground_pipeline_snapshots_preserve_the_enclosing_consumers_file() {
+    let fixture = Fixture::new();
+    let text = stdout(fixture.run(
+        r#"
+        function consumer --argument-names filename
+            set -g last_file $filename
+            printf ignored | read -l ignored
+            test -f $filename; echo exists:$status
+            source $filename
+        end
+        consumer (printf 'echo after-pipeline\n' | psub)
+        test -e $last_file; echo removed:$status
+        "#,
+        b"",
+    ));
+    assert_eq!(text, "exists:0\nafter-pipeline\nremoved:1\n");
+    fixture.assert_clean();
+}
+
+#[test]
+fn disowned_worker_cleans_its_scratch_after_the_original_shell_exits() {
+    let fixture = Fixture::new();
+    let source = r#"
+        function consumer --argument-names filename
+            printf '%s' $filename >ready
+            while not test -e gate
+            end
+            source $filename
+            echo done >finished
+        end
+        consumer (printf 'echo detached\n' | psub) >consumer-output 2>consumer-errors &
+        while not test -s ready
+        end
+        disown
+    "#;
+    let mut child = fixture.command(source).spawn().unwrap();
+    drop(child.stdin.take());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let parent_finished = loop {
+        if child.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            break false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    let path = fs::read_to_string(fixture.0.join("ready"))
+        .ok()
+        .map(PathBuf::from);
+    let survived_parent = path.as_ref().is_some_and(|path| path.exists());
+    // Always release a detached consumer before asserting a failure.
+    fs::write(fixture.0.join("gate"), b"").unwrap();
+    while std::time::Instant::now() < deadline {
+        if fixture.0.join("finished").exists()
+            && fs::read_dir(fixture.0.join("tmp"))
+                .unwrap()
+                .next()
+                .is_none()
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(parent_finished, "original shell did not exit");
+    assert!(survived_parent, "detached consumer lost its file: {path:?}");
+    assert!(
+        fixture.0.join("finished").exists(),
+        "consumer did not finish"
+    );
+    assert_eq!(stdout(child.wait_with_output().unwrap()), "");
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("consumer-output")).unwrap(),
+        "detached\n"
+    );
+    assert!(
+        fs::read(fixture.0.join("consumer-errors"))
+            .unwrap()
+            .is_empty()
+    );
+    fixture.assert_clean();
+}

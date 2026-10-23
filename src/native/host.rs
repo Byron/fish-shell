@@ -3,7 +3,9 @@
 //! Expanded arguments go directly to `Command`; this adapter never invokes a
 //! command interpreter to execute shell source.
 
-use rash::host::{Command, Host, OpenMode, ReadResult, RedirectAction, Redirection, RunResult};
+use rash::host::{
+    Command, Host, JobResource, OpenMode, ReadResult, RedirectAction, Redirection, RunResult,
+};
 use rash::{Error, Result};
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{File, OpenOptions};
@@ -302,8 +304,8 @@ fn exit_status(status: std::process::ExitStatus) -> i32 {
 }
 
 impl Host for NativeHost {
-    fn retain_job_directories(&mut self, last_pid: u32, paths: &[PathBuf]) -> Result<()> {
-        self.retain_directories(last_pid, paths)
+    fn retain_job_resources(&mut self, last_pid: u32, resources: &[JobResource]) -> Result<()> {
+        self.retain_resources(last_pid, resources)
     }
 
     fn supports_workers(&self) -> bool {

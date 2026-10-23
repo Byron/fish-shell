@@ -186,3 +186,42 @@ fn inherited_queries_are_separate_from_owned_controls_and_job_ids() {
     // A view remains the captured state; later parent events do not grant control.
     assert_eq!(parent_views[0].state, State::Running);
 }
+
+#[test]
+fn stopped_results_identify_the_job_and_background_completion_releases_shared_resources() {
+    for consumer_finishes_first in [false, true] {
+        let gate = TestFile::new();
+        let directory =
+            super::super::super::temporary::Directory::create(&std::env::temp_dir()).unwrap();
+        let path = directory.path().join("consumer-file");
+        std::fs::write(&path, b"still needed").unwrap();
+        let mut consumer: Option<JobResource> = Some(Arc::new(directory));
+        let mut host = NativeHost::new().unwrap();
+        let pid = host
+            .run_pipeline(&[gated(&gate)], true, false)
+            .unwrap()
+            .last_pid
+            .unwrap();
+        builtin(&mut host, &["kill", "-STOP", "%1"]).unwrap();
+        let stopped = host.wait_job(1, false).unwrap();
+        assert!(stopped.stopped);
+        assert_eq!(stopped.last_pid, Some(pid));
+        host.retain_job_resources(pid, &[consumer.as_ref().unwrap().clone()])
+            .unwrap();
+        if consumer_finishes_first {
+            consumer.take();
+        }
+        assert!(path.exists(), "stopped job lost its consumer's file");
+        builtin(&mut host, &["bg", "%1"]).unwrap();
+        std::fs::write(&gate.0, b"go").unwrap();
+        wait_until(|| {
+            host.refresh_jobs().unwrap();
+            matches!(host.jobs[&1].state(), State::Done(_))
+        });
+        // The exit status stays queryable, but cleanup must not wait for wait.
+        assert_eq!(path.exists(), !consumer_finishes_first);
+        consumer.take();
+        assert!(!path.exists());
+        assert_eq!(builtin(&mut host, &["wait", "%1"]).unwrap().status, 7);
+    }
+}

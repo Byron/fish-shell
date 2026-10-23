@@ -2,6 +2,7 @@
 use super::*;
 use crate::native::temporary::Directory;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -10,6 +11,10 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 struct Reservation {
     path: PathBuf,
     owner: u32,
+    // A worker may write into an inherited reservation, but cleanup ownership
+    // never crosses process boundaries through interpreter snapshots.
+    #[serde(skip)]
+    lease: Option<Arc<Directory>>,
 }
 
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -31,11 +36,7 @@ impl Resources {
     }
 
     pub(super) fn pop_job(&mut self) {
-        if let Some(Some(directory)) = self.jobs.pop() {
-            if directory.owner == std::process::id() {
-                let _ = std::fs::remove_dir_all(directory.path);
-            }
-        }
+        self.jobs.pop();
     }
 
     pub(super) fn push_substitution(&mut self) -> Result<()> {
@@ -57,9 +58,11 @@ impl Resources {
         if self.jobs[index].is_none() {
             let temporary = std::env::temp_dir();
             let parent = self.worker_root.as_ref().unwrap_or(&temporary);
+            let directory = Arc::new(Directory::create(parent)?);
             self.jobs[index] = Some(Reservation {
-                path: Directory::create(parent)?.persist(),
+                path: directory.path().to_owned(),
                 owner: std::process::id(),
+                lease: Some(directory),
             });
         }
         Ok(self.jobs[index].as_ref().unwrap().path.clone())
@@ -81,7 +84,7 @@ impl Resources {
 
     pub(super) fn retain_stopped(&mut self, pid: Option<u32>, host: &mut impl Host) -> Result<()> {
         let owned = |directory: &&Reservation| directory.owner == std::process::id();
-        let paths = self
+        let resources = self
             .jobs
             .iter()
             .flatten()
@@ -92,22 +95,16 @@ impl Resources {
                 std::fs::read_dir(&directory.path)
                     .map_or(true, |mut entries| entries.next().is_some())
             })
-            .map(|directory| directory.path.clone())
+            .filter_map(|directory| directory.lease.clone())
+            .map(|lease| lease as rash::host::JobResource)
             .collect::<Vec<_>>();
-        if paths.is_empty() {
+        if resources.is_empty() {
             return Ok(());
         }
         let pid = pid.ok_or_else(|| Error::new("stopped job has no process identifier"))?;
-        host.retain_job_directories(pid, &paths)?;
-        for directory in &mut self.jobs {
-            if directory
-                .as_ref()
-                .is_some_and(|directory| paths.contains(&directory.path))
-            {
-                *directory = None;
-            }
-        }
-        Ok(())
+        // Both the enclosing consumer and the stopped job may continue using
+        // these files. Cleanup waits for both lifetimes, in either order.
+        host.retain_job_resources(pid, &resources)
     }
 }
 
@@ -169,3 +166,7 @@ impl Session {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "fish_psub_tests.rs"]
+mod tests;

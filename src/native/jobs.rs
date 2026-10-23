@@ -96,7 +96,7 @@ pub(super) struct Job {
     output_offset: u64,
     diagnostics: Vec<u8>,
     _worker_files: Vec<super::super::worker::PayloadFile>,
-    _temporary_directories: Vec<super::super::temporary::Directory>,
+    resources: Vec<JobResource>,
 }
 
 impl Job {
@@ -170,6 +170,12 @@ impl Job {
                 };
             }
         }
+        // Completed background jobs retain their status until `wait`, but no
+        // longer need worker files or the resources of their consuming command.
+        if matches!(self.state(), State::Done(_)) {
+            self._worker_files.clear();
+            self.resources.clear();
+        }
         Ok(())
     }
 
@@ -220,7 +226,7 @@ impl Job {
             stopped,
             pipeline,
             stdout,
-            last_pid: None,
+            last_pid: self.last_pid(),
         })
     }
 }
@@ -267,18 +273,21 @@ impl NativeHost {
         self.pending_workers.push(file);
     }
 
-    pub(super) fn retain_directories(&mut self, last_pid: u32, paths: &[PathBuf]) -> Result<()> {
+    pub(super) fn retain_resources(
+        &mut self,
+        last_pid: u32,
+        resources: &[JobResource],
+    ) -> Result<()> {
         let job = self
             .jobs
             .values_mut()
             .find(|job| job.last_pid() == Some(last_pid))
             .ok_or_else(|| Error::new("stopped job is no longer available"))?;
-        job._temporary_directories.extend(
-            paths
-                .iter()
-                .cloned()
-                .map(super::super::temporary::Directory::from_reserved),
-        );
+        for resource in resources {
+            if !job.resources.iter().any(|held| Arc::ptr_eq(held, resource)) {
+                job.resources.push(resource.clone());
+            }
+        }
         Ok(())
     }
 
@@ -374,7 +383,7 @@ impl NativeHost {
             output_offset: 0,
             diagnostics: Vec::new(),
             _worker_files: worker_files,
-            _temporary_directories: Vec::new(),
+            resources: Vec::new(),
         };
         let pipes = (1..stages.len())
             .map(|_| process::pipe().map(|(read, write)| (Arc::new(read), Arc::new(write))))

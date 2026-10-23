@@ -62,6 +62,10 @@ pub struct RunResult {
     pub last_pid: Option<u32>,
 }
 
+/// An embedding interpreter's process-local cleanup lease. The host keeps it
+/// alive while a job still uses the resource, without owning its implementation.
+pub type JobResource = Arc<dyn Send + Sync>;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SignalDisposition {
     Default,
@@ -236,14 +240,10 @@ pub trait Host {
 
     fn jobs(&self) -> Vec<Vec<u8>>;
 
-    /// Transfer reserved temporary directories to a stopped job. The host
-    /// removes them after the job finishes, including after a later resume.
-    fn retain_job_directories(
-        &mut self,
-        _last_pid: u32,
-        directories: &[std::path::PathBuf],
-    ) -> Result<()> {
-        if directories.is_empty() {
+    /// Share cleanup leases with a stopped job until it finishes, including
+    /// after a later resume. The caller may still hold its own leases.
+    fn retain_job_resources(&mut self, _last_pid: u32, resources: &[JobResource]) -> Result<()> {
+        if resources.is_empty() {
             Ok(())
         } else {
             Err(crate::Error::new(
