@@ -19,6 +19,7 @@ pub(super) const BUILTIN_NAMES: &[&str] = &[
     "[",
     "_",
     "__fish_git",
+    "__fish_native_psub",
     "__fish_native_utility",
     "abbr",
     "argparse",
@@ -98,6 +99,7 @@ impl Session {
             return Ok(());
         }
         match name {
+            "__fish_native_psub" => self.psub_builtin(args, host, output)?,
             "path" | "realpath" => self.path_builtin(name, args, host, output)?,
             "fish_input_mode" => {
                 if args.len() == 1 && matches!(args[0].as_str(), "-h" | "--help") {
@@ -360,6 +362,9 @@ impl Session {
             builtin: false,
         };
         let result = host.run_pipeline(&[command], false, output.capture)?;
+        if result.stopped {
+            self.psub_resources.retain_stopped(result.last_pid, host)?;
+        }
         if host.cancelled() {
             self.cancelled_pipeline = Some(result.pipeline.clone());
         }

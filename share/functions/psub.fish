@@ -21,6 +21,20 @@ function psub --description "Read from stdin into a file and output the filename
         return 1
     end
 
+    # Native Windows owns regular temporary files through the consuming command
+    # and its interpreter workers. Keep option parsing and POSIX behavior shared.
+    set -l native_psub __fish_native_psub
+    if builtin -q $native_psub
+        if set -q _flag_fifo
+            printf '%s\n' 'psub: FIFO mode is unavailable on native Windows' >&2
+            return 2
+        end
+        set -l testing 0
+        set -q _flag_testing; and set testing 1
+        builtin $native_psub "$_flag_suffix" $testing
+        return
+    end
+
     if set -q _flag_fifo
         # Write output to pipe. This needs to be done in the background so
         # that the command substitution exits without needing to wait for

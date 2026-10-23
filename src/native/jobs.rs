@@ -96,6 +96,7 @@ pub(super) struct Job {
     output_offset: u64,
     diagnostics: Vec<u8>,
     _worker_files: Vec<super::super::worker::PayloadFile>,
+    _temporary_directories: Vec<super::super::temporary::Directory>,
 }
 
 impl Job {
@@ -266,6 +267,21 @@ impl NativeHost {
         self.pending_workers.push(file);
     }
 
+    pub(super) fn retain_directories(&mut self, last_pid: u32, paths: &[PathBuf]) -> Result<()> {
+        let job = self
+            .jobs
+            .values_mut()
+            .find(|job| job.last_pid() == Some(last_pid))
+            .ok_or_else(|| Error::new("stopped job is no longer available"))?;
+        job._temporary_directories.extend(
+            paths
+                .iter()
+                .cloned()
+                .map(super::super::temporary::Directory::from_reserved),
+        );
+        Ok(())
+    }
+
     pub fn clear_console_requests(&mut self) {
         self.controls = process::controls();
         self.interrupted = false;
@@ -358,6 +374,7 @@ impl NativeHost {
             output_offset: 0,
             diagnostics: Vec::new(),
             _worker_files: worker_files,
+            _temporary_directories: Vec::new(),
         };
         let pipes = (1..stages.len())
             .map(|_| process::pipe().map(|(read, write)| (Arc::new(read), Arc::new(write))))

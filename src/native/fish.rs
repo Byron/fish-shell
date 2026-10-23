@@ -31,6 +31,8 @@ mod functions;
 mod history_builtin;
 #[path = "fish_path.rs"]
 mod path_builtin;
+#[path = "fish_psub.rs"]
+mod psub;
 #[path = "fish_random.rs"]
 mod random_builtin;
 #[path = "fish_reader.rs"]
@@ -181,6 +183,8 @@ pub struct Session {
     source_depth: usize,
     #[serde(default)]
     substitution_depth: usize,
+    #[serde(default)]
+    psub_resources: psub::Resources,
     #[serde(default)]
     source_origin: Option<String>,
     #[serde(default)]
@@ -340,6 +344,7 @@ impl Session {
             function_frames: vec![],
             source_depth: 0,
             substitution_depth: 0,
+            psub_resources: Default::default(),
             source_origin: None,
             worker_pipeline_input: false,
         };
@@ -355,11 +360,13 @@ impl Session {
             Option<std::path::PathBuf>,
             [Option<std::path::PathBuf>; 3],
         ),
+        scratch: std::path::PathBuf,
         host: &mut impl Host,
     ) -> Result<i32> {
         let mut host = capture::CapturingHost::new(host, captures);
         session.flow = Flow::Normal;
         session.input_mode_blocked = true;
+        session.psub_resources.worker_root = Some(scratch);
         let result = session.eval(&source, &mut host);
         if let Some(path) = result_path {
             // The parent removes the reservation if the pipeline is stopped or
@@ -698,6 +705,19 @@ impl Session {
         host: &mut impl Host,
         output: &mut Output,
     ) -> Result<()> {
+        self.psub_resources.push_job();
+        let result = self.eval_job_contents(node, source, host, output);
+        self.psub_resources.pop_job();
+        result
+    }
+
+    fn eval_job_contents(
+        &mut self,
+        node: &ast::JobPipeline,
+        source: &wstr,
+        host: &mut impl Host,
+        output: &mut Output,
+    ) -> Result<()> {
         self.refresh_universals(host)?;
         if self.flow != Flow::Normal || host.cancelled() {
             return Ok(());
@@ -728,6 +748,7 @@ impl Session {
         if !host.supports_workers() {
             return Err(unsupported("isolated pipeline processes on this host"));
         }
+        self.psub_resources.prepare_worker()?;
         let background = node.bg.is_some();
         let captured = output.capture.then(capture::CaptureFile::new).transpose()?;
         let result_file = if background {
@@ -795,6 +816,9 @@ impl Session {
             stages.push(stage);
         }
         let result = host.run_pipeline(&stages, background, output.capture)?;
+        if result.stopped {
+            self.psub_resources.retain_stopped(result.last_pid, host)?;
+        }
         if host.cancelled() {
             self.cancelled_pipeline = Some(result.pipeline.clone());
         }
@@ -814,6 +838,7 @@ impl Session {
                 updated.completion_line = self.completion_line.clone();
                 updated.completion_depth = self.completion_depth;
                 updated.reader_state = self.reader_state.clone();
+                updated.psub_resources.worker_root = self.psub_resources.worker_root.clone();
                 updated.substitution_depth = self.substitution_depth;
                 updated.source_origin = self.source_origin.clone();
                 *self = updated;
@@ -1151,7 +1176,13 @@ impl Session {
         Ok(values.pop().unwrap())
     }
     fn expand(&mut self, word: &str, host: &mut impl Host) -> Result<Vec<String>> {
-        expand::word_with(word, |request| match request {
+        // Reader and completion callbacks can expand directly without an AST
+        // job. Give that operation a temporary owner just like a normal command.
+        let standalone = !self.psub_resources.has_job();
+        if standalone {
+            self.psub_resources.push_job();
+        }
+        let result = expand::word_with(word, |request| match request {
             expand::Request::Variable(name) => Ok(self.values(name)),
             expand::Request::VariableSeparator(name) => Ok(vec![
                 if self.variable(name).is_some_and(|variable| variable.pathvar) {
@@ -1162,6 +1193,7 @@ impl Session {
                 .into(),
             ]),
             expand::Request::Command { source, quoted } => {
+                self.psub_resources.push_substitution()?;
                 let saved_flow = self.flow;
                 self.flow = Flow::Normal;
                 let mut output = Output {
@@ -1174,6 +1206,7 @@ impl Session {
                 self.scopes.push(BTreeMap::new());
                 self.substitution_depth += 1;
                 let result = self.eval_source(source, host, &mut output);
+                self.psub_resources.pop_substitution();
                 self.substitution_depth -= 1;
                 self.scopes.pop();
                 self.input_mode_blocked = input_mode_blocked;
@@ -1183,7 +1216,11 @@ impl Session {
                 result?;
                 expand::split_separated_substitution(&output.bytes, quoted)
             }
-        })
+        });
+        if standalone {
+            self.psub_resources.pop_job();
+        }
+        result
     }
 }
 

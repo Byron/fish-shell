@@ -499,6 +499,19 @@ impl Host for CompletionHost<'_> {
         )
     }
 
+    fn copy_input_to(
+        &mut self,
+        redirects: &[Redirection],
+        output: &mut dyn std::io::Write,
+    ) -> Result<bool> {
+        self.host.copy_input_to(
+            &self
+                .io
+                .redirects(redirects, true, true, self.buffer_output, None),
+            output,
+        )
+    }
+
     fn fd_is_terminal(
         &mut self,
         fd: i32,
@@ -520,6 +533,13 @@ impl Host for CompletionHost<'_> {
 
     fn jobs(&self) -> Vec<Vec<u8>> {
         self.host.jobs()
+    }
+    fn retain_job_directories(
+        &mut self,
+        last_pid: u32,
+        paths: &[std::path::PathBuf],
+    ) -> Result<()> {
+        self.host.retain_job_directories(last_pid, paths)
     }
 }
 

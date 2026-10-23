@@ -300,6 +300,10 @@ fn exit_status(status: std::process::ExitStatus) -> i32 {
 }
 
 impl Host for NativeHost {
+    fn retain_job_directories(&mut self, last_pid: u32, paths: &[PathBuf]) -> Result<()> {
+        self.retain_directories(last_pid, paths)
+    }
+
     fn supports_workers(&self) -> bool {
         true
     }
@@ -452,6 +456,31 @@ impl Host for NativeHost {
             }
         }
         Ok(ReadResult::Line(line))
+    }
+
+    fn copy_input_to(
+        &mut self,
+        redirects: &[Redirection],
+        output: &mut dyn io::Write,
+    ) -> Result<bool> {
+        let targets = targets(redirects, false)?;
+        let mut input: Box<dyn io::Read + '_> = match &targets[0] {
+            Target::Inherited(0) => Box::new(io::stdin().lock()),
+            Target::File(file) => Box::new(&**file),
+            _ => return Err(Error::new("descriptor is not available for reading")),
+        };
+        let mut block = [0; 64 * 1024];
+        loop {
+            if self.cancelled() {
+                return Ok(false);
+            }
+            match input.read(&mut block) {
+                Ok(0) => return Ok(true),
+                Ok(count) => output.write_all(&block[..count])?,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     fn fd_is_terminal(

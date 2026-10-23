@@ -636,12 +636,15 @@ with interactive configuration guards enabled, without opening the line editor.
 Starship's generated Fish prompt can be initialized with:
 
 ```fish
-starship init fish --print-full-init | source
+starship init fish | source
 ```
 
-The default `starship init fish` wrapper uses `psub`, which still needs unsupported
-process-substitution helpers. Right and transient prompts, scripted key bindings,
-and regex/function abbreviations remain separate reader work.
+The default wrapper uses the supported file-backed `psub` implementation.
+Files live through the consuming command and are cleaned up afterward, including
+for background consumers and owned-job cancellation. See
+[native process substitution](native-process-substitution.md) for temporary
+directory selection and remaining FIFO and job-event limits. Reader customization
+is documented in [native reader customization](native-reader-customization.md).
 
 Function lookup, `functions -q`, and `type` load requested `.fish` files from
 `$fish_function_path`, which defaults to the selected configuration's `functions`
@@ -940,7 +943,7 @@ or running tmuxx settings. A terminal still configured to use
 ## Remaining work
 
 Concrete startup and completion gaps include edited or silent reads,
-generic `psub` and FIFO helpers, extra file
+FIFO helpers, extra file
 descriptors, signal and per-process/job-exit subscriptions, and advanced reader
 and `status` introspection. POSIX ownership, mode bits and terminal process-group
 behavior do not have equivalent native implementations. Dynamic completions

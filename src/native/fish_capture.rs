@@ -367,6 +367,13 @@ impl<H: Host> Host for CapturingHost<'_, H> {
         self.inner
             .read_record(redirects, delimiter, max_chars, interrupt)
     }
+    fn copy_input_to(
+        &mut self,
+        redirects: &[Redirection],
+        output: &mut dyn std::io::Write,
+    ) -> Result<bool> {
+        self.inner.copy_input_to(redirects, output)
+    }
     fn fd_is_terminal(
         &mut self,
         fd: i32,
@@ -395,6 +402,13 @@ impl<H: Host> Host for CapturingHost<'_, H> {
     }
     fn jobs(&self) -> Vec<Vec<u8>> {
         self.inner.jobs()
+    }
+    fn retain_job_directories(
+        &mut self,
+        last_pid: u32,
+        paths: &[std::path::PathBuf],
+    ) -> Result<()> {
+        self.inner.retain_job_directories(last_pid, paths)
     }
 }
 

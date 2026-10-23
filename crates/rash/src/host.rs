@@ -200,6 +200,22 @@ pub trait Host {
         }
     }
 
+    /// Copy stdin without decoding text or imposing a captured-record limit.
+    /// Return false on interruption; the caller owns incomplete output cleanup.
+    fn copy_input_to(
+        &mut self,
+        redirects: &[Redirection],
+        output: &mut dyn std::io::Write,
+    ) -> Result<bool> {
+        loop {
+            match self.read_record(redirects, None, Some(8192), false)? {
+                ReadResult::Line(bytes) if bytes.is_empty() => return Ok(true),
+                ReadResult::Line(bytes) => output.write_all(&bytes)?,
+                ReadResult::Interrupted(_) => return Ok(false),
+            }
+        }
+    }
+
     /// Inspect a resolved descriptor, including redirections, without I/O.
     /// Hosts without terminal streams may retain the default.
     fn fd_is_terminal(
@@ -214,4 +230,20 @@ pub trait Host {
     fn cancelled(&self) -> bool;
 
     fn jobs(&self) -> Vec<Vec<u8>>;
+
+    /// Transfer reserved temporary directories to a stopped job. The host
+    /// removes them after the job finishes, including after a later resume.
+    fn retain_job_directories(
+        &mut self,
+        _last_pid: u32,
+        directories: &[std::path::PathBuf],
+    ) -> Result<()> {
+        if directories.is_empty() {
+            Ok(())
+        } else {
+            Err(crate::Error::new(
+                "this host cannot retain stopped-job resources",
+            ))
+        }
+    }
 }

@@ -7,7 +7,7 @@ use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const MAGIC: &[u8] = b"fish-native-worker\0\x02";
+const MAGIC: &[u8] = b"fish-native-worker\0\x03";
 const LIMIT: u64 = 64 * 1024 * 1024;
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -15,9 +15,10 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 struct Envelope {
     state: Vec<u8>,
     jobs: Vec<super::host::JobView>,
+    scratch: PathBuf,
 }
 
-pub struct PayloadFile(PathBuf);
+pub struct PayloadFile(PathBuf, Option<super::temporary::Directory>);
 
 impl PayloadFile {
     pub fn create() -> Result<(Self, File)> {
@@ -39,7 +40,7 @@ impl PayloadFile {
                 options.mode(0o600);
             }
             match options.open(&path) {
-                Ok(file) => return Ok((Self(path), file)),
+                Ok(file) => return Ok((Self(path, None), file)),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(e.into()),
             }
@@ -81,8 +82,14 @@ pub(crate) fn prepare(
     if !matches!(language, "fish" | "rash") || state.len() as u64 > LIMIT {
         return Err(Error::new("invalid interpreter snapshot"));
     }
-    let bytes = encode(&Envelope { state, jobs })?;
-    let (payload, mut file) = PayloadFile::create()?;
+    let scratch = super::temporary::Directory::create(&std::env::temp_dir())?;
+    let bytes = encode(&Envelope {
+        state,
+        jobs,
+        scratch: scratch.path().to_owned(),
+    })?;
+    let (mut payload, mut file) = PayloadFile::create()?;
+    payload.1 = Some(scratch);
     file.write_all(MAGIC)?;
     file.write_all(&bytes)?;
     file.flush()?;
@@ -162,7 +169,13 @@ mod tests {
 }
 
 pub fn run(language: &str, path: &Path) -> Result<i32> {
-    let Envelope { state, jobs } = read_envelope(path)?;
+    let Envelope {
+        state,
+        jobs,
+        scratch,
+    } = read_envelope(path)?;
+    #[cfg(not(windows))]
+    let _ = scratch;
     let mut host = super::host::NativeHost::new_worker(jobs)?;
     match language {
         "rash" => {
@@ -175,7 +188,7 @@ pub fn run(language: &str, path: &Path) -> Result<i32> {
         "fish" => {
             let snapshot = decode(&state)?;
             std::fs::remove_file(path)?;
-            super::fish::Session::run_worker(snapshot, &mut host)
+            super::fish::Session::run_worker(snapshot, scratch, &mut host)
         }
         _ => Err(Error::new("unknown interpreter snapshot language")),
     }

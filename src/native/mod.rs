@@ -47,6 +47,7 @@ mod utilities;
 
 #[cfg(windows)]
 pub mod syntax;
+mod temporary;
 pub mod worker;
 
 use rash::{Error, Result};
