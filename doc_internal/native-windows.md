@@ -54,9 +54,17 @@ Windows publication and rollback with isolated fake Cargo artifacts.
 
 With an MSVC host toolchain, `cargo build --locked --release --bins` selects the
 native backend automatically and writes optimized executables to `target/release`.
-This milestone supports native Cargo builds; CMake installation and
-packaging still use the POSIX build. `fish_indent` and `fish_key_reader` currently
-build as native executables that report their functionality is unavailable.
+`fish_indent` shares the POSIX formatter and supports native file, stdin,
+check/write, and highlighting modes. `fish_key_reader` shares the native editor's
+key decoder and prints sourceable bindings. See [native tools](native-tools.md)
+for their options and current limitations.
+
+`just package target/dist/fish-native.zip` builds and publishes a portable ZIP
+with all four executables, documentation, licenses, and a checksum manifest.
+`just install EXTRACTED_BUNDLE DESTINATION` checks and stages an extracted bundle
+before replacing a previous managed installation, preserving its files for
+rollback. Neither command changes PATH or Fish configuration. CMake installation
+still uses the POSIX build; native MSI packaging is not provided.
 
 For the full MSYS2 build, open an **MSYS2 MSYS** shell, update it with `pacman -Syu`,
 then use its own Rust toolchain. Git Bash alone does not include that toolchain.
@@ -416,7 +424,7 @@ Use `fish_vi_key_bindings` to select vi editing, or
 vi insert/normal-mode editing uses the native line editor; custom Fish keymap
 functions and mode-specific bindings are not implemented.
 
-Literal command abbreviations can be defined with `abbr --add`, listed with
+Abbreviations can be defined with `abbr --add`, listed with
 `abbr --show`/`--list`, queried with `--query`, and removed with `--erase`:
 
 ```fish
@@ -424,21 +432,29 @@ abbr --add gs 'git status'
 bind ctrl-t complete
 ```
 
-Space expands a matching bare command word while editing. Enter expands and
-executes complete input in one press; unfinished expansions continue in the
-editable buffer with normal indentation. Quoted words, ordinary arguments
-and noninteractive scripts are not expanded. Abbreviations inside command
-substitutions, regex/function generators and cursor markers are not supported.
-Definitions belong to the session; put them in `config.fish` to recreate them.
+Space expands a matching bare word while editing. Enter expands and executes
+complete input in one press; unfinished expansions continue in the editable
+buffer with normal indentation. The shared Fish matcher supports `--regex`,
+`--function`, `--position anywhere`, `--command`, and `--set-cursor`, including
+bare words inside command substitutions. The default position is still a command
+word. Quoted words, redirection targets and noninteractive scripts are not
+expanded. Definitions belong to the session; put them in `config.fish` to
+recreate them.
 
-Native `bind` maps one key to one supported input action. `bind --function-names`
+Native `bind` maps one key to input actions or Fish script callbacks.
+`bind --function-names`
 lists actions and `bind --key-names` lists named keys; `bind --query KEY` checks a
 binding. Modern names such as `ctrl-t`, `alt-f`, `left` and `f5`, Unicode single
 keys and legacy control-character spellings are accepted. `bind --erase KEY`
 restores the previous default, and `bind --erase --all` removes all user overrides.
-Binding lists can be sourced as Fish code. Shell-script actions, multiple-key
-sequences, multiple actions and binding modes are not supported. An open
-completion menu handles its navigation and cancellation before user bindings.
+Binding lists can be sourced as Fish code. Multiple callbacks run in order before
+queued input actions; callbacks can edit the buffer through `commandline` and
+queue input actions through `commandline --function`. Native Fish autoloads and calls
+`fish_user_key_bindings` before the first read. Multikey sequences and custom
+binding modes remain unsupported. An open completion menu handles its navigation
+and cancellation before user bindings. See
+[native reader customization](native-reader-customization.md) for supported
+editing operations and generated abbreviations.
 
 The native Fish editor colors commands, keywords, quoted strings, variables,
 escapes, operators and comments as you type, and marks unknown literal commands
@@ -576,10 +592,13 @@ loading successfully without registrations, and 17 returning nonzero when their
 target programs are absent. Some successful scripts also report missing optional
 programs. These counts measure source loading, not every dynamic completion
 query. Scripts that ask Docker, Pip, Ruff, or another application to generate
-completions still need that application. POSIX service databases, FIFOs, process
-exit handlers and reader-editing commands remain platform or evaluator limits.
+completions still need that application. POSIX service databases, FIFOs and
+process/job-exit handlers remain platform or evaluator limits.
 Installed-tool checks separately exercise Git branches/options, Cargo
 packages/features/targets, Rustup lists, and saved alias wrappers.
+The [shared behavior and dynamic completion tests](native-parity-tests.md) run
+the same fixtures against native and POSIX Fish, with additional native minimum
+Rust and disabled-default-feature CI lanes.
 
 Completion evaluation receives empty standard input by default. During Tab,
 Ctrl-C interrupts running generators before returning to the edited line.
@@ -625,7 +644,11 @@ uses its output as the prompt, preserving the previous command's `$status` and
 `$pipestatus`. ANSI colors in multiline prompts, including native Starship output,
 do not contribute to cursor columns or wrapped rows, so editing preserves output
 above the prompt. A user `fish_prompt.fish` can also be autoloaded; without a user
-prompt it displays `fish>`.
+prompt it displays `fish>`. A defined or autoloaded `fish_right_prompt` appears
+on the last prompt row when it fits beside the input. With
+`set -g fish_transient_prompt 1`, accepting a command renders both prompt
+functions once more with `--final-rendering`. Right prompts support single-line
+text and SGR colors; unsupported terminal controls are suppressed.
 
 Native sessions provide read-only `version` and `FISH_VERSION` variables.
 `CMD_DURATION` starts at zero and records the elapsed milliseconds of the last
@@ -738,7 +761,8 @@ The prompt check verifies physical cursor coordinates and preservation of
 preceding output during typing, multiline editing and resizing. It inspects raw
 ConPTY output to ensure editing and menu navigation preserve unchanged rows,
 including transient writes and erasures hidden by the final screen state. It tests
-ANSI-colored prompts and also runs native Starship when found on `PATH`; pass
+ANSI-colored prompts, right/transient prompts, and the startup binding hook. It
+also runs ordinary native Starship initialization when found on `PATH`; pass
 `--starship C:/path/to/starship.exe` to select an explicit installation.
 
 ## Bash-style interactive input
@@ -942,10 +966,10 @@ or running tmuxx settings. A terminal still configured to use
 
 ## Remaining work
 
-Concrete startup and completion gaps include edited or silent reads,
-FIFO helpers, extra file
-descriptors, signal and per-process/job-exit subscriptions, and advanced reader
-and `status` introspection. POSIX ownership, mode bits and terminal process-group
+Concrete startup and completion gaps include edited or silent reads, FIFO
+helpers, extra file descriptors, signal and per-process/job-exit subscriptions,
+custom binding modes, multikey bindings, and advanced `status` introspection.
+POSIX ownership, mode bits and terminal process-group
 behavior do not have equivalent native implementations. Dynamic completions
 that query an application's own commands still require that application;
 successful script loading alone does not establish complete query coverage.
@@ -956,5 +980,5 @@ successful script loading alone does not establish complete query coverage.
    foreground/background input behavior beyond the current owned-job support.
 3. Extend native reader customization and dynamic completion compatibility for
    programs and POSIX services not covered by the current checks.
-4. Add native installation and packaging, and qualify additional Windows targets
-   and terminal environments.
+4. Qualify additional Windows targets and terminal environments, and consider
+   installer formats beyond the portable ZIP and managed-directory installer.
