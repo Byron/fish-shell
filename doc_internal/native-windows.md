@@ -166,8 +166,15 @@ and failures clear remaining destination variables. Bare `read` writes the
 record without adding a delimiter. Normal line reads recognize Windows CRLF;
 NUL reads preserve embedded newlines and carriage returns.
 
-The full builtin set is not implemented. Reader editing, silent input,
-function-scoped `read`, and locale-specific numeric formatting remain unavailable;
+`set --function` (`-f`) and `read --function` write to the enclosing function
+scope, including inside blocks, sourced scripts and command substitutions.
+Functions declared with `--no-scope-shadowing` share their caller's function
+scope. At top level, `-f` selects the outermost local scope. Scoped queries,
+erasure, slices, export flags and name listing use that same destination;
+append/prepend still seed their list from the currently visible value.
+
+The full builtin set is not implemented. Edited reads, silent input,
+and locale-specific numeric formatting remain unavailable;
 unsupported options produce diagnostics.
 
 Native builds enable `native-utilities` by default, packaging 35 commands such
@@ -932,8 +939,8 @@ or running tmuxx settings. A terminal still configured to use
 
 ## Remaining work
 
-Concrete startup and completion gaps include function-scoped `set -f` and
-`read -f`, edited or silent reads, generic `psub` and FIFO helpers, extra file
+Concrete startup and completion gaps include edited or silent reads,
+generic `psub` and FIFO helpers, extra file
 descriptors, signal and per-process/job-exit subscriptions, and advanced reader
 and `status` introspection. POSIX ownership, mode bits and terminal process-group
 behavior do not have equivalent native implementations. Dynamic completions

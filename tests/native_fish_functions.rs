@@ -63,7 +63,7 @@ fn named_arguments_and_inherited_snapshots_follow_fish_precedence() {
 }
 
 #[test]
-fn unshadowed_functions_share_caller_variables_without_leaking_new_locals() {
+fn unshadowed_functions_share_the_callers_function_scope() {
     assert_eq!(
         run(r#"
             set -g label global
@@ -86,7 +86,7 @@ fn unshadowed_functions_share_caller_variables_without_leaking_new_locals() {
             outer
             echo $label
             "#),
-        "global\nlocal\nchanged\n1\nglobal\n"
+        "global\nlocal\nchanged\n0\nglobal\n"
     );
 }
 

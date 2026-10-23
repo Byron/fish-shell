@@ -48,6 +48,7 @@ impl Session {
             wopt(L!("list"), NoArgument, 'a'),
             wopt(L!("delimiter"), RequiredArgument, 'd'),
             wopt(L!("global"), NoArgument, 'g'),
+            wopt(L!("function"), NoArgument, 'f'),
             wopt(L!("local"), NoArgument, 'l'),
             wopt(L!("universal"), NoArgument, 'U'),
             wopt(L!("export"), NoArgument, 'x'),
@@ -66,13 +67,13 @@ impl Session {
             .collect();
         let mut argv: Vec<&wstr> = words.iter().map(WString::as_utfstr).collect();
         let original = argv.clone();
-        let mut parser = WGetopter::new(L!("ad:glUxuzLn:tP:h"), LONG, &mut argv);
+        let mut parser = WGetopter::new(L!("ad:fglUxuzLn:tP:h"), LONG, &mut argv);
         let mut options = Options::default();
         while let Some(option) = parser.next_opt() {
             match option {
                 'a' => options.array = true,
                 'd' => options.delimiter = Some(parser.woptarg.unwrap().to_owned()),
-                'g' | 'l' | 'U' => {
+                'f' | 'g' | 'l' | 'U' => {
                     if options.scope.is_some_and(|scope| scope != option) {
                         return Err(Error::new("read: multiple variable scopes"));
                     }

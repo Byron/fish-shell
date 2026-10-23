@@ -372,6 +372,7 @@ impl Session {
         &self,
         name: &str,
         local: bool,
+        function: bool,
         global: bool,
         universal: bool,
     ) -> Option<&Variable> {
@@ -384,6 +385,8 @@ impl Session {
                 .iter()
                 .rev()
                 .find_map(|scope| scope.get(name))
+        } else if function {
+            self.scopes[self.scope_start()].get(name)
         } else {
             self.variable(name)
         }
@@ -391,7 +394,7 @@ impl Session {
 
     /// Return whether this was an assignment, preserving the preceding status.
     fn set(&mut self, args: &[String], host: &mut impl Host, output: &mut Output) -> Result<bool> {
-        let (mut local, mut global, mut universal) = (false, false, false);
+        let (mut local, mut function, mut global, mut universal) = (false, false, false, false);
         let (mut exported, mut pathvar) = (None, None);
         let (mut query, mut erase, mut append, mut prepend, mut no_event, mut names) =
             (false, false, false, false, false, false);
@@ -406,6 +409,7 @@ impl Session {
             }
             match arg.as_str() {
                 "--local" => local = true,
+                "--function" => function = true,
                 "--global" => global = true,
                 "--universal" => universal = true,
                 "--export" => exported = Some(true),
@@ -422,6 +426,7 @@ impl Session {
                     for flag in arg[1..].chars() {
                         match flag {
                             'l' => local = true,
+                            'f' => function = true,
                             'g' => global = true,
                             'U' => universal = true,
                             'x' => exported = Some(true),
@@ -439,9 +444,14 @@ impl Session {
             }
             index += 1;
         }
-        if usize::from(local) + usize::from(global) + usize::from(universal) > 1 {
+        if [local, function, global, universal]
+            .into_iter()
+            .filter(|flag| *flag)
+            .count()
+            > 1
+        {
             return Err(Error::new(
-                "set: local, global and universal scopes conflict",
+                "set: local, function, global and universal scopes conflict",
             ));
         }
         let args = &args[index..];
@@ -455,6 +465,7 @@ impl Session {
                 let name = variable_indices::variable_name(&expression).to_string();
                 valid_name(&name)?;
                 let electric = (!local
+                    && !function
                     && !universal
                     && matches!(
                         name.as_str(),
@@ -465,7 +476,7 @@ impl Session {
                     ..Default::default()
                 });
                 let variable = self
-                    .set_scope_variable(&name, local, global, universal)
+                    .set_scope_variable(&name, local, function, global, universal)
                     .or(electric.as_ref())
                     .filter(|variable| {
                         !exported.is_some_and(|flag| flag != variable.exported)
@@ -491,13 +502,15 @@ impl Session {
         }
         if args.is_empty() || names {
             let mut merged = BTreeMap::new();
-            if universal || (!global && !local) {
+            if universal || (!global && !local && !function) {
                 merged.extend(self.universals.vars.clone());
             }
-            if global || (!universal && !local) {
+            if global || (!universal && !local && !function) {
                 merged.extend(self.variables.clone());
             }
-            if local || (!global && !universal) {
+            if function {
+                merged.extend(self.scopes[self.scope_start()].clone());
+            } else if local || (!global && !universal) {
                 for scope in &self.scopes[self.scope_start()..] {
                     merged.extend(scope.clone());
                 }
@@ -534,6 +547,7 @@ impl Session {
             .rposition(|scope| scope.contains_key(name))
             .map(|index| index + self.scope_start());
         let implicit_universal = !local
+            && !function
             && !global
             && !universal
             && visible_scope.is_none()
@@ -657,11 +671,15 @@ impl Session {
             }
             global = true;
         }
-        let selected = self.set_scope_variable(name, local, global, false);
+        let selected = self.set_scope_variable(name, local, function, global, false);
         let value = assign(self.variable(name), selected)?;
-        let function_scope = self.function_frames.last().map(|frame| frame.local_scope);
+        // Unshadowed functions share their caller's function scope. Blocks,
+        // sourced files and substitutions never establish a function boundary.
+        let function_scope = self.scope_start();
         let scope = if global {
             &mut self.variables
+        } else if function {
+            &mut self.scopes[function_scope]
         } else if local && erase && !indexed {
             if let Some(index) = visible_scope {
                 &mut self.scopes[index]
@@ -675,8 +693,8 @@ impl Session {
             &mut self.scopes[index]
         } else if self.variables.contains_key(name) {
             &mut self.variables
-        } else if let Some(index) = function_scope {
-            &mut self.scopes[index]
+        } else if !self.function_frames.is_empty() {
+            &mut self.scopes[function_scope]
         } else {
             &mut self.variables
         };
