@@ -520,23 +520,7 @@ impl Session {
         if self.exit_requested() {
             return Ok(None);
         }
-        if !self.ensure_function("fish_prompt", host, &mut Output::default())? {
-            return Ok(None);
-        }
-        let status = self.status;
-        let pipeline = self.pipeline.clone();
-        let mut output = Output {
-            capture: true,
-            ..Default::default()
-        };
-        let input_mode_blocked = std::mem::replace(&mut self.input_mode_blocked, true);
-        let result = self.eval_source("fish_prompt", host, &mut output);
-        self.input_mode_blocked = input_mode_blocked;
-        self.status = status;
-        self.pipeline = pipeline;
-        result.map(|()| {
-            Some(String::from_utf8_lossy(&output.bytes.newline_serialized()).into_owned())
-        })
+        self.render_reader_prompt("fish_prompt", false, host)
     }
 
     pub fn set_args(&mut self, args: Vec<String>) {

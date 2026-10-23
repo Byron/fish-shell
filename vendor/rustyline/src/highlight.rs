@@ -30,6 +30,18 @@ pub trait Highlighter {
         let _ = default;
         Borrowed(prompt)
     }
+    /// Optional single-line prompt aligned to the right of the Windows editor.
+    /// It is hidden when it would overlap the input or cannot be safely drawn.
+    #[cfg(windows)]
+    fn right_prompt(&self) -> Option<String> {
+        None
+    }
+    /// Replace the prompt after the user accepts the input, before returning it.
+    #[cfg(windows)]
+    fn final_prompt(&self, prompt: &str) -> Option<String> {
+        let _ = prompt;
+        None
+    }
     /// Takes the `hint` and
     /// returns the highlighted version (with ANSI color).
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
@@ -77,6 +89,16 @@ impl<'r, H: ?Sized + Highlighter> Highlighter for &'r H {
 
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
         (**self).highlight_hint(hint)
+    }
+
+    #[cfg(windows)]
+    fn right_prompt(&self) -> Option<String> {
+        (**self).right_prompt()
+    }
+
+    #[cfg(windows)]
+    fn final_prompt(&self, prompt: &str) -> Option<String> {
+        (**self).final_prompt(prompt)
     }
 
     fn highlight_candidate<'c>(

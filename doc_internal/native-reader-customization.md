@@ -57,3 +57,28 @@ quoted words and redirection targets remain literal. `--set-cursor[=MARKER]`
 removes the first marker from the replacement and moves the cursor there when
 expanding with Space. Enter expands and submits a complete command as usual.
 Generated output is limited to 1 MiB, and cannot contain NUL bytes.
+
+## Startup bindings and prompts
+
+Before its first interactive read, native Fish autoloads and calls
+`fish_user_key_bindings`. Its bindings apply immediately, and the hook runs once
+per editor session. Put the function in the configured `functions` directory, as
+with other Fish functions. Hook evaluation errors print a diagnostic and leave the reader
+available; changes already made by the hook remain in the session.
+
+`fish_right_prompt` runs alongside each ordinary prompt and appears on the last
+left-prompt row, with one unused terminal cell at the right edge. It disappears
+when input or an autosuggestion would collide with it, returns after shortening,
+and moves when the terminal resizes. Single-line text, Unicode and SGR colors are
+supported. Multiline output and cursor-moving controls are suppressed rather than
+allowed to disrupt the edited command.
+
+With `set -g fish_transient_prompt 1`, submitting a command calls `fish_prompt` and
+`fish_right_prompt` again with `--final-rendering`. Their new output replaces the
+active prompt before the command runs; cancelling input does not trigger this
+final rendering. Prompt callbacks preserve the preceding command's status and
+pipeline status. An explicit `exit` still exits the shell.
+
+ConPTY checks cover right-prompt placement, hiding/restoration, resizing, transient
+rendering, and an autoloaded binding working on the first read. The Starship
+fixture uses ordinary `starship init fish | source`, including its `psub` path.

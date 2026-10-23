@@ -827,6 +827,11 @@ impl<H: Helper, I: History> Editor<H, I> {
         s.edit_move_buffer_end()?;
         s.forced_refresh = false;
 
+        #[cfg(windows)]
+        if let Some(prompt) = s.helper.and_then(|helper| helper.final_prompt(prompt)) {
+            s.refresh_final_prompt(&prompt)?;
+        }
+
         if cfg!(windows) {
             let _ = original_mode; // silent warning
         }

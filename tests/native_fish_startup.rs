@@ -81,6 +81,35 @@ impl Fixture {
     }
 }
 
+#[test]
+fn explicit_interactive_mode_with_piped_input_does_not_require_a_console() {
+    use std::io::Write as _;
+
+    let fixture = Fixture::new();
+    let mut child = fixture
+        .command()
+        .args(["-N", "-i", "-P"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"echo piped-reader\nexit\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_success(&output);
+    assert_eq!(stdout(&output), "piped-reader\n");
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         // Remove only the private fixture directory created directly in temp.

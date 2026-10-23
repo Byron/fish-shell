@@ -138,6 +138,8 @@ def main():
     parser.add_argument("fish", type=Path)
     parser.add_argument("tmuxx", type=Path)
     parser.add_argument("--starship", type=Path)
+    parser.add_argument("--fixture", action="append", choices=("ansi", "starship", "margin", "custom"),
+                        help="run only selected fixtures (default: all)")
     args = parser.parse_args()
     if os.name != "nt":
         parser.error("this test requires native Windows and tmuxx ConPTY")
@@ -505,6 +507,80 @@ def main():
                   "multiline, resize, Ctrl-L, bottom scrolling; "
                   f"typing {first_key} B, selection {byte_counts['selecting beta']} B")
 
+        def exercise_custom_prompts():
+            nonlocal pane, sentinels
+            sentinels = ["PROMPT_custom_preserved"]
+            functions = config / "functions"
+            functions.mkdir(exist_ok=True)
+            hook = functions / "fish_user_key_bindings.fish"
+            hook.write_text(
+                "function fish_user_key_bindings\n"
+                "    set -g hook_runs (math $hook_runs + 1)\n"
+                "    bind ctrl-g 'commandline -r \"echo PROMPT_hook:$hook_runs\"; commandline -f execute'\n"
+                "end\n", encoding="utf-8")
+            (config / "config.fish").write_text(
+                "set -g fish_autosuggestion_enabled 0\n"
+                "set -g fish_transient_prompt 1\n"
+                "set -g hook_runs 0\n"
+                "echo PROMPT_custom_preserved\n"
+                "function fish_prompt\n"
+                "    if contains -- --final-rendering $argv\n"
+                "        printf 'DONE> '\n"
+                "    else\n"
+                "        printf 'LIVE> '\n"
+                "    end\n"
+                "end\n"
+                "function fish_right_prompt\n"
+                "    if contains -- --final-rendering $argv\n"
+                "        printf '\\e[32mFINAL-R\\e[0m'\n"
+                "    else\n"
+                "        printf '\\e[34mRIGHT\\e[0m'\n"
+                "    end\n"
+                "end\n", encoding="utf-8")
+            pane = call("new-session", "-dP", "-s", "custom", "-x", "100", "-y", "40",
+                        "-F", "#{pane_id}", str(fish), "-i").strip()
+
+            def live(source="", width=100, right="RIGHT"):
+                left = "LIVE> " + source
+                expected = left.ljust(width - 1 - len(right)) + right if right else left
+                return wait_for(lambda text: bool(text.rstrip().splitlines())
+                                and text.rstrip().splitlines()[-1].rstrip() == expected.rstrip(),
+                                f"missing custom prompt {expected!r}")
+
+            live()
+            row = cursor()[1]
+            require_cursor((6, row), "right prompt initial cursor")
+            literal("x" * 90)
+            live("x" * 90, right="")
+            require_cursor((96, row), "right prompt hidden on collision")
+            keys("C-u")
+            live()
+            require_cursor((6, row), "right prompt restored after shortening")
+            call("resize-window", "-t", "custom", "-x", "80", "-y", "40")
+            live(width=80)
+            require_cursor((6, row), "right prompt repositioned after resize")
+            # The standard autoloaded hook already applies on the first read.
+            keys("C-g")
+            expect_output("PROMPT_hook:1")
+            live(width=80)
+            text = capture()
+            final = "DONE> echo PROMPT_hook:1".ljust(72) + "FINAL-R"
+            assert final in text.splitlines(), text
+            send("echo PROMPT_hook_again:$hook_runs")
+            expect_output("PROMPT_hook_again:1")
+            live(width=80)
+            require_sentinels()
+            # Cancellation must leave the original prompt, not a final render.
+            literal("cancelled-input")
+            live("cancelled-input", width=80)
+            keys("C-c")
+            live(width=80)
+            assert "DONE> cancelled-input" not in capture()
+            send("exit")
+            hook.unlink()
+            print("PASS native custom prompts: right alignment, collision, resize, transient rendering, "
+                  "autoloaded startup binding on first read and once per session")
+
         def exercise_margin():
             nonlocal pane, sentinels
             sentinels = [f"PROMPT_preserved_margin_{index}" for index in range(6)]
@@ -569,19 +645,27 @@ def main():
                 # Use standard initialization, including its function options,
                 # random session key, runtime variables and jobs/count pipeline.
                 executable = starship.as_posix().replace("'", "\\'")
-                fixtures.append(("starship", f"'{executable}' init fish --print-full-init | source"))
+                fixtures.append(("starship", f"'{executable}' init fish | source"))
             else:
                 print("SKIP actual Starship: executable not found; ANSI fixture still runs")
             failures = []
             for name, definition in fixtures:
+                if args.fixture and name not in args.fixture:
+                    continue
                 try:
                     exercise(name, definition)
                 except AssertionError as error:
                     failures.append(f"{name}: {error}")
             try:
-                exercise_margin()
+                if not args.fixture or "margin" in args.fixture:
+                    exercise_margin()
             except AssertionError as error:
                 failures.append(f"margin: {error}")
+            try:
+                if not args.fixture or "custom" in args.fixture:
+                    exercise_custom_prompts()
+            except AssertionError as error:
+                failures.append(f"custom: {error}")
             assert not failures, "\n\n".join(failures)
         finally:
             if owner.poll() is None:

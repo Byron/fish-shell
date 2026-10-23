@@ -138,9 +138,119 @@ mod tests {
         );
         assert_eq!(session.reader_state.unwrap().line, "original");
     }
+
+    #[test]
+    fn prompts_receive_final_rendering_and_preserve_previous_status() {
+        let mut session = Session::new().unwrap();
+        let mut host = Capture::default();
+        session
+            .eval(
+                "function fish_prompt; printf '%s|%s' $status (string join , -- $argv); false; end",
+                &mut host,
+            )
+            .unwrap();
+        session.status = 42;
+        session.pipeline = vec![3, 42];
+        assert_eq!(
+            session
+                .render_reader_prompt("fish_prompt", true, &mut host)
+                .unwrap()
+                .as_deref(),
+            Some("42|--final-rendering")
+        );
+        assert_eq!(session.status, 42);
+        assert_eq!(session.pipeline, [3, 42]);
+        assert!(!session.input_mode_blocked);
+        assert!(!session.transient_prompt_enabled());
+        session
+            .eval("set -g fish_transient_prompt 1", &mut host)
+            .unwrap();
+        assert!(session.transient_prompt_enabled());
+    }
+
+    #[test]
+    fn startup_bindings_and_prompt_exit_keep_their_session_effects() {
+        let mut session = Session::new().unwrap();
+        let mut host = Capture::default();
+        session.eval("function fish_user_key_bindings; set -g hook_seen yes; bind ctrl-g 'commandline -i hook'; false; end", &mut host).unwrap();
+        session.status = 17;
+        session.pipeline = vec![0, 17];
+        session.initialize_reader_bindings(&mut host).unwrap();
+        assert_eq!(session.values("hook_seen"), ["yes"]);
+        assert_eq!(session.status, 17);
+        assert_eq!(session.pipeline, [0, 17]);
+        session
+            .eval("function fish_right_prompt; exit 23; end", &mut host)
+            .unwrap();
+        session
+            .render_reader_prompt("fish_right_prompt", false, &mut host)
+            .unwrap();
+        assert!(session.exit_requested());
+        assert_eq!(session.status, 23);
+    }
 }
 
 impl Session {
+    pub(in crate::native) fn initialize_reader_bindings(
+        &mut self,
+        host: &mut impl Host,
+    ) -> Result<()> {
+        let status = self.status;
+        let pipeline = self.pipeline.clone();
+        let result = (|| {
+            if self.ensure_function("fish_user_key_bindings", host, &mut Output::default())? {
+                self.eval_source("fish_user_key_bindings", host, &mut Output::default())?;
+            }
+            Ok(())
+        })();
+        if !self.exit_requested() {
+            self.status = status;
+            self.pipeline = pipeline;
+        }
+        result
+    }
+
+    pub(in crate::native) fn transient_prompt_enabled(&self) -> bool {
+        self.values("fish_transient_prompt")
+            .first()
+            .is_some_and(|value| value == "1")
+    }
+
+    pub(in crate::native) fn render_reader_prompt(
+        &mut self,
+        name: &str,
+        final_rendering: bool,
+        host: &mut impl Host,
+    ) -> Result<Option<String>> {
+        let status = self.status;
+        let pipeline = self.pipeline.clone();
+        let blocked = std::mem::replace(&mut self.input_mode_blocked, true);
+        let mut output = Output {
+            capture: true,
+            ..Default::default()
+        };
+        let result = (|| {
+            if !self.ensure_function(name, host, &mut Output::default())? {
+                return Ok(None);
+            }
+            let command = if final_rendering {
+                format!("{name} --final-rendering")
+            } else {
+                name.into()
+            };
+            self.eval_source(&command, host, &mut output)?;
+            Ok(Some(
+                String::from_utf8_lossy(&output.bytes.newline_serialized()).into_owned(),
+            ))
+        })();
+        self.input_mode_blocked = blocked;
+        if !self.exit_requested() {
+            self.status = status;
+            self.pipeline = pipeline;
+        }
+        result
+    }
+
     pub(in crate::native) fn reader_abbreviation(
         &mut self,
         line: &str,

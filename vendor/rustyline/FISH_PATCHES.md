@@ -26,6 +26,11 @@ Local changes:
   Windows implementation also compiles in the crate's test configuration.
 - `src/edit.rs` keeps the cursor after pasted text in Windows vi insert mode.
   Vi normal-mode paste retains the upstream cursor behavior.
+- `src/highlight.rs`, `src/edit.rs` and `src/lib.rs` add Windows prompt hooks:
+  a right prompt can be overlaid on a safe physical row, and accepting input can
+  replace the left and right prompts with their final rendering. The Windows
+  redraw cache keeps the input's logical extent separate from that overlay,
+  suppresses collisions, and refreshes on every terminal width change.
 - `src/keymap.rs` and `src/command.rs` provide a Windows-only command to replace
   an abbreviation and submit the corrected input with validation in one key
   press. Fish's native editor computes expansions and continuation indentation.

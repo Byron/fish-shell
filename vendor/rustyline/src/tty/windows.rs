@@ -810,9 +810,12 @@ impl Renderer for ConsoleRenderer {
             }
         }
         let info = self.get_console_screen_buffer_info()?;
-        if let Some(frame) = redraw::Frame::parse(&self.buffer, self.cols, self.vt_output)
+        if let Some(mut frame) = redraw::Frame::parse(&self.buffer, self.cols, self.vt_output)
             .filter(|frame| frame.matches_end(end_pos.row, end_pos.col))
         {
+            if let Some(right) = highlighter.and_then(|highlighter| highlighter.right_prompt()) {
+                frame.overlay_right(new_layout.prompt_size.row, &right, self.cols);
+            }
             return self.refresh_frame(frame, previous, old_layout, new_layout, &info);
         }
         // Unknown cursor-changing controls retain the legacy interpretation;

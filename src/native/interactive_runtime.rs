@@ -35,6 +35,7 @@ pub(super) struct CompletionService {
     printer: Option<Box<dyn rustyline::ExternalPrinter + Send>>,
     pending: Vec<u8>,
     read_error: Option<Error>,
+    right_prompt: String,
 }
 
 impl CompletionService {
@@ -46,6 +47,7 @@ impl CompletionService {
             printer: None,
             pending: Vec::new(),
             read_error: None,
+            right_prompt: String::new(),
         }
     }
 
@@ -57,8 +59,45 @@ impl CompletionService {
     }
 
     pub(super) fn begin_read(&mut self, session: Session, host: NativeHost) {
+        use std::io::IsTerminal as _;
+
         assert!(self.runtime.is_none(), "the editor already owns a session");
         self.runtime = Some(ReadRuntime { session, host });
+        self.right_prompt.clear();
+        // Rustyline reads redirected stdin directly, without a console editor
+        // or right prompt. Do not try to install console cancellation there.
+        if !std::io::stdin().is_terminal() {
+            return;
+        }
+        self.right_prompt = self
+            .evaluate(|session, host| {
+                session.render_reader_prompt("fish_right_prompt", false, host)
+            })
+            .flatten()
+            .unwrap_or_default()
+            .trim_end_matches(['\r', '\n'])
+            .into();
+    }
+
+    pub(super) fn right_prompt(&self) -> String {
+        self.right_prompt.clone()
+    }
+
+    pub(super) fn final_prompt(&mut self, fallback: &str) -> Option<String> {
+        if !self.runtime.as_ref()?.session.transient_prompt_enabled() {
+            return None;
+        }
+        let prompts = self.evaluate(|session, host| {
+            let left = session.render_reader_prompt("fish_prompt", true, host)?;
+            let right = session.render_reader_prompt("fish_right_prompt", true, host)?;
+            Ok((left, right))
+        });
+        let (left, right) = prompts?;
+        self.right_prompt = right
+            .unwrap_or_default()
+            .trim_end_matches(['\r', '\n'])
+            .into();
+        Some(left.unwrap_or_else(|| fallback.into()))
     }
 
     pub(super) fn abbreviations(&self) -> super::interactive_abbreviations::Abbreviations {

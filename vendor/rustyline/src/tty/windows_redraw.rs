@@ -35,6 +35,7 @@ pub(super) struct Frame {
     pub(super) erase_down: bool,
     final_style: String,
     ansi: bool,
+    logical_end: (usize, usize),
 }
 
 impl Frame {
@@ -125,17 +126,48 @@ impl Frame {
                 remaining = &remaining[end..];
             }
         }
+        let logical_end = (rows.len(), row.columns);
         rows.push(row);
         Some(Self {
             rows,
             erase_down,
             final_style: style,
             ansi,
+            logical_end,
         })
     }
 
     pub(super) fn matches_end(&self, row: usize, column: usize) -> bool {
-        self.rows.len() == row + 1 && self.rows.last().is_some_and(|last| last.columns == column)
+        self.logical_end == (row, column)
+    }
+
+    pub(super) fn overlay_right(&mut self, index: usize, prompt: &str, columns: usize) {
+        let Some(right) = Self::parse(prompt, columns, self.ansi) else {
+            return;
+        };
+        if right.rows.len() != 1 || right.erase_down {
+            return;
+        }
+        let Some(row) = self.rows.get_mut(index) else {
+            return;
+        };
+        let right_row = &right.rows[0];
+        // Leave a cell at the terminal edge to avoid wrap/scroll and at least
+        // one separating cell after input or its hint. Preserve the logical
+        // input extent: cursor restoration must ignore the decorative suffix.
+        let Some(start) = columns.checked_sub(right_row.columns + 1) else {
+            return;
+        };
+        if right_row.columns == 0 || row.columns >= start {
+            return;
+        }
+        if self.ansi {
+            row.text.push_str("\x1b[0m");
+        }
+        row.text
+            .extend(std::iter::repeat(' ').take(start - row.columns));
+        row.text.push_str(&right_row.text);
+        row.columns = columns - 1;
     }
 
     pub(super) fn append_row(&self, index: usize, output: &mut String) {
@@ -245,5 +277,47 @@ mod tests {
         );
         assert!(Frame::parse(&"\n".repeat(MAX_ROWS), 80, true).is_none());
         assert!(Frame::parse(&"\x1b[31m".repeat(MAX_STYLE_BYTES), 80, true).is_none());
+    }
+
+    #[test]
+    fn right_prompt_preserves_input_extent_and_uses_visible_width() {
+        let mut frame = Frame::parse("\x1b[31m> echo", 20, true).unwrap();
+        frame.overlay_right(0, "\x1b[32m🐟R\x1b[0m", 20);
+        assert!(frame.matches_end(0, 6));
+        assert_eq!(frame.rows[0].columns, 19);
+        assert_eq!(
+            frame.rows[0].text,
+            "\x1b[31m> echo\x1b[0m          \x1b[32m🐟R\x1b[0m"
+        );
+        let mut style = String::new();
+        frame.append_final_style(&mut style);
+        assert_eq!(style, "\x1b[0m\x1b[31m");
+    }
+
+    #[test]
+    fn right_prompt_is_suppressed_on_collision_or_unsafe_output() {
+        for right in [
+            "1234567890123",
+            "first\nnext",
+            "\x1b[Jright",
+            "\x1b[Hright",
+            "\x1b]0;title\x07",
+            "",
+        ] {
+            let mut frame = Frame::parse("> input", 20, true).unwrap();
+            frame.overlay_right(0, right, 20);
+            assert_eq!(frame.rows[0].text, "> input", "{right:?}");
+            assert!(frame.matches_end(0, 7));
+        }
+    }
+
+    #[test]
+    fn right_prompt_occupies_only_last_prompt_row() {
+        let mut frame = Frame::parse("top\n> input\nnext", 20, false).unwrap();
+        frame.overlay_right(1, "RIGHT", 20);
+        assert_eq!(frame.rows[0].text, "top");
+        assert_eq!(frame.rows[1].text, "> input       RIGHT");
+        assert_eq!(frame.rows[2].text, "next");
+        assert!(frame.matches_end(2, 4));
     }
 }

@@ -225,6 +225,7 @@ mod windows {
         suspended: Arc<AtomicBool>,
         search: Arc<Mutex<HistorySearch>>,
         custom_bindings: Vec<(KeyEvent, Option<EventHandler>)>,
+        initialized_bindings: bool,
     }
 
     fn readline_error(error: ReadlineError) -> Error {
@@ -462,6 +463,7 @@ mod windows {
                 suspended,
                 search,
                 custom_bindings: Vec::new(),
+                initialized_bindings: false,
             })
         }
 
@@ -525,16 +527,40 @@ mod windows {
         pub(super) fn read_fish_line(
             &mut self,
             prompt: &str,
-            session: crate::native::fish::Session,
-            host: crate::native::host::NativeHost,
+            mut session: crate::native::fish::Session,
+            mut host: crate::native::host::NativeHost,
         ) -> (
             crate::native::fish::Session,
             crate::native::host::NativeHost,
             Result<ReadEvent>,
         ) {
+            if !self.initialized_bindings {
+                self.initialized_bindings = true;
+                if let Err(error) = session.initialize_reader_bindings(&mut host) {
+                    use rash::host::Host as _;
+                    if let Err(error) = host.write(
+                        2,
+                        format!("fish: {}\n", error.message).as_bytes(),
+                        &[],
+                        false,
+                    ) {
+                        return (session, host, Err(error));
+                    }
+                }
+                self.set_input_config(session.abbreviations.clone(), &session.bindings);
+                self.set_variables(&session.editor_variables());
+            }
+            if session.exit_requested() {
+                return (session, host, Ok(ReadEvent::Eof));
+            }
             let service = Arc::clone(&self.editor.helper().unwrap().service);
             service.lock().unwrap().begin_read(session, host);
-            let mut result = self.read_line(prompt);
+            let should_end = service.lock().unwrap().reader_should_end();
+            let mut result = if should_end {
+                Ok(ReadEvent::Eof)
+            } else {
+                self.read_line(prompt)
+            };
             let (mut runtime, error, output) = service.lock().unwrap().end_read();
             if let Some(error) = error {
                 result = Err(error);
@@ -819,6 +845,13 @@ mod windows {
         }
     }
     impl Highlighter for Completion {
+        fn right_prompt(&self) -> Option<String> {
+            Some(self.service.lock().ok()?.right_prompt())
+        }
+
+        fn final_prompt(&self, prompt: &str) -> Option<String> {
+            self.service.lock().ok()?.final_prompt(prompt)
+        }
         fn highlight<'l>(&self, line: &'l str, pos: usize) -> std::borrow::Cow<'l, str> {
             if self.fish {
                 let language = *self.input_language.lock().unwrap();

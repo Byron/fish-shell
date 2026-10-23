@@ -93,7 +93,7 @@ impl<'out, 'prompt, H: Helper> State<'out, 'prompt, H> {
                 self.out.update_size();
                 let new_cols = self.out.get_columns();
                 if new_cols != old_cols
-                    && (self.layout.end.row > 0 || self.layout.end.col >= new_cols)
+                    && (cfg!(windows) || self.layout.end.row > 0 || self.layout.end.col >= new_cols)
                 {
                     self.prompt_size = self
                         .out
@@ -191,6 +191,13 @@ impl<'out, 'prompt, H: Helper> State<'out, 'prompt, H> {
         self.layout = new_layout;
 
         Ok(())
+    }
+
+    #[cfg(windows)]
+    pub fn refresh_final_prompt(&mut self, prompt: &str) -> Result<()> {
+        let size = self.out.calculate_position(prompt, Position::default());
+        self.hint = None;
+        self.refresh(prompt, size, false, Info::NoHint)
     }
 
     pub fn hint(&mut self) {
