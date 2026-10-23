@@ -21,6 +21,7 @@ pub struct Word {
     pub projected: Range<usize>,
     // Expansions are indivisible: their current value must never replace their source.
     pub has_expansion: bool,
+    redirection: bool,
 }
 
 #[derive(Debug)]
@@ -34,6 +35,7 @@ pub struct Projection {
     quote: Option<char>,
     scalars: Vec<WString>,
     fish_evaluation: bool,
+    in_redirection: bool,
 }
 
 fn name_start(c: char) -> bool {
@@ -73,9 +75,10 @@ impl Projection {
             let words = self
                 .words
                 .iter()
-                .filter(|w| w.source.start >= range.start)
+                .filter(|w| w.source.start >= range.start && !w.redirection)
                 .collect::<Vec<_>>();
             if let Some(word) = words.first()
+                && !self.in_redirection
                 && self.source_cursor > word.source.end
             {
                 let name = crate::bash_syntax::unquote(&self.source[word.source.clone()]);
@@ -142,23 +145,75 @@ impl Projection {
             quote: None,
             scalars: vec![],
             fish_evaluation: fish,
+            in_redirection: false,
         };
         let s = source.as_char_slice();
         let mut i = 0;
         let mut quote = None;
         let mut word: Option<Word> = None;
         let mut command_start = true;
+        let mut redirection = false;
         while i < s.len() {
             if i == cursor {
                 p.cursor = p.text.len();
                 p.quote = quote;
+                p.in_redirection = redirection;
             }
             let c = s[i];
+            if quote.is_none() {
+                let mut operator = i;
+                if word.is_none() {
+                    while s.get(operator).is_some_and(char::is_ascii_digit) {
+                        operator += 1;
+                    }
+                }
+                if matches!(s.get(operator), Some('<' | '>'))
+                    || (operator == i && c == '&' && s.get(i + 1) == Some(&'>'))
+                {
+                    if redirection && word.is_none() {
+                        return Err(Unsupported::Syntax);
+                    }
+                    if let Some(w) = word.take() {
+                        p.words.push(w);
+                    }
+                    let tail = &source[operator..];
+                    // Here-documents, here-strings and read/write redirects need other semantics.
+                    if tail.starts_with(L!("<<")) || tail.starts_with(L!("<>")) {
+                        return Err(Unsupported::Syntax);
+                    }
+                    let len = [L!("&>>"), L!("&>"), L!(">>"), L!(">|"), L!(">&"), L!("<&")]
+                        .into_iter()
+                        .find(|op| tail.starts_with(*op))
+                        .map_or(1, |op| op.len());
+                    let end = operator + len;
+                    if s.get(end).is_some_and(|c| "<>|&".contains(*c)) {
+                        return Err(Unsupported::Syntax);
+                    }
+                    if (i + 1..end).contains(&cursor) {
+                        return Err(Unsupported::Cursor);
+                    }
+                    while i < end {
+                        // Bash's clobber operator is a pipe in Fish; only project its >.
+                        if s[i] == '|' {
+                            *p.boundaries.last_mut().unwrap() = Some(i + 1);
+                        } else {
+                            p.copy(s[i], i);
+                        }
+                        i += 1;
+                    }
+                    redirection = true;
+                    continue;
+                }
+            }
             if quote.is_none() && (c.is_whitespace() || matches!(c, ';' | '|' | '&')) {
                 if let Some(w) = word.take() {
                     p.words.push(w);
+                    redirection = false;
                 }
                 if !c.is_whitespace() || c == '\n' {
+                    if redirection {
+                        return Err(Unsupported::Syntax);
+                    }
                     command_start = true;
                 }
                 p.copy(c, i);
@@ -176,10 +231,10 @@ impl Projection {
                 continue;
             }
             if word.is_none() {
-                if command_start {
+                if command_start && !redirection {
                     let end = s[i..]
                         .iter()
-                        .position(|c| c.is_whitespace() || ";|&".contains(*c))
+                        .position(|c| c.is_whitespace() || ";|&<>".contains(*c))
                         .map_or(s.len(), |n| i + n);
                     // A simple-command view is not adequate for compound syntax or assignments.
                     if matches!(
@@ -223,6 +278,7 @@ impl Projection {
                     source: i..i,
                     projected: p.text.len()..p.text.len(),
                     has_expansion: false,
+                    redirection,
                 });
             }
             match (quote, c) {
@@ -335,13 +391,24 @@ impl Projection {
                     i = source_end;
                 }
                 (None, '~')
-                    if fish
-                        && word.as_ref().unwrap().source.start == i
-                        && s.get(i + 1) == Some(&'/') =>
+                    if word.as_ref().unwrap().source.start == i && s.get(i + 1) == Some(&'/') =>
                 {
-                    // Keep the expression for Fish to expand; never replace it with today's HOME.
+                    // Preserve the expression; Bash's HOME expansion does not normalize the path.
                     word.as_mut().unwrap().has_expansion = true;
-                    p.copy(c, i);
+                    if fish {
+                        p.copy(c, i);
+                    } else {
+                        let home = vars.get(L!("HOME")).ok_or(Unsupported::Expansion)?;
+                        if home.as_list().len() != 1 || home.as_string().is_empty() {
+                            return Err(Unsupported::Expansion);
+                        }
+                        p.scalars.push(L!("HOME").to_owned());
+                        for c in L!("\"$HOME\"").chars() {
+                            p.text.push(c);
+                            p.boundaries.push(None);
+                        }
+                        *p.boundaries.last_mut().unwrap() = Some(i + 1);
+                    }
                     i += 1;
                 }
                 (_, '`') if !fish => return Err(Unsupported::Expansion),
@@ -363,6 +430,7 @@ impl Projection {
         if cursor == s.len() {
             p.cursor = p.text.len();
             p.quote = quote;
+            p.in_redirection = redirection;
         }
         Ok(p)
     }
@@ -509,8 +577,54 @@ mod tests {
             L!("echo ${a[@]} "),
             L!("echo $missing "),
             L!("cat <<EOF\n"),
+            L!("cat <<<word"),
+            L!("cat <>file"),
+            L!("echo >file; cat <(touch sentinel)"),
+            L!("echo >file $(touch sentinel)"),
         ] {
             assert!(Projection::new(text, text.len(), &vars).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn redirection_targets_keep_their_own_edit_range() {
+        let vars = TestEnvironment::default();
+        for (source, projected, target) in [
+            (L!("echo hi>READ"), L!("echo hi>READ"), 8),
+            (L!("echo hi 2>>READ"), L!("echo hi 2>>READ"), 11),
+            (L!("cat<READ"), L!("cat<READ"), 4),
+            (L!("echo hi &>READ"), L!("echo hi &>READ"), 10),
+            (L!("echo hi &>>READ"), L!("echo hi &>>READ"), 11),
+            (L!("echo hi >|READ"), L!("echo hi >READ"), 10),
+            (L!(">READ"), L!(">READ"), 1),
+        ] {
+            let p = Projection::new(source, source.len(), &vars).unwrap();
+            assert_eq!(p.text, projected);
+            assert_eq!(p.current_word().unwrap().source, target..source.len());
+            assert_eq!(p.boundaries[p.cursor], Some(source.len()));
+            let mut candidate = Completion::from_completion(L!("README.md").to_owned());
+            candidate.flags.replaces =
+                Some(crate::complete::ReplacementScope::Token(Default::default()));
+            assert_eq!(
+                p.apply(&candidate, false).unwrap().0,
+                source[..target].to_owned() + L!("README.md ")
+            );
+        }
+        for source in [
+            L!(">if cat"),
+            L!("2>out git sw"),
+            L!("echo 2>&1 | cat <READ"),
+        ] {
+            assert!(
+                Projection::new(source, source.len(), &vars).is_ok(),
+                "{source}"
+            );
+        }
+        for source in [L!(">out if true"), L!("2>out for x"), L!("echo >>|READ")] {
+            assert!(
+                Projection::new(source, source.len(), &vars).is_err(),
+                "{source}"
+            );
         }
     }
 
@@ -575,6 +689,29 @@ mod tests {
         ] {
             assert!(Projection::for_state(source, source.len(), &vars, &state).is_err());
         }
+    }
+
+    #[test]
+    fn bash_home_prefix_preserves_scalar_path_and_source() {
+        let mut vars = TestEnvironment::default();
+        vars.vars.insert(
+            L!("HOME").to_owned(),
+            L!("/tmp/link/../home space").to_owned(),
+        );
+        let source = L!("cat ~/fi tail");
+        let cursor = L!("cat ~/fi").len();
+        let p = Projection::new(source, cursor, &vars).unwrap();
+        assert_eq!(p.text, L!("cat \"$HOME\"/fi tail"));
+        assert_eq!(p.boundaries[p.cursor], Some(cursor));
+        assert!(p.current_word().unwrap().has_expansion);
+        assert!(
+            p.validate_state(&crate::bash_session::State::default())
+                .is_err()
+        );
+        let mut c = Completion::from_completion(L!("le").to_owned());
+        assert_eq!(p.apply(&c, false).unwrap().0, L!("cat ~/file tail"));
+        c.flags.replaces = Some(crate::complete::ReplacementScope::Token(Default::default()));
+        assert_eq!(p.apply(&c, false), Err(Unsupported::Replacement));
     }
 
     #[test]
@@ -937,6 +1074,42 @@ mod tests {
             std::fs::write(repo.join("fixture;$()` ü"), "").unwrap();
             std::env::set_current_dir(&repo).unwrap();
             parser.vars().set_pwd_from_getcwd();
+            for source in [
+                L!("echo hi >fixture"),
+                L!("echo hi 2>>fixture"),
+                L!("echo hi >|fixture"),
+                L!("echo hi &>>fixture"),
+                L!("cd >fixture"),
+                L!(">fixture"),
+                L!("2>out <fixture"),
+                L!(">out cat fixture"),
+                L!("echo hi 2>&1 | cat <fixture"),
+                L!("echo hi >"),
+                L!(">"),
+            ] {
+                for fish_evaluation in [false, true] {
+                    let state = crate::bash_session::State {
+                        fish_evaluation,
+                        ..Default::default()
+                    };
+                    let p =
+                        Projection::for_state(source, source.len(), parser.vars(), &state).unwrap();
+                    let mut ctx = parser.context();
+                    ctx.bash_state = Some(&state);
+                    let (candidates, _) = p
+                        .complete(CompletionRequestOptions::Completion, &mut ctx)
+                        .unwrap();
+                    let expected = if source.ends_with('>') {
+                        L!("fixture;$()` ü")
+                    } else {
+                        L!(";$()` ü")
+                    };
+                    assert!(
+                        candidates.iter().any(|c| c.completion == expected),
+                        "{source}: {candidates:?}"
+                    );
+                }
+            }
             for (text, expected) in [
                 (L!("make target_"), L!("one")),
                 (L!("cargo run --bin probe-"), L!("bin")),
@@ -967,16 +1140,20 @@ mod tests {
             L!("complete -c projection_option -l version -d Version"),
             &IoChain::new(),
         );
-        let text = L!("projection_option --ver");
-        let p = Projection::new(text, text.len(), parser.vars()).unwrap();
         let vars = parser.vars().snapshot();
-        let (candidates, _) = p
-            .complete(
-                CompletionRequestOptions::Autosuggestion,
-                &mut crate::operation_context::OperationContext::background_interruptible(&vars),
-            )
-            .unwrap();
-        assert!(candidates.iter().any(|c| c.completion == "sion"));
+        for text in [
+            L!("projection_option --ver"),
+            L!(">out projection_option --ver"),
+        ] {
+            let p = Projection::new(text, text.len(), &vars).unwrap();
+            let mut ctx =
+                crate::operation_context::OperationContext::background_interruptible(&vars);
+            ctx.bash_state = Some(&state);
+            let (candidates, _) = p
+                .complete(CompletionRequestOptions::Autosuggestion, &mut ctx)
+                .unwrap();
+            assert!(candidates.iter().any(|c| c.completion == "sion"));
+        }
 
         // Report paired warm in-process samples, excluding provider autoload and process startup.
         for text in [L!("git --ver"), L!("git -C \"$repo\" switch topic-")] {

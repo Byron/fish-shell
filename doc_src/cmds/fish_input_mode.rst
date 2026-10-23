@@ -18,6 +18,8 @@ Bash-style Fish input supports a subset of Bash spellings. It is not Bash evalua
 
 Backticks are ordinary characters, including inside strings, as in Fish. They do not execute command substitutions or require a matching backtick. ``$(...)`` command substitutions and special variables such as ``$?`` remain supported. Leading unquoted ``~/`` paths support completion and suggestions while preserving the ``~/`` spelling.
 
+Tab completes filenames in arguments and redirection targets, including ``<``, ``>``, ``>>``, ``>|``, ``&>`` and ``&>>``, with optional file descriptors. For example, ``echo hi > READ`` can complete to ``echo hi > README.rst``. Redirections can precede the command, and spaces around them are optional. Completion preserves quoting and the rest of the input without opening or modifying the target file.
+
 The change takes effect after the entire submitted command finishes. For example, in Fish::
 
     fish_input_mode bash; set -g example still_fish

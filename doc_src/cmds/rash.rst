@@ -17,6 +17,8 @@ Bash wherever this Fish instance is. Rash's experimental Bash evaluator ships in
 
 On POSIX builds, ``rash`` is a Fish function that launches the current Fish executable with ``--rash-shell``. The child uses the Rust Rash evaluator for Bash input and Fish's editor, completions, prompt, history and terminal handling. Cargo also builds a standalone ``rash`` executable with a portable process host, including native Windows support. Neither form depends on an installed Bash runtime.
 
+In the POSIX Fish editor, Tab completes filenames in ordinary arguments and redirection targets such as ``cat < READ`` or ``echo hi > READ``, including append, clobber and combined-output redirections. Leading redirections, quoted paths and ``~/`` paths are supported. Completion preserves the entered syntax without opening or modifying the target file. Here-documents, here-strings and process substitutions remain outside this completion support.
+
 The following startup and interactive UI behavior describes the POSIX Fish function. The standalone executable and native Windows frontend have their own startup and interactive behavior, described under Windows below.
 
 The child inherits exported variables, the current directory and standard descriptors. Its variables, functions, aliases and directory changes belong to the child. Parent Fish functions and private variables are not shared with Bash evaluation. Use ``exit`` to leave Rash and return to the parent Fish prompt. Fish-only commands such as ``fish_input_mode`` are not Bash builtins in the child.

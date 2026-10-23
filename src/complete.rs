@@ -776,6 +776,24 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
         }
     }
 
+    fn skip_leading_redirections(&self, tokens: &mut Vec<Tok>, cursor_pos: usize) {
+        if self.ctx.bash_state.is_none() {
+            return;
+        }
+        // Bash permits redirects before the command; completed targets are not arguments.
+        let mut leading_redirects = 0;
+        while let [redirect, target, ..] = &tokens[leading_redirects..] {
+            if redirect.type_ != TokenType::Redirect
+                || target.type_ != TokenType::String
+                || target.location_in_or_at_end_of_source_range(cursor_pos)
+            {
+                break;
+            }
+            leading_redirects += 2;
+        }
+        tokens.drain(..leading_redirects);
+    }
+
     fn perform_for_commandline(&mut self, cmdline: WString) {
         // Limit recursion, in case a user-defined completion has cycles, or the completion for "x"
         // wraps "A=B x" (#3474, #7344).  No need to do that when there is no parser: this happens only
@@ -844,6 +862,8 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
         }
         tokens.drain(..var_assignments.len());
 
+        self.skip_leading_redirections(&mut tokens, cursor_pos);
+
         // Empty process (cursor is after one of ;, &, |, \n, &&, || modulo whitespace).
         let [first_token, ..] = tokens.as_slice() else {
             // Don't autosuggest anything based on the empty string (generalizes #1631).
@@ -869,6 +889,18 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
 
         let cmd_tok = tokens.first().unwrap();
         let cur_tok = tokens.last().unwrap();
+
+        if cmd_tok.type_ == TokenType::Redirect && self.ctx.bash_state.is_some() {
+            let target = if cur_tok.type_ == TokenType::String
+                && cur_tok.location_in_or_at_end_of_source_range(cursor_pos)
+            {
+                cur_tok.get_source(&cmdline)
+            } else {
+                L!("")
+            };
+            self.complete_param_expand(target, true, false, cur_tok.is_unterminated_brace);
+            return;
+        }
 
         // Since fish does not currently support redirect in command position, we return here.
         if cmd_tok.type_ != TokenType::String {
@@ -1999,6 +2031,8 @@ impl<'ctx, 'parser> Completer<'ctx, 'parser> {
             var_assignments.push(tok_src.to_owned());
         }
         tokens.drain(..var_assignments.len());
+
+        self.skip_leading_redirections(&mut tokens, cursor_pos);
 
         let [first_token, ..] = tokens.as_slice() else {
             return;

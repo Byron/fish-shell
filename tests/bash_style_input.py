@@ -14,7 +14,7 @@ import time
 
 import pexpect
 
-from bash_input_integration import Shell
+from bash_input_integration import Shell, assert_file_completions
 
 
 def main(binary):
@@ -188,6 +188,7 @@ def main(binary):
             shell.child.send("\x1b[C")
             assert shell.buffer()[0] == "cd ~/tilde-directory/"
             shell.clear()
+            assert_file_completions(shell, root)
             print("PASS unchanged Git/function providers, live variables, options, cursor/trailing context, descriptions and literal filenames", flush=True)
 
             shell.child.send("echo legacy_rash_")

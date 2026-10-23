@@ -8,6 +8,7 @@ import io
 import os
 from pathlib import Path
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -105,6 +106,87 @@ class Shell:
         self.child.close(force=True)
 
 
+def assert_file_completions(shell, root):
+    work = root / 'file-completions'
+    work.mkdir()
+    (work / 'README.md').write_text('KEEP-FILE-CONTENTS\n')
+    directory = work / 'directory-completion'
+    directory.mkdir()
+    (directory / 'nested-file').write_text('KEEP-NESTED-CONTENTS\n')
+    filename = 'quoted ü ;$(touch injected)`\'" file'
+    (work / filename).write_text('LITERAL-COMPLETION\n')
+    home_file = shell.home / 'file-completion-home'
+    home_file.write_text('KEEP-HOME-CONTENTS\n')
+    (shell.home / 'file-completion-directory').mkdir()
+    original = {p.relative_to(work): p.read_bytes() for p in work.rglob('*') if p.is_file()}
+    shell.run(f'cd {shlex.quote(str(work))}')
+
+    for source, expected in (
+        ('echo hi > READ', 'echo hi > README.md '),
+        ('echo hi>READ', 'echo hi>README.md '),
+        ('echo hi>read', 'echo hi>README.md '),
+        ('hi >READ', 'hi >README.md '),
+        ('echo hi >> READ', 'echo hi >> README.md '),
+        ('echo hi 2>READ', 'echo hi 2>README.md '),
+        ('echo hi 2>>READ', 'echo hi 2>>README.md '),
+        ('echo hi >|READ', 'echo hi >|README.md '),
+        ('echo hi &>READ', 'echo hi &>README.md '),
+        ('echo hi &>>READ', 'echo hi &>>README.md '),
+        ('cat <READ', 'cat <README.md '),
+        ('cd >READ', 'cd >README.md '),
+        ('>READ', '>README.md '),
+        ('>README.md /bin/ca', '>README.md /bin/cat '),
+        ('>README.md cat READ', '>README.md cat README.md '),
+        ('cat READ', 'cat README.md '),
+        ('cat -- READ', 'cat -- README.md '),
+        ('cat --file=READ', 'cat --file=README.md '),
+        ('cp READ', 'cp README.md '),
+        ('cp README.md dire', 'cp README.md directory-completion/'),
+        ('mv READ', 'mv README.md '),
+        ('rm -f READ', 'rm -f README.md '),
+        ('cat ./READ', 'cat ./README.md '),
+        (f'cat {work}/READ', f'cat {work}/README.md '),
+        ('echo hi > dire', 'echo hi > directory-completion/'),
+        ('cat <directory-completion/nest', 'cat <directory-completion/nested-file '),
+        ('cat <directory-completion/', 'cat <directory-completion/nested-file '),
+        ('cat ~/file-completion-h', 'cat ~/file-completion-home '),
+        ('cd ~/file-completion-d', 'cd ~/file-completion-directory/'),
+        ('echo hi > ~/file-completion-h', 'echo hi > ~/file-completion-home '),
+        ('printf hi | /bin/ca', 'printf hi | /bin/cat '),
+        ('printf hi | cat READ', 'printf hi | cat README.md '),
+        ('printf hi | cat >READ', 'printf hi | cat >README.md '),
+        ('printf hi 2>&1 | cat <READ', 'printf hi 2>&1 | cat <README.md '),
+    ):
+        shell.child.send(source + '\t')
+        actual = shell.buffer()
+        assert actual == (expected, len(expected)), (source, actual)
+        shell.clear()
+
+    for source, expected, cursor in (
+        ('echo hi > READ suffix', 'echo hi > README.md suffix', len('echo hi > README.md ')),
+        ('cat READ > must-not-create', 'cat README.md > must-not-create', len('cat README.md ')),
+    ):
+        shell.child.send(source)
+        shell.child.send('\x1b[D' * (len(source) - source.index('READ') - len('READ')))
+        shell.child.send('\t')
+        actual = shell.buffer()
+        assert actual == (expected, cursor), (source, actual)
+        shell.clear()
+
+    for prefix in ('quo', '\\q', '"quo', "'quo"):
+        shell.child.send('cat < ' + prefix + '\t')
+        text, cursor = shell.buffer()
+        assert text.startswith('cat < ' + prefix) and text.endswith(' '), text
+        assert cursor == len(text), (text, cursor)
+        shell.child.sendline('')
+        shell.child.expect_exact(b'LITERAL-COMPLETION\r\n')
+        shell.finished(0)
+    assert {p.relative_to(work): p.read_bytes() for p in work.rglob('*') if p.is_file()} == original
+    assert home_file.read_text() == 'KEEP-HOME-CONTENTS\n'
+    shell.run(f'cd {shlex.quote(str(root))}')
+    print('PASS file/redirection/pipeline completions, quoting, paths, cursor suffixes and no completion side effects', flush=True)
+
+
 def main(binary):
     with tempfile.TemporaryDirectory(prefix='fish-bash-acceptance-') as tmp:
         root = Path(tmp)
@@ -193,6 +275,7 @@ def main(binary):
             s.child.send('cd directory-\t')
             assert s.buffer()[0] == 'cd directory-completion/'
             s.clear()
+            assert_file_completions(s, root)
             for source in ['mutate_probe ', 'echo "$(touch sentinel)', 'echo "${side:=changed}"', 'git -C "$fish_only_value" switch topic-']:
                 s.child.send(source + '\t')
                 assert s.buffer()[0] == source, s.buffer()

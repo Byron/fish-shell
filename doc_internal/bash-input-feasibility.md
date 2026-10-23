@@ -152,11 +152,14 @@ Git, Cargo, SSH and Make providers remain unchanged. Focused PTY tests cover Git
 with live variable-dependent directories, Fish functions, quoted/escaped and
 Unicode filenames, options, trailing whitespace, middle-of-buffer edits,
 descriptions/ordering, suggestions and history. Original provider feasibility
-tests remain. Completion projection still refuses compound/assignment contexts,
-redirections and substitutions it cannot map reliably. It never evaluates
+tests remain. File completion also covers `<`, `>`, `>>`, `>|`, `&>` and `&>>`,
+descriptor prefixes and leading redirections, without opening their targets.
+Completion projection still refuses compound/assignment contexts, here-documents,
+here-strings, read/write redirects and substitutions it cannot map reliably. It never evaluates
 unfinished substitutions; intentional provider commands retain existing behavior.
 Leading unquoted `~/` paths support Tab completion and completion-based
 suggestions, including when used as an earlier argument such as `git -C ~/repo`.
+The POSIX Rash editor also supports `~/` using its scalar `HOME` value.
 The original `~/` prefix is retained; other tilde forms and unsupported expansion
 contexts remain outside this projection. Provider-driven `commandline` mutations remain explicitly rejected with input
 preserved. Plain command abbreviations expand; replacements containing syntax,
