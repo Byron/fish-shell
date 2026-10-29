@@ -611,6 +611,11 @@ impl CompletionEngine {
         for (index, spec) in registrations.into_iter().rev() {
             if !spec.erased
                 && spec.wrap_target.is_none()
+                && spec.applies_to_token(
+                    &word.value,
+                    args.last().map_or("", String::as_str),
+                    use_options,
+                )
                 && evaluate(context, spec, false)?.is_some()
             {
                 active.push((index, spec));
@@ -860,6 +865,43 @@ enum FilePolicy {
 }
 
 impl CompletionSpec {
+    /// Like POSIX completion, only ask conditions for options which could
+    /// contribute a name, argument or file policy at this cursor. Conditions
+    /// often run external programs, so unrelated options must stay lazy.
+    fn applies_to_token(&self, current: &str, previous: &str, use_options: bool) -> bool {
+        if self.short_option.is_none() && self.long_option.is_none() && self.old_option.is_none() {
+            return true;
+        }
+        if !use_options {
+            return false;
+        }
+        if self.short_option.is_some()
+            && ((current.starts_with('-') && !current.starts_with("--"))
+                || (previous.starts_with('-')
+                    && !previous.starts_with("--")
+                    && !current.starts_with('-')))
+        {
+            // Keep the whole short-option group for argument-boundary lookup.
+            return true;
+        }
+        for (name, old) in [
+            (self.long_option.as_ref(), false),
+            (self.old_option.as_ref(), true),
+        ] {
+            let Some(name) = name else { continue };
+            let flag = format!("{}{name}", if old { "-" } else { "--" });
+            if current.starts_with('-') {
+                if match_rank(&flag, current).is_some() || current.starts_with(&format!("{flag}="))
+                {
+                    return true;
+                }
+            } else if (old || self.requires_argument) && previous == flag {
+                return true;
+            }
+        }
+        false
+    }
+
     fn file_policy(&self) -> FilePolicy {
         if self.force_files {
             FilePolicy::Force

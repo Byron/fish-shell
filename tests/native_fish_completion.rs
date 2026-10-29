@@ -48,6 +48,25 @@ impl Drop for Directory {
 }
 
 #[test]
+fn unrelated_option_conditions_do_not_run_generators_or_external_probes() {
+    assert_eq!(
+        output(
+            r#"
+        complete -c native_probe -f
+        complete -c native_probe -l irrelevant -x -n 'echo unexpected-probe >&2' -a wrong
+        complete -c native_probe -s z -n 'echo unexpected-short-probe >&2'
+        complete -c native_probe -l wanted -x -a 'alpha beta'
+        complete -C 'native_probe --want'
+        complete -C 'native_probe --wanted al'
+        complete -C 'native_probe --wanted=be'
+        complete -C 'native_probe -- --want'
+    "#
+        ),
+        "--wanted\nalpha\n--wanted=beta\n"
+    );
+}
+
+#[test]
 fn comma_separated_choices_do_not_require_external_utilities() {
     assert_eq!(
         output(

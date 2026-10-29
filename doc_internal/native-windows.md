@@ -561,9 +561,14 @@ these results; the interactive pager still describes directories.
 Registrations belong to the current session and can be recreated by configuration.
 Conditions and argument sources are evaluated on demand for both Tab and
 `complete -C`. Repeated conditions must all succeed; identical conditions are
-cached within one query. Argument sources can expand variables or run registered
+cached within one query. Conditions for unrelated options are skipped before
+running probes, including external commands. Argument sources can expand variables or run registered
 command substitutions. Their changes to the live session persist. Merely typing a
 command substitution in the input being completed never executes it.
+
+Run `python tests/native_cargo_completions.py FISH_EXE` for 15 real Cargo
+completion cases in a temporary offline workspace, including features,
+packages, binaries, examples, tests, benches, installed targets and wrappers.
 
 Read-only `commandline` queries use the same command-substitution, job, process
 and token boundaries as POSIX Fish. Completion helpers can use `commandline -opc`
