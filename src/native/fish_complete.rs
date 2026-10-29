@@ -461,6 +461,7 @@ impl Session {
         let mut cursor_query = false;
         let mut line_query = false;
         let mut column_query = false;
+        let mut mode_query = None;
         let mut override_input = None;
         let mut index = 0;
         while index < args.len() {
@@ -478,6 +479,9 @@ impl Session {
                 "--cursor" => "C",
                 "--line" => "L",
                 "--column" => "Q",
+                "--search-mode" => "S",
+                "--paging-mode" => "P",
+                "--paging-full-mode" => "F",
                 "--input" | "-I" => {
                     override_input = Some(
                         args.get(index)
@@ -510,9 +514,36 @@ impl Session {
                     'C' => cursor_query = true,
                     'L' => line_query = true,
                     'Q' => column_query = true,
+                    'S' | 'P' | 'F' => mode_query = Some(flag),
                     _ => return Err(unsupported(&format!("commandline option -{flag}"))),
                 }
             }
+        }
+        if let Some(mode) = mode_query {
+            if part != 'b'
+                || tokens.is_some()
+                || cut
+                || cursor_query
+                || line_query
+                || column_query
+                || override_input.is_some()
+            {
+                return Err(Error::new(
+                    "commandline: invalid combination with reader mode query",
+                ));
+            }
+            let modes = self
+                .reader_state
+                .as_ref()
+                .map(|state| state.modes)
+                .unwrap_or_default();
+            self.status = i32::from(!match mode {
+                'S' => modes.search,
+                'P' => modes.paging,
+                'F' => modes.paging_full,
+                _ => unreachable!(),
+            });
+            return Ok(());
         }
         let context = if let Some(line) = override_input {
             CompletionContext {

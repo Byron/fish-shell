@@ -20,6 +20,8 @@ pub(super) enum Action {
     BackwardWord,
     BeginningOfLine,
     EndOfLine,
+    UpLine,
+    DownLine,
     HistorySearchBackward,
     HistorySearchForward,
     DeleteChar,
@@ -36,7 +38,7 @@ pub(super) enum Action {
 }
 
 impl Action {
-    const ALL: [Self; 20] = [
+    const ALL: [Self; 22] = [
         Self::AcceptAutosuggestion,
         Self::ForwardChar,
         Self::BackwardChar,
@@ -44,6 +46,8 @@ impl Action {
         Self::BackwardWord,
         Self::BeginningOfLine,
         Self::EndOfLine,
+        Self::UpLine,
+        Self::DownLine,
         Self::HistorySearchBackward,
         Self::HistorySearchForward,
         Self::DeleteChar,
@@ -68,6 +72,8 @@ impl Action {
             Self::BackwardWord => "backward-word",
             Self::BeginningOfLine => "beginning-of-line",
             Self::EndOfLine => "end-of-line",
+            Self::UpLine => "up-line",
+            Self::DownLine => "down-line",
             Self::HistorySearchBackward => "history-search-backward",
             Self::HistorySearchForward => "history-search-forward",
             Self::DeleteChar => "delete-char",
@@ -100,6 +106,8 @@ impl Action {
     /// abbreviation/multiline behavior. All other actions map directly.
     pub fn command(self) -> Option<Cmd> {
         Some(match self {
+            Self::UpLine => Cmd::Move(Movement::LineUp(1)),
+            Self::DownLine => Cmd::Move(Movement::LineDown(1)),
             Self::BackwardChar => Cmd::Move(Movement::BackwardChar(1)),
             Self::BackwardWord => Cmd::Move(Movement::BackwardWord(1, Word::Emacs)),
             Self::BeginningOfLine => Cmd::Move(Movement::BeginningOfLine),

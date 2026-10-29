@@ -4,11 +4,19 @@ use crate::commandline_extent::{get_job_extent, get_process_extent, get_token_ex
 use crate::native::interactive_bindings::Action;
 use crate::native::interactive_completion::CompletionContext;
 
+#[derive(Clone, Copy, Default)]
+pub(in crate::native) struct ReaderModes {
+    pub search: bool,
+    pub paging: bool,
+    pub paging_full: bool,
+}
+
 #[derive(Clone)]
 pub(in crate::native) struct ReaderState {
     pub(in crate::native) line: String,
     pub(in crate::native) cursor: usize,
     pub(in crate::native) actions: Vec<Action>,
+    pub(in crate::native) modes: ReaderModes,
 }
 
 impl Session {
@@ -124,6 +132,7 @@ impl Session {
         sources: &[String],
         line: &str,
         cursor: usize,
+        modes: ReaderModes,
         host: &mut impl Host,
     ) -> Result<ReaderState> {
         let saved_context = self.completion_line.take();
@@ -138,6 +147,7 @@ impl Session {
             line: line.into(),
             cursor,
             actions: Vec::new(),
+            modes,
         });
         let result = (|| {
             for source in sources {
@@ -330,12 +340,86 @@ mod tests {
     }
 
     #[test]
+    fn shared_arrow_helpers_observe_reader_modes_and_multiline_position() {
+        let mut session = Session::new().unwrap();
+        let mut host = Capture::default();
+        session
+            .eval(
+                include_str!("../../share/functions/up-or-search.fish"),
+                &mut host,
+            )
+            .unwrap();
+        session
+            .eval(
+                include_str!("../../share/functions/down-or-search.fish"),
+                &mut host,
+            )
+            .unwrap();
+        for (source, cursor, modes, action) in [
+            (
+                "up-or-search",
+                0,
+                ReaderModes::default(),
+                Action::HistorySearchBackward,
+            ),
+            ("up-or-search", 8, ReaderModes::default(), Action::UpLine),
+            (
+                "down-or-search",
+                0,
+                ReaderModes::default(),
+                Action::DownLine,
+            ),
+            (
+                "down-or-search",
+                8,
+                ReaderModes::default(),
+                Action::HistorySearchForward,
+            ),
+            (
+                "up-or-search",
+                8,
+                ReaderModes {
+                    search: true,
+                    ..Default::default()
+                },
+                Action::HistorySearchBackward,
+            ),
+            (
+                "down-or-search",
+                0,
+                ReaderModes {
+                    search: true,
+                    ..Default::default()
+                },
+                Action::HistorySearchForward,
+            ),
+            (
+                "up-or-search",
+                0,
+                ReaderModes {
+                    paging: true,
+                    ..Default::default()
+                },
+                Action::UpLine,
+            ),
+        ] {
+            let state = session
+                .reader_callback(&[source.into()], "echo\nfoo", cursor, modes, &mut host)
+                .unwrap();
+            assert_eq!(state.actions, [action], "{source}, cursor={cursor}");
+        }
+        assert!(host.0.is_empty());
+        session.eval("commandline --search-mode; echo $status; commandline -P; echo $status; commandline -F; echo $status", &mut host).unwrap();
+        assert_eq!(host.0, b"1\n1\n1\n");
+    }
+
+    #[test]
     fn callback_edits_unicode_token_preserves_suffix_and_session_changes() {
         let mut session = Session::new().unwrap();
         let mut host = Capture::default();
         let line = "echo 🐟 old";
         let cursor = "echo 🐟".len();
-        let state = session.reader_callback(&["set -g callback_seen (commandline -ct); commandline -rt 🦀; commandline -C 5; commandline -i fish; commandline -f repaint".into()], line, cursor, &mut host).unwrap();
+        let state = session.reader_callback(&["set -g callback_seen (commandline -ct); commandline -rt 🦀; commandline -C 5; commandline -i fish; commandline -f repaint".into()], line, cursor, ReaderModes::default(), &mut host).unwrap();
         assert_eq!(state.line, "echo fish🦀 old");
         assert_eq!(state.cursor, 9);
         assert_eq!(session.values("callback_seen"), ["🐟"]);
@@ -355,6 +439,7 @@ mod tests {
                 ],
                 "echo ",
                 2,
+                ReaderModes::default(),
                 &mut Capture::default(),
             )
             .unwrap();
@@ -379,6 +464,7 @@ mod tests {
                 ],
                 "old",
                 3,
+                ReaderModes::default(),
                 &mut host,
             )
             .unwrap();
@@ -408,6 +494,7 @@ mod tests {
             line: "original".into(),
             cursor: 8,
             actions: Vec::new(),
+            modes: ReaderModes::default(),
         });
         session.completion_depth = 1;
         assert!(

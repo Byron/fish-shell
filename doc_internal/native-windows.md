@@ -555,8 +555,12 @@ command substitution in the input being completed never executes it.
 Read-only `commandline` queries use the same command-substitution, job, process
 and token boundaries as POSIX Fish. Completion helpers can use `commandline -opc`
 or `commandline -pxc`, as well as buffer, cursor, line and column queries.
-`--input` supplies explicit text for a query. Reader-editing operations remain
-unsupported.
+`--input` supplies explicit text for a query. Keybinding callbacks can query
+`--search-mode`, `--paging-mode` and `--paging-full-mode` (also `-S`, `-P`, `-F`).
+The shared `up-or-search` and `down-or-search` functions navigate history and
+multiline input; `commandline -f up-line` and `down-line` move vertically.
+Callbacks can replace, insert or append input and set the cursor. Completion
+generators and command substitutions cannot edit the live input.
 
 Functions defined with `--wraps` inherit target completion, including
 fixed arguments such as `--wraps='git checkout'`. Multiple targets and nested

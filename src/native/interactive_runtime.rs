@@ -196,8 +196,9 @@ impl CompletionService {
         sources: &[String],
         line: &str,
         cursor: usize,
+        modes: super::fish::reader_builtin::ReaderModes,
     ) -> Option<super::fish::reader_builtin::ReaderState> {
-        self.evaluate(|session, host| session.reader_callback(sources, line, cursor, host))
+        self.evaluate(|session, host| session.reader_callback(sources, line, cursor, modes, host))
     }
 
     pub(super) fn abbreviation(

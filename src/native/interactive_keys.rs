@@ -111,6 +111,10 @@ pub(super) struct HistorySearch {
 }
 
 impl HistorySearch {
+    pub(super) fn active(&self, line: &str) -> bool {
+        self.selected.is_some() && self.displayed.as_deref() == Some(line)
+    }
+
     pub fn reset(&mut self, entries: Vec<String>) {
         *self = Self {
             entries,
@@ -175,7 +179,10 @@ impl HistoryKey {
     /// vi keymap and multiline arrow-navigation behavior.
     pub(super) fn command(&self, line: &str) -> Option<Cmd> {
         Some(match self.search.lock().ok()?.search(line, self.reverse) {
-            Some(line) => Cmd::Replace(Movement::WholeBuffer, Some(line)),
+            Some(line) => Cmd::SetBuffer {
+                cursor: line.len(),
+                buffer: line,
+            },
             None => Cmd::Noop,
         })
     }
@@ -241,14 +248,17 @@ mod tests {
         };
         assert_eq!(
             reverse.command("🐟\nend"),
-            Some(Cmd::Replace(
-                Movement::WholeBuffer,
-                Some("begin\n    echo 🐟\nend".into())
-            ))
+            Some(Cmd::SetBuffer {
+                buffer: "begin\n    echo 🐟\nend".into(),
+                cursor: "begin\n    echo 🐟\nend".len(),
+            })
         );
         assert_eq!(
             forward.command("begin\n    echo 🐟\nend"),
-            Some(Cmd::Replace(Movement::WholeBuffer, Some("🐟\nend".into())))
+            Some(Cmd::SetBuffer {
+                buffer: "🐟\nend".into(),
+                cursor: "🐟\nend".len(),
+            })
         );
     }
 }

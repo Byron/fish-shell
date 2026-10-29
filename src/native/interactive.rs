@@ -721,7 +721,13 @@ mod windows {
             };
             let Some(action) = action else {
                 let mut service = self.service.lock().ok()?;
-                let reader = service.binding(&self.sources, ctx.line(), ctx.pos());
+                let (paging, paging_full) = self.pager.modes(ctx.line(), ctx.pos());
+                let modes = crate::native::fish::reader_builtin::ReaderModes {
+                    search: self.search.lock().ok()?.active(ctx.line()),
+                    paging,
+                    paging_full,
+                };
+                let reader = service.binding(&self.sources, ctx.line(), ctx.pos(), modes);
                 if service.reader_should_end() {
                     return Some(Cmd::Interrupt);
                 }
@@ -731,25 +737,33 @@ mod windows {
                     return Some(Cmd::Noop);
                 };
                 let mut commands = vec![Cmd::SetBuffer {
-                    buffer: reader.line,
+                    buffer: reader.line.clone(),
                     cursor: reader.cursor,
                 }];
-                commands.extend(reader.actions.into_iter().map(|action| match action {
-                    Action::Execute => Cmd::AcceptOrInsertLine {
-                        accept_in_the_middle: true,
-                    },
-                    Action::Complete => Cmd::Complete,
-                    Action::AcceptAutosuggestion => Cmd::CompleteHint,
-                    Action::ForwardChar => Cmd::Move(rustyline::Movement::ForwardChar(1)),
-                    Action::ForwardWord => Cmd::Move(rustyline::Movement::ForwardWord(
-                        1,
-                        rustyline::At::AfterEnd,
-                        rustyline::Word::Emacs,
-                    )),
-                    Action::EndOfLine => Cmd::Move(rustyline::Movement::EndOfLine),
-                    Action::HistorySearchBackward => Cmd::HistorySearchBackward,
-                    Action::HistorySearchForward => Cmd::HistorySearchForward,
-                    _ => action.command().unwrap_or(Cmd::Noop),
+                commands.extend(reader.actions.into_iter().map(|action| {
+                    match action {
+                        Action::Execute => Cmd::AcceptOrInsertLine {
+                            accept_in_the_middle: true,
+                        },
+                        Action::Complete => Cmd::Complete,
+                        Action::AcceptAutosuggestion => Cmd::CompleteHint,
+                        Action::ForwardChar => Cmd::Move(rustyline::Movement::ForwardChar(1)),
+                        Action::ForwardWord => Cmd::Move(rustyline::Movement::ForwardWord(
+                            1,
+                            rustyline::At::AfterEnd,
+                            rustyline::Word::Emacs,
+                        )),
+                        Action::EndOfLine => Cmd::Move(rustyline::Movement::EndOfLine),
+                        Action::HistorySearchBackward | Action::HistorySearchForward => {
+                            HistoryKey {
+                                search: Arc::clone(&self.search),
+                                reverse: action == Action::HistorySearchBackward,
+                            }
+                            .command(&reader.line)
+                            .unwrap_or(Cmd::Noop)
+                        }
+                        _ => action.command().unwrap_or(Cmd::Noop),
+                    }
                 }));
                 return Some(Cmd::Sequence(commands));
             };

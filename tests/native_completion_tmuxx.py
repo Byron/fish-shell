@@ -55,6 +55,8 @@ def main():
         (config / "config.fish").write_text(
             "function fish_prompt; printf 'CMP> '; end\n"
             "set -g fish_autosuggestion_enabled 0\n"
+            "bind up up-or-search\n"
+            "bind down down-or-search\n"
             "set -g CMP_calls\n"
             "function CMP_candidates\n"
             "    set -ga CMP_calls invoked\n"
@@ -177,6 +179,22 @@ def main():
             assert pane.startswith("%"), pane
             expect_input("")
 
+            # Shared Fish arrow helpers must work before and after the pager.
+            send("echo CMP_history_first")
+            expect_input("")
+            send("echo CMP_history_second")
+            expect_input("")
+            literal("CMP_history")
+            keys("Up")
+            expect_input("echo CMP_history_second")
+            keys("Up")
+            expect_input("echo CMP_history_first")
+            keys("Down")
+            expect_input("echo CMP_history_second")
+            keys("Down")
+            expect_input("CMP_history")
+            keys("C-u")
+
             # The single-candidate path must reuse the pager's result. Its
             # registered source mutates the authoritative evaluator once.
             literal("cmp ch")
@@ -200,6 +218,8 @@ def main():
             keys("Tab")
             wait_for(lambda text: "alpha" in text and "beta" in text and "2/2" in text,
                      "completion menu did not open")
+            keys("Down", "Up")
+            assert "does not yet support" not in capture()
             keys("Escape")
             expect_input("cmpmenu ")
             keys("Tab", "C-g", "Tab", "C-g")

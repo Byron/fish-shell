@@ -70,6 +70,17 @@ impl PagerBindings {
         *self.pending.lock().unwrap() = None;
     }
 
+    pub(super) fn modes(&self, line: &str, pos: usize) -> (bool, bool) {
+        let state = self.state.lock().unwrap();
+        let Some(pager) = state
+            .as_ref()
+            .filter(|pager| pager.original == line && pager.pos == pos)
+        else {
+            return (false, false);
+        };
+        (true, pager.matches.len() <= page_size(terminal_size().1))
+    }
+
     /// Use Rustyline's completion update for an exact byte-range replacement.
     /// Custom `Cmd::Replace` bindings have their movement count rewritten by
     /// Rustyline's repeat handling, so they cannot reliably replace a token.
