@@ -349,7 +349,7 @@ impl CompletionEngine {
                 self.complete_paths(&argument, cwd, &mut paths);
                 for entry in paths.entries.into_values() {
                     let value = format!("{prefix}{}", entry.value);
-                    matches.add_ranked(&value, &value, &entry.description, entry.space, entry.rank);
+                    matches.add_path(&value, &entry.description, entry.space, Some(entry.rank));
                 }
             } else {
                 self.complete_paths(&word, cwd, &mut matches);
@@ -800,10 +800,10 @@ impl CompletionEngine {
         let value = word.value.replace('\\', "/");
         if matches!(value.as_str(), "." | "..") {
             let directory = format!("{value}/");
-            matches.add(&directory, &directory, "Directory", false);
+            matches.add_path(&directory, "Directory", false, None);
         }
         if value == "~" && home_dir().is_some_and(|home| home.is_dir()) {
-            matches.add("~/", "~/", "Home directory", false);
+            matches.add_path("~/", "Home directory", false, None);
         }
         let split = value.rfind('/').map_or(0, |at| at + 1);
         let (directory, prefix) = value.split_at(split);
@@ -841,12 +841,11 @@ impl CompletionEngine {
             // Match the basename rather than characters in the already typed
             // directory. Preserve ~/ instead of replacing it with a long path.
             if let Some(rank) = match_rank(name, prefix) {
-                matches.add_ranked(
-                    &value,
+                matches.add_path(
                     &value,
                     if is_directory { "Directory" } else { "" },
                     !is_directory,
-                    rank,
+                    Some(rank),
                 );
             }
         }
@@ -1049,6 +1048,7 @@ struct Candidate {
     value: String,
     display: String,
     description: String,
+    generated_description: bool,
     space: bool,
     rank: Rank,
     order_group: Option<usize>,
@@ -1065,6 +1065,16 @@ struct Candidates {
 }
 
 impl Candidates {
+    fn add_path(&mut self, value: &str, description: &str, space: bool, rank: Option<Rank>) {
+        if self.entries.contains_key(value) {
+            return;
+        }
+        if let Some(rank) = rank.or_else(|| match_rank(value, &self.prefix)) {
+            self.add_ranked(value, value, description, space, rank);
+            self.entries.get_mut(value).unwrap().generated_description = true;
+        }
+    }
+
     fn new(prefix: &str) -> Self {
         Self {
             prefix: prefix.into(),
@@ -1095,6 +1105,7 @@ impl Candidates {
                 value: value.into(),
                 display: display.into(),
                 description: description.into(),
+                generated_description: false,
                 space,
                 rank,
                 order_group: self.order_group,
@@ -1146,7 +1157,7 @@ impl Candidates {
                     } else {
                         format!("{}  ({})", display, display_controls(&entry.description))
                     }
-                } else if entry.description.is_empty() {
+                } else if entry.description.is_empty() || entry.generated_description {
                     entry.display
                 } else {
                     format!("{}\t{}", entry.display, entry.description)

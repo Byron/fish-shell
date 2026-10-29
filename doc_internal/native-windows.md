@@ -551,6 +551,9 @@ Script registrations replace the editor's built-in Git/Cargo suggestions.
 `complete` lists registrations as reusable Fish source, optionally filtered by
 command and colored with `--color`. `complete -C 'mytool --m'` prints choices with
 tab-separated descriptions; `--escape` produces shell-escaped choices.
+As on POSIX, query output omits generated filesystem descriptions while keeping
+script-supplied descriptions. Shared directory and suffix helpers can consume
+these results; the interactive pager still describes directories.
 Registrations belong to the current session and can be recreated by configuration.
 Conditions and argument sources are evaluated on demand for both Tab and
 `complete -C`. Repeated conditions must all succeed; identical conditions are

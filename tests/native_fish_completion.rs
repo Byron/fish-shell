@@ -48,6 +48,27 @@ impl Drop for Directory {
 }
 
 #[test]
+fn shared_directory_helpers_receive_plain_files_and_keep_explicit_descriptions() {
+    let directory = Directory::new();
+    std::fs::create_dir(directory.path().join("nested")).unwrap();
+    assert_eq!(
+        directory.query(
+            r#"
+        complete -C 'echo nest'
+        __fish_complete_directories nest
+        complete -c native_probe -x -a '(__fish_complete_directories)'
+        complete -C 'native_probe nest'
+        complete -c native_probe -l directory -x -a '(__fish_complete_directories)'
+        complete -C 'native_probe --directory=nest'
+        complete -c described -f -a 'nested/' -d 'My directory'
+        complete -C 'described nest'
+    "#
+        ),
+        "nested/\nnested/\tDirectory\nnested/\tDirectory\n--directory=nested/\tDirectory\nnested/\tMy directory\n"
+    );
+}
+
+#[test]
 fn shared_process_extents_complete_quoted_substitutions_and_continued_lines() {
     assert_eq!(
         output(

@@ -103,13 +103,7 @@ impl CompletionEngine {
                     }
                 }
                 let display = format!("{}{name}", path.display_directory);
-                matches.add_ranked(
-                    &display,
-                    &display,
-                    &entry.description,
-                    entry.space,
-                    entry.rank,
-                );
+                matches.add_path(&display, &entry.description, entry.space, Some(entry.rank));
                 if let Some(candidate) = matches.entries.get_mut(&display) {
                     candidate.replacement = Some(replacement);
                 }
