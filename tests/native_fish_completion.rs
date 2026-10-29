@@ -57,9 +57,11 @@ fn comma_separated_choices_do_not_require_external_utilities() {
         complete -C 'native_probe al'
         complete -C 'native_probe alpha,b'
         complete -C 'native_probe alpha,beta,g'
+        complete -c native_probe -l features -x -a '(printf "%s\n" alpha beta gamma | __fish_concat_completions)'
+        complete -C 'native_probe --features=alpha,b'
     "#
         ),
-        "alpha\nalpha,beta\nalpha,beta,gamma\n"
+        "alpha\nalpha,beta\nalpha,beta,gamma\n--features=alpha,beta\n"
     );
 }
 

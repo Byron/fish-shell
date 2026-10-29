@@ -7,7 +7,8 @@
 # TODO: Make this work with completions that have their description appended after a \t
 
 function __fish_concat_completions -d "Generate completions that are specified as comma-separated values from stdin source"
-    set -l token (commandline -ct)
+    # The completion engine adds an attached option prefix back to each value.
+    set -l token (commandline -ct | string replace -r -- '^-[^=]*=' '')
     # We want to filter out suggestions the user has already entered.
     set -l extant (string split -- ',' $token)
     set -l filter (printf '^%s$\n' (printf '%s\n' $extant | string escape --style=regex) | string join '|')

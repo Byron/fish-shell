@@ -10,3 +10,6 @@ complete -C 'concat_probe alpha,b'
 # CHECK: alpha,beta
 complete -C 'concat_probe alpha,beta,g'
 # CHECK: alpha,beta,gamma
+complete -c concat_probe -l features -x -a '(printf "%s\n" alpha beta gamma | __fish_concat_completions)'
+complete -C 'concat_probe --features=alpha,b'
+# CHECK: --features=alpha,beta
