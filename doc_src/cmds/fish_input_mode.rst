@@ -18,6 +18,8 @@ Bash-style Fish input supports a subset of Bash spellings. It is not Bash evalua
 
 Backticks are ordinary characters, including inside strings, as in Fish. They do not execute command substitutions or require a matching backtick. ``$(...)`` command substitutions and special variables such as ``$?`` remain supported. Leading unquoted ``~/`` paths support completion and suggestions while preserving the ``~/`` spelling.
 
+Default and alternative values support ``${name:-word}``, ``${name-word}``, ``${name:+word}`` and ``${name+word}``, including nested expansions such as ``${SYSTEMROOT:-${SystemRoot:-C:/Windows}}``. A colon treats an empty variable like an unset one; without the colon, only unset variables select the default. Only the selected value is expanded. Assignment and error operators (``:=`` and ``:?``) remain unsupported.
+
 Tab completes filenames in arguments and redirection targets, including ``<``, ``>``, ``>>``, ``>|``, ``&>`` and ``&>>``, with optional file descriptors. For example, ``echo hi > READ`` can complete to ``echo hi > README.rst``. Redirections can precede the command, and spaces around them are optional. Completion preserves quoting and the rest of the input without opening or modifying the target file.
 
 File completion also works after wildcard arguments, for example ``cp *.txt dest``. Wildcards retain Fish's expansion rules and their original spelling. Brackets in filenames are literal, as in ordinary Fish input.

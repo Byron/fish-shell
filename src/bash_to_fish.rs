@@ -330,11 +330,26 @@ fn literal(output: &mut Vec<u8>, value: &[u8]) {
 }
 
 fn translate_word(raw: &[u8], depth: usize) -> Result<Vec<u8>, Error> {
+    translate_word_in_context(raw, depth, None)
+}
+
+fn translate_word_in_context(
+    raw: &[u8],
+    depth: usize,
+    inherited_quote: Option<u8>,
+) -> Result<Vec<u8>, Error> {
+    if depth >= 128 {
+        return Err(Error::unsupported("nesting beyond 128 levels"));
+    }
     if raw.is_empty() {
         return Ok(b"''".to_vec());
     }
-    let mut output = Vec::new();
-    let mut quote = None;
+    let mut output = if inherited_quote == Some(b'"') {
+        vec![b'"']
+    } else {
+        Vec::new()
+    };
+    let mut quote = inherited_quote;
     let mut pos = 0;
     while pos < raw.len() {
         let byte = raw[pos];
@@ -390,7 +405,7 @@ fn translate_word(raw: &[u8], depth: usize) -> Result<Vec<u8>, Error> {
                     }
                     Some(b'{') => {
                         let end = syntax::expansion_end(&literal_backticks(raw), pos)?;
-                        variable(&mut output, &raw[pos + 2..end - 1], quote, true)?;
+                        parameter(&mut output, &raw[pos + 2..end - 1], quote, depth + 1)?;
                         pos = end;
                     }
                     Some(b'\'' | b'"' | b'[') => {
@@ -420,13 +435,81 @@ fn translate_word(raw: &[u8], depth: usize) -> Result<Vec<u8>, Error> {
             b'(' | b')' if quote.is_none() => {
                 return Err(Error::unsupported("extended globs or Bash array values"));
             }
+            // These can be literal operand text inside ${...}; they must not
+            // become operators in the generated conditional command.
+            b' ' | b'\t' | b'\r' | b'\n' | b';' | b'&' | b'|' | b'<' | b'>' | b'#'
+                if quote.is_none() =>
+            {
+                literal(&mut output, &[byte]);
+                pos += 1;
+            }
             _ => {
                 output.push(byte);
                 pos += 1;
             }
         }
     }
+    if inherited_quote == Some(b'"') {
+        output.push(b'"');
+    }
     Ok(output)
+}
+
+fn parameter(
+    output: &mut Vec<u8>,
+    input: &[u8],
+    quote: Option<u8>,
+    depth: usize,
+) -> Result<(), Error> {
+    let end = input
+        .iter()
+        .position(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
+        .unwrap_or(input.len());
+    let (name, tail) = input.split_at(end);
+    if !syntax::identifier(name) || tail.is_empty() {
+        return variable(output, input, quote, true);
+    }
+    let (colon, tail) = tail
+        .strip_prefix(b":")
+        .map_or((false, tail), |tail| (true, tail));
+    let Some((&operation @ (b'-' | b'+'), operand)) = tail.split_first() else {
+        return Err(Error::unsupported("this Bash parameter expansion"));
+    };
+    let operand = translate_word_in_context(operand, depth, quote)?;
+    // The conditional must run in the Fish evaluator so only the selected
+    // operand expands. Passing both branches as helper arguments is eager.
+    if quote == Some(b'"') {
+        output.push(b'"');
+    }
+    output.extend_from_slice(b"$(if builtin set -q -- ");
+    output.extend_from_slice(name);
+    if colon {
+        output.extend_from_slice(b"; and builtin test -n \"$");
+        output.extend_from_slice(name);
+        output.push(b'"');
+    }
+    output.extend_from_slice(b"; builtin printf '%s\\0' ");
+    if operation == b'+' {
+        output.extend_from_slice(&operand);
+    } else {
+        if quote == Some(b'"') {
+            output.push(b'"');
+        }
+        output.push(b'$');
+        output.extend_from_slice(name);
+        if quote == Some(b'"') {
+            output.push(b'"');
+        }
+    }
+    output.extend_from_slice(b"; else; builtin printf '%s\\0' ");
+    output.extend_from_slice(if operation == b'-' { &operand } else { b"''" });
+    // Explicit records outside the enclosing quotes preserve trailing newlines
+    // and Fish list elements. The selected quoted operand is already scalar.
+    output.extend_from_slice(b"; end | builtin string split0)");
+    if quote == Some(b'"') {
+        output.push(b'"');
+    }
+    Ok(())
 }
 
 fn variable(
@@ -603,9 +686,9 @@ mod tests {
         #[cfg(not(windows))]
         crate::tests::prelude::test_init();
         for source in [
-            "echo should_not_run; echo ${x:-fallback}",
+            "echo should_not_run; echo ${x:=fallback}",
             "echo should_not_run; for bad` in a; do echo x; done",
-            "echo should_not_run\necho $(echo ${x:-fallback})",
+            "echo should_not_run\necho $(echo ${x:=fallback})",
             "echo $(echo $( (true) ))",
             "echo $((1+2))",
             "((i++))",

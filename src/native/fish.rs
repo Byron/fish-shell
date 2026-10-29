@@ -1585,8 +1585,8 @@ mod tests {
         session.set_mode(true, false);
         session.input_language = super::super::InputLanguage::Bash;
         for source in [
-            "changed=yes; echo ${missing:-fallback}",
-            "changed=yes\necho $(echo ${missing:-fallback})",
+            "changed=yes; echo ${missing:=fallback}",
+            "changed=yes\necho $(echo ${missing:=fallback})",
             "changed=yes; [[ a == a ]]",
             "changed=yes; fish_input_mode fish; unsupported=(one two)",
         ] {

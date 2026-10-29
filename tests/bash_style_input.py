@@ -105,8 +105,8 @@ def main(binary):
             fish_source.write_text("set -g private_fish sourced\nfunction sourced_helper; echo SOURCE:$private_fish; end\n")
             shell.run(f"source {shlex.quote(str(fish_source))}; sourced_helper", "SOURCE:sourced\r\n")
             sentinel = root / "must-not-run"
-            for unsupported in ("echo ${missing:-fallback}", "((counter+=1))", "(echo subshell)",
-                                "echo $(printf before; echo ${missing:-fallback})"):
+            for unsupported in ("echo ${missing:=fallback}", "((counter+=1))", "(echo subshell)",
+                                "echo $(printf before; echo ${missing:=fallback})"):
                 source = f"touch {sentinel}; {unsupported}"
                 shell.child.sendline(source)
                 text, _ = shell.buffer()

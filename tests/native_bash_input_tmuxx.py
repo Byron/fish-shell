@@ -192,6 +192,8 @@ def main():
             expect("DIA_while")
             send("DIA_sub=$(printf 'a b'); printf 'DIA_sub:<%s>\\n' \"$DIA_sub\"")
             expect("DIA_sub:<a b>")
+            send("set -e DIA_primary; set -e DIA_secondary; DIA_default=\"${DIA_primary:-${DIA_secondary:-C:/Windows}}\"; printf 'DIA_default:%s\\n' \"$DIA_default\"")
+            expect("DIA_default:C:/Windows")
             send("DIA_effect() { echo wrong > DIA_backtick_marker; }")
             expect_input("")
             send("printf '%s\\n' \x60DIA_effect\x60")
