@@ -48,6 +48,26 @@ impl Drop for Directory {
 }
 
 #[test]
+fn completion_matching_uses_fish_smartcase_and_natural_order() {
+    assert_eq!(
+        output(
+            r#"
+        complete -c native_probe -f -a 'item10 item2 Item3 item1'
+        complete -C 'native_probe item'
+        complete -C 'native_probe Item'
+        complete -c native_probe -e
+        complete -c native_probe -f -a 'xAlpha alphaTail'
+        complete -C 'native_probe Alpha'
+        complete -c native_probe -e
+        complete -c native_probe -f -a 'axb axB'
+        complete -C 'native_probe ab'
+    "#
+        ),
+        "item1\nitem2\nitem10\nItem3\nItem3\nalphaTail\naxb\n"
+    );
+}
+
+#[test]
 fn registrations_are_queryable_erasable_and_round_trip_as_fish_source() {
     let output = fish(
         r#"
@@ -102,9 +122,9 @@ fn repeated_aliases_and_grouped_short_options_share_their_arguments() {
     "#
         ),
         concat!(
-            "--alpha\tFlag\n--beta\tFlag\n-a\tFlag\n-b\tFlag\n-c\tFlag\n-old\tFlag\n-older\tFlag\n",
+            "-a\tFlag\n-b\tFlag\n-c\tFlag\n-old\tFlag\n-older\tFlag\n--alpha\tFlag\n--beta\tFlag\n",
             "-ab\tFlag\n-ac\tFlag\n",
-            "--alpha\tFlag\n-b\tFlag\n-old\tFlag\n",
+            "-b\tFlag\n-old\tFlag\n--alpha\tFlag\n",
             "-bIimports\nimports\n-bIimports\n-bIinclude\n",
         )
     );

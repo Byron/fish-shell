@@ -1034,27 +1034,15 @@ fn valid_variable(name: &str) -> bool {
     !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
-type Rank = (u8, usize);
+type Rank = u32;
 
 fn match_rank(name: &str, prefix: &str) -> Option<Rank> {
-    if name.starts_with(prefix) {
-        return Some((0, 0));
-    }
-    let name = name.to_lowercase();
-    let prefix = prefix.to_lowercase();
-    if name.starts_with(&prefix) {
-        return Some((1, 0));
-    }
-    if let Some(at) = name.find(&prefix) {
-        return Some((2, at));
-    }
-    let mut chars = name.chars().enumerate();
-    let mut distance = 0;
-    for needle in prefix.chars() {
-        let (at, _) = chars.find(|(_, character)| *character == needle)?;
-        distance = at;
-    }
-    Some((3, distance))
+    fish_wcstringutil::string_fuzzy_match_string(
+        &fish_widestring::WString::from(prefix),
+        &fish_widestring::WString::from(name),
+        false,
+    )
+    .map(|matched| matched.rank())
 }
 
 struct Candidate {
@@ -1124,20 +1112,27 @@ impl Candidates {
         let best = self
             .entries
             .values()
-            .map(|entry| entry.rank.0)
+            .map(|entry| entry.rank)
             .min()
             .unwrap_or(0);
         let mut entries: Vec<_> = self
             .entries
             .into_values()
-            .filter(|entry| entry.rank.0 <= best.max(1))
+            .filter(|entry| entry.rank == best)
             .collect();
         entries.sort_by(|a, b| {
             b.order_group.cmp(&a.order_group).then_with(|| {
                 if a.order_group.is_some() {
                     a.sequence.cmp(&b.sequence)
                 } else {
-                    a.rank.cmp(&b.rank).then_with(|| a.value.cmp(&b.value))
+                    fish_util::wcsfilecmp(
+                        &fish_widestring::WString::from(
+                            a.value.strip_prefix(&self.prefix).unwrap_or(&a.value),
+                        ),
+                        &fish_widestring::WString::from(
+                            b.value.strip_prefix(&self.prefix).unwrap_or(&b.value),
+                        ),
+                    )
                 }
             })
         });
@@ -2137,8 +2132,9 @@ mod tests {
             ["native-probe "]
         );
         engine.set_context(Vec::new(), None, Vec::new());
-        assert!(replacements(&engine, "native-p", &absent).is_empty());
-        assert!(replacements(&engine, "native-p", &directory.0).is_empty());
+        // The shared fuzzy matcher may still find native helper builtins.
+        assert!(!replacements(&engine, "native-p", &absent).contains(&"native-probe ".into()));
+        assert!(!replacements(&engine, "native-p", &directory.0).contains(&"native-probe ".into()));
         assert!(!engine.command_exists("native-probe", &directory.0));
         assert_eq!(
             replacements(&engine, "./native-p", &directory.0),
@@ -2451,12 +2447,7 @@ mod tests {
         );
         assert_eq!(
             replacements(&engine, "echo rdm", &directory.0),
-            [
-                "README.md ",
-                "roadmap.txt ",
-                "my-readme.txt ",
-                "released.md "
-            ]
+            ["my-readme.txt ", "released.md ", "roadmap.txt ",]
         );
     }
 
