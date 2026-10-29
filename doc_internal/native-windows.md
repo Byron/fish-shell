@@ -491,6 +491,8 @@ Native Fish autoloads the bundled `git.fish` and `cargo.fish` scripts, including
 conditions, aliases, repository queries, and project-specific generators. Git
 branch and option completion uses the same helpers as POSIX Fish. Cargo package,
 feature and target suggestions query the installed Cargo and Python tools.
+Comma-separated choices, including Cargo features, use only Fish builtins and
+also work without awk or the optional packaged utilities.
 Saved aliases inherit these completions on their first query. An editor provider
 with a smaller static option and Git-reference set remains available when no
 script registrations apply; it does not limit the normally autoloaded scripts.

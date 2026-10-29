@@ -48,6 +48,22 @@ impl Drop for Directory {
 }
 
 #[test]
+fn comma_separated_choices_do_not_require_external_utilities() {
+    assert_eq!(
+        output(
+            r#"
+        function type; return 1; end
+        complete -c native_probe -f -a '(printf "%s\n" alpha beta gamma | __fish_concat_completions)'
+        complete -C 'native_probe al'
+        complete -C 'native_probe alpha,b'
+        complete -C 'native_probe alpha,beta,g'
+    "#
+        ),
+        "alpha\nalpha,beta\nalpha,beta,gamma\n"
+    );
+}
+
+#[test]
 fn shared_directory_helpers_receive_plain_files_and_keep_explicit_descriptions() {
     let directory = Directory::new();
     std::fs::create_dir(directory.path().join("nested")).unwrap();
