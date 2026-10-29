@@ -106,6 +106,9 @@ def main():
             keys("Enter")
 
         def paste(source):
+            # Output can arrive before the editor re-enables bracketed paste.
+            # Wait for its prompt so tmuxx sends the paste delimiters as well.
+            expect_input("")
             path = root / "paste.txt"
             path.write_text(source, encoding="utf-8", newline="")
             call("load-buffer", "-b", "dialect", str(path))
