@@ -1252,6 +1252,29 @@ impl Word {
 }
 
 fn completion_word(line: &str, pos: usize, fish: bool) -> Word {
+    if !fish {
+        return scan_completion_word(line, pos, false);
+    }
+    // Use the same process/substitution boundaries as POSIX completion and
+    // commandline queries, including substitutions inside double quotes.
+    let source = fish_widestring::WString::from(line);
+    let cursor = line[..pos].chars().count();
+    let range = crate::commandline_extent::get_process_extent(&source, cursor, None);
+    let start = line
+        .char_indices()
+        .nth(range.start)
+        .map_or(line.len(), |(at, _)| at);
+    let mut word = scan_completion_word(&line[start..], pos - start, true);
+    word.start += start;
+    word.variable = word.variable.map(|at| at + start);
+    for span in &mut word.spans {
+        span.start += start;
+        span.end += start;
+    }
+    word
+}
+
+fn scan_completion_word(line: &str, pos: usize, fish: bool) -> Word {
     let mut word = Word {
         start: pos,
         bash: !fish,
@@ -1276,17 +1299,22 @@ fn completion_word(line: &str, pos: usize, fish: bool) -> Word {
             word.start = at;
         }
         if character == '\\' && word.quote != Some('\'') {
-            active = true;
             word.variable = None;
             if let Some((_, next)) = chars.next() {
+                if next == '\n' {
+                    continue;
+                }
+                if fish && next == '\r' && chars.peek().is_some_and(|(_, c)| *c == '\n') {
+                    chars.next();
+                    continue;
+                }
+                active = true;
                 if word.quote == Some('"')
                     && (!matches!(next, '$' | '`' | '"' | '\\' | '\n') || !fish && next == '`')
                 {
                     word.value.push('\\');
                 }
-                if next != '\n' || fish {
-                    word.value.push(next);
-                }
+                word.value.push(next);
             }
         } else if character == '\\'
             && fish

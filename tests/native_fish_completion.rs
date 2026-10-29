@@ -48,6 +48,25 @@ impl Drop for Directory {
 }
 
 #[test]
+fn shared_process_extents_complete_quoted_substitutions_and_continued_lines() {
+    assert_eq!(
+        output(
+            r#"
+        complete -c native_probe -f -a choice
+        complete -C 'echo "$(native_probe ch'
+        complete -C 'echo "$(echo x | native_probe ch'
+        complete -C 'echo (echo "$(native_probe ch'
+        complete -C "native_probe \\\n ch"
+        complete -C "native_probe \\\r\n ch"
+        function native_wrapper --wraps native_probe; end
+        complete -C 'echo "$(native_wrapper ch'
+    "#
+        ),
+        "choice\nchoice\nchoice\nchoice\nchoice\nchoice\n"
+    );
+}
+
+#[test]
 fn completion_matching_uses_fish_smartcase_and_natural_order() {
     assert_eq!(
         output(

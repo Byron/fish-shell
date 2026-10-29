@@ -544,6 +544,9 @@ options work as on POSIX Fish. File policies apply to the matching argument;
 Candidate matching uses the POSIX reader's shared fuzzy matcher and natural
 sort: lowercase prefixes match either case, explicit uppercase prefers matching
 case, and numbered names sort numerically (`item2` before `item10`).
+Process and command-substitution boundaries also use the shared parser helpers,
+so completion works inside quoted `$(...)` substitutions and across escaped
+line endings, including CRLF. Wrapped commands keep these contexts.
 Script registrations replace the editor's built-in Git/Cargo suggestions.
 `complete` lists registrations as reusable Fish source, optionally filtered by
 command and colored with `--color`. `complete -C 'mytool --m'` prints choices with
