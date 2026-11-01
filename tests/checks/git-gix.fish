@@ -180,8 +180,7 @@ command $git_exe update-ref -d refs/tags/inner
 set -l expected_describe (command $git_exe describe HEAD)
 command rm -f "$FISH_GIT_TRACE"
 if test $enabled = 1
-    # The pinned gix version does not select nested annotated tags by default.
-    require 'nested annotated tag follows gix result' test -z "$(__fish_git_query describe HEAD)"
+    require 'nested annotated tag description' test "$(__fish_git_query describe HEAD)" = outer
     require 'nested annotated tag stays in gix' test ! -e "$FISH_GIT_TRACE"
 else
     require 'disabled nested annotated tag uses Git result' test "$expected_describe" = "$(__fish_git_query describe HEAD)"

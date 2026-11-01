@@ -286,7 +286,7 @@ impl Routing {
                 }) {
                     return None;
                 }
-                gix::open_opts(git_dir, options.open_path_as_is(true).with(trust)).ok()
+                gix::open_opts(git_dir, options.open_path_as_is(true).with_trust(trust)).ok()
             }
         }
     }

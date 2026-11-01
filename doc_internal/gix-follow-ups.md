@@ -4,10 +4,14 @@ native completion checks before committing the new lockfile. Both the default
 `gix` feature and its underlying `git` feature select this same dependency; the
 feature name does not update the locked revision automatically.
 
-The current lockfile uses gix 0.89.0 at
-[`b8ef9ea94ba69302981c56e16d52b696a00d4c98`](https://github.com/GitoxideLabs/gitoxide/commit/b8ef9ea94ba69302981c56e16d52b696a00d4c98).
+The current lockfile uses gix 0.90.0 at
+[`22a56364bf91453150079d2737699304184c99d9`](https://github.com/GitoxideLabs/gitoxide/commit/22a56364bf91453150079d2737699304184c99d9).
 It requires Rust 1.88, reflected in the workspace minimum.
-These upstream changes would simplify the integration and improve correctness.
+Updating from `b8ef9ea9` requires replacing `open::Options::with()` with
+`with_trust()`. Nested annotated tags now produce their outer tag name, covered
+by `tests/checks/git-gix.fish`. The findings below retain their original source
+links; resolved or partially addressed items are marked explicitly.
+The remaining upstream changes would simplify the integration and improve correctness.
 Both evaluators use the same gix query implementation. Errors returned by gix
 and unsupported repository storage do not trigger a Git CLI retry. Operations
 without a suitable API, or builds with integration disabled, can use the Git
@@ -25,12 +29,17 @@ Non-UTF-8 query arguments are currently rejected by fish's private string protoc
    reopens with `crate::open`, losing the caller's permissions and in-memory configuration.
    Preserve those across reopening and test equivalent behavior with and without parallel support.
    Fish currently supplies its own isolated submodule status provider.
+   **Partially addressed:** [#3138](https://github.com/GitoxideLabs/gitoxide/pull/3138)
+   preserves opening options, trust, and the worktree when reopening. Copying
+   later in-memory configuration changes remains a separate concern.
 
 2. **Bind status rename settings to the status section (bug).**
    [`Status::RENAMES` and `Status::RENAME_LIMIT`](https://github.com/GitoxideLabs/gitoxide/blob/b8ef9ea94ba69302981c56e16d52b696a00d4c98/gix/src/config/tree/sections/status.rs#L14)
    point at `Tree::MERGE`, so configured status reads the wrong keys.
    Fix the constants and test `status.renames=true` with `merge.renames=false`.
    Fish reads `status.*` explicitly with gix's typed converters, then falls back to `diff.*`.
+   **Resolved:** [#3140](https://github.com/GitoxideLabs/gitoxide/pull/3140)
+   binds these keys to `Tree::STATUS` and resolves rename modes and limits independently.
 
 3. **Let per-submodule ignore settings override the global default (bug).**
    [`BuiltinSubmoduleStatus::status`](https://github.com/GitoxideLabs/gitoxide/blob/b8ef9ea94ba69302981c56e16d52b696a00d4c98/gix/src/status/index_worktree.rs#L243)
@@ -60,6 +69,9 @@ Non-UTF-8 query arguments are currently rejected by fish's private string protoc
    Git describes the commit as `outer`, while gix's default returns no description.
    Follow symbolic references and peel recursively while retaining the outer tag's date and name.
    Fish uses this API directly and returns its result without retrying via Git.
+   **Resolved:** [#3092](https://github.com/GitoxideLabs/gitoxide/pull/3092)
+   recursively peels annotated tags and follows symbolic references. Fish now
+   describes the nested-tag fixture as `outer`, matching Git.
 
 7. **Accept an explicit cwd and environment snapshot when opening repositories (API).**
    [`open/repository.rs`](https://github.com/GitoxideLabs/gitoxide/blob/b8ef9ea94ba69302981c56e16d52b696a00d4c98/gix/src/open/repository.rs#L109)
