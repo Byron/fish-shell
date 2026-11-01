@@ -22,6 +22,10 @@ Default and alternative values support ``${name:-word}``, ``${name-word}``, ``${
 
 Tab completes filenames in arguments and redirection targets, including ``<``, ``>``, ``>>``, ``>|``, ``&>`` and ``&>>``, with optional file descriptors. For example, ``echo hi > READ`` can complete to ``echo hi > README.rst``. Redirections can precede the command, and spaces around them are optional. Completion preserves quoting and the rest of the input without opening or modifying the target file.
 
+Tab also completes variable names, for example ``echo $AZU`` or ``echo ${AZU``. Names from the current session are available, including variables that are not exported. Completion preserves double quotes and existing braces, and closes an unfinished braced name when a candidate is selected. Single-quoted and escaped dollar signs remain literal.
+
+Variable-name completion within parameter operators such as ``${name:-word}`` remains unsupported.
+
 File completion also works after wildcard arguments, for example ``cp *.txt dest``. Wildcards retain Fish's expansion rules and their original spelling. Brackets in filenames are literal, as in ordinary Fish input.
 
 The change takes effect after the entire submitted command finishes. For example, in Fish::

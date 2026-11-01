@@ -37,6 +37,7 @@ pub struct Projection {
     scalars: Vec<WString>,
     fish_evaluation: bool,
     in_redirection: bool,
+    variable: Option<Range<usize>>,
 }
 
 fn name_start(c: char) -> bool {
@@ -147,6 +148,7 @@ impl Projection {
             scalars: vec![],
             fish_evaluation: fish,
             in_redirection: false,
+            variable: None,
         };
         let s = source.as_char_slice();
         let mut i = 0;
@@ -350,12 +352,46 @@ impl Projection {
                 (_, '$') => {
                     let braced = s.get(i + 1) == Some(&'{');
                     let start = i + if braced { 2 } else { 1 };
-                    if !s.get(start).is_some_and(|c| name_start(*c)) {
+                    let mut end = start;
+                    if s.get(start).is_some_and(|c| name_start(*c)) {
+                        end += 1;
+                        while s.get(end).is_some_and(|c| name_char(*c)) {
+                            end += 1;
+                        }
+                    }
+                    if start == end
+                        && s.get(start)
+                            .is_some_and(|c| c.is_ascii_digit() || "$?#!*@-".contains(*c))
+                    {
                         return Err(Unsupported::Expansion);
                     }
-                    let mut end = start + 1;
-                    while s.get(end).is_some_and(|c| name_char(*c)) {
-                        end += 1;
+                    if (start..=end).contains(&cursor) {
+                        if braced
+                            && s.get(end) != Some(&'}')
+                            && end != s.len()
+                            && !quote.is_some_and(|q| s.get(end) == Some(&q))
+                        {
+                            return Err(Unsupported::Expansion);
+                        }
+                        // Complete the name itself without requiring its partial spelling to exist.
+                        p.variable = Some(start..end);
+                        p.copy('$', i);
+                        *p.boundaries.last_mut().unwrap() = Some(start);
+                        p.cursor = p.text.len() + cursor - start;
+                        p.quote = quote;
+                        p.in_redirection = redirection;
+                        for (offset, c) in source[start..end].chars().enumerate() {
+                            p.copy(c, start + offset);
+                        }
+                        i = end + usize::from(braced && s.get(end) == Some(&'}'));
+                        let w = word.as_mut().unwrap();
+                        w.has_expansion = true;
+                        w.source.end = i;
+                        w.projected.end = p.text.len();
+                        continue;
+                    }
+                    if start == end {
+                        return Err(Unsupported::Expansion);
                     }
                     if braced && s.get(end) != Some(&'}') {
                         return Err(Unsupported::Expansion);
@@ -469,11 +505,48 @@ impl Projection {
         flags: CompleteFlags,
         append_only: bool,
     ) -> Result<(WString, usize), Unsupported> {
-        // Raw Fish edits, variable-name suffixes and line replacements need a separate contract.
+        if flags.replaces_line() || flags.keep_variable_override_prefix {
+            return Err(Unsupported::Replacement);
+        }
+        if let Some(name) = &self.variable {
+            let mut insert = if flags.replaces_token() {
+                if append_only {
+                    return Err(Unsupported::Replacement);
+                }
+                let dollar = value
+                    .as_char_slice()
+                    .iter()
+                    .rposition(|c| *c == '$')
+                    .ok_or(Unsupported::Replacement)?;
+                value[dollar + 1..].to_owned()
+            } else {
+                self.source[name.start..self.source_cursor].to_owned() + value
+            };
+            if !insert.chars().next().is_some_and(name_start) || !insert.chars().all(name_char) {
+                return Err(Unsupported::Replacement);
+            }
+            let suffix = &self.source[self.source_cursor..name.end];
+            if !insert.ends_with(suffix) {
+                return Err(Unsupported::Replacement);
+            }
+            insert.truncate(insert.len() - suffix.len());
+            if flags.suffix_type().is_some()
+                && suffix.is_empty()
+                && self.source.char_at(name.start - 1) == '{'
+                && self.source.char_at(name.end) != '}'
+            {
+                insert.push('}');
+            }
+            return Ok((
+                self.source[..name.start].to_owned()
+                    + insert.as_utfstr()
+                    + &self.source[self.source_cursor..],
+                name.start + insert.len(),
+            ));
+        }
+        // Raw Fish edits outside a variable name still need a separate contract.
         if matches!(flags.wants_escaping, WantsEscaping::No)
-            || flags.replaces_line()
             || flags.suffix_type().is_some_and(|s| s.for_variable_name)
-            || flags.keep_variable_override_prefix
         {
             return Err(Unsupported::Replacement);
         }
@@ -571,6 +644,75 @@ mod tests {
         let candidate = Completion::from_completion(L!("topic").to_owned());
         let (result, _) = p.apply(&candidate, false).unwrap();
         assert_eq!(result, text.to_owned() + L!("topic "));
+    }
+
+    #[test]
+    fn variable_names_complete_without_expanding_or_escaping_the_source() {
+        let mut vars = TestEnvironment::default();
+        vars.vars.insert(
+            L!("AZURE_COMPLETION_PROBE").to_owned(),
+            L!("value must not replace the name").to_owned(),
+        );
+        for fish_evaluation in [false, true] {
+            let state = crate::bash_session::State {
+                fish_evaluation,
+                ..Default::default()
+            };
+            for (source, prefix, expected) in [
+                (
+                    L!("echo $AZU"),
+                    L!("echo $AZU"),
+                    L!("echo $AZURE_COMPLETION_PROBE"),
+                ),
+                (
+                    L!("echo $azu"),
+                    L!("echo $azu"),
+                    L!("echo $AZURE_COMPLETION_PROBE"),
+                ),
+                (
+                    L!("echo \"$AZU"),
+                    L!("echo \"$AZU"),
+                    L!("echo \"$AZURE_COMPLETION_PROBE"),
+                ),
+                (
+                    L!("echo ${AZU"),
+                    L!("echo ${AZU"),
+                    L!("echo ${AZURE_COMPLETION_PROBE}"),
+                ),
+                (
+                    L!("echo \"${AZU"),
+                    L!("echo \"${AZU"),
+                    L!("echo \"${AZURE_COMPLETION_PROBE}"),
+                ),
+                (
+                    L!("echo ${AZU} tail"),
+                    L!("echo ${AZU"),
+                    L!("echo ${AZURE_COMPLETION_PROBE} tail"),
+                ),
+                (
+                    L!("echo \"$AZU\" tail"),
+                    L!("echo \"$AZU"),
+                    L!("echo \"$AZURE_COMPLETION_PROBE\" tail"),
+                ),
+                (
+                    L!("echo ${AZURE_COMPLETION_PROBE} tail"),
+                    L!("echo ${AZU"),
+                    L!("echo ${AZURE_COMPLETION_PROBE} tail"),
+                ),
+            ] {
+                let p = Projection::for_state(source, prefix.len(), &vars, &state).unwrap();
+                let mut ctx =
+                    crate::operation_context::OperationContext::background_interruptible(&vars);
+                ctx.bash_state = Some(&state);
+                let (candidates, _) = p
+                    .complete(CompletionRequestOptions::Completion, &mut ctx)
+                    .unwrap();
+                assert_eq!(candidates.len(), 1, "{source}: {candidates:?}");
+                let (edited, cursor) = p.apply(&candidates[0], false).unwrap();
+                assert_eq!(edited, expected, "{source}");
+                assert_eq!(cursor, expected.len() - (source.len() - prefix.len()));
+            }
+        }
     }
 
     #[test]

@@ -106,6 +106,43 @@ class Shell:
         self.child.close(force=True)
 
 
+def assert_variable_completions(shell):
+    shell.run('export AZURE_COMPLETION_PROBE=fixture')
+    for source, prefix, expected in (
+        ('echo $AZU', 'echo $AZU', 'echo $AZURE_COMPLETION_PROBE'),
+        ('echo $azu', 'echo $azu', 'echo $AZURE_COMPLETION_PROBE'),
+        ('echo "$AZU', 'echo "$AZU', 'echo "$AZURE_COMPLETION_PROBE'),
+        ('echo ${AZU', 'echo ${AZU', 'echo ${AZURE_COMPLETION_PROBE}'),
+        ('echo "${AZU', 'echo "${AZU', 'echo "${AZURE_COMPLETION_PROBE}'),
+        ('echo ${AZU} tail', 'echo ${AZU', 'echo ${AZURE_COMPLETION_PROBE} tail'),
+        ('echo "$AZU" tail', 'echo "$AZU', 'echo "$AZURE_COMPLETION_PROBE" tail'),
+        ('echo ${AZURE_COMPLETION_PROBE} tail', 'echo ${AZU', 'echo ${AZURE_COMPLETION_PROBE} tail'),
+    ):
+        shell.child.send(source)
+        shell.child.send('\x1b[D' * (len(source) - len(prefix)))
+        shell.child.send('\t')
+        assert shell.buffer() == (expected, len(expected) - (len(source) - len(prefix))), source
+        shell.clear()
+    shell.run('AZURE_COMPLETION_LOCAL=local')
+    shell.child.send('echo $AZURE_COMPLETION_L\t')
+    assert shell.buffer() == ('echo $AZURE_COMPLETION_LOCAL', len('echo $AZURE_COMPLETION_LOCAL'))
+    shell.clear()
+    shell.child.send('echo ${AZU\t')
+    assert shell.buffer()[0] == 'echo ${AZURE_COMPLETION_', shell.buffer()
+    shell.clear()
+    for source, prefix in (
+        ("echo '$AZU", "echo '$AZU"),
+        ('echo \\$AZU', 'echo \\$AZU'),
+        ('echo ${AZU:-fallback}', 'echo ${AZU'),
+    ):
+        shell.child.send(source)
+        shell.child.send('\x1b[D' * (len(source) - len(prefix)))
+        shell.child.send('\t')
+        assert shell.buffer() == (source, len(prefix)), source
+        shell.clear()
+    print('PASS variable names, quoting, braces, local variables and preserved cursor suffixes', flush=True)
+
+
 def assert_file_completions(shell, root):
     work = root / 'file-completions'
     work.mkdir()
@@ -276,6 +313,7 @@ def main(binary):
             assert s.buffer()[0] == 'cd directory-completion/'
             s.clear()
             assert_file_completions(s, root)
+            assert_variable_completions(s)
             for source in ['mutate_probe ', 'echo "$(touch sentinel)', 'echo "${side:=changed}"', 'git -C "$fish_only_value" switch topic-']:
                 s.child.send(source + '\t')
                 assert s.buffer()[0] == source, s.buffer()

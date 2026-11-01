@@ -14,7 +14,7 @@ import time
 
 import pexpect
 
-from bash_input_integration import Shell, assert_file_completions
+from bash_input_integration import Shell, assert_file_completions, assert_variable_completions
 
 
 def main(binary):
@@ -189,6 +189,7 @@ def main(binary):
             assert shell.buffer()[0] == "cd ~/tilde-directory/"
             shell.clear()
             assert_file_completions(shell, root)
+            assert_variable_completions(shell)
             (root / "glob-source.txt").write_text("GLOB-FILE\n")
             for source, expected in (
                 ("cp *.txt directory-", "cp *.txt directory-completion/"),
