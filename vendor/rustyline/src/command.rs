@@ -7,11 +7,61 @@ use crate::keymap::{Anchor, At, Cmd, Movement, Word};
 use crate::keymap::{InputState, Refresher};
 use crate::kill_ring::{KillRing, Mode};
 use crate::line_buffer::WordAction;
+#[cfg(windows)]
+use crate::tty::Renderer;
 use crate::{Helper, Result};
 
 pub enum Status {
     Proceed,
     Submit,
+}
+
+#[cfg(windows)]
+fn end_of_line_with_hint<H: Helper>(s: &mut State<'_, '_, H>) -> Result<()> {
+    // A displayed completion pager can have been dismissed by the callback.
+    // Repaint it without accepting a newly revealed autosuggestion on this key.
+    if s.has_hint() && s.hint_text().is_none() {
+        s.line.move_end();
+        return s.refresh_line();
+    }
+
+    if s.line.pos() != s.line.len() {
+        if s.line.move_end() {
+            // Ordinary cursor movements do not recompute hints. A following
+            // queued action must see the suggestion at this new position.
+            return s.refresh_line();
+        }
+        return Ok(());
+    }
+
+    // A prior queued movement may have left the displayed hint out of date.
+    s.hint();
+    let Some(hint) = s.hint_text().filter(|text| !text.is_empty()) else {
+        return s.refresh_line();
+    };
+    match hint.find('\n') {
+        Some(0) => Ok(()),
+        Some(end) => {
+            let text = hint[..end].to_owned();
+            // Keep acceptance separate from earlier edits, including vi insert
+            // groups, and leave the cursor after all inserted UTF-8 bytes.
+            s.changes.end();
+            s.changes.begin();
+            let inserted = s.line.yank(&text, 1, &mut s.changes).is_some();
+            s.changes.end();
+            if !inserted {
+                s.out.beep()?;
+            }
+            s.refresh_line()
+        }
+        None => {
+            s.changes.end();
+            s.changes.begin();
+            let result = complete_hint_line(s);
+            s.changes.end();
+            result
+        }
+    }
 }
 
 pub fn execute<H: Helper>(
@@ -67,6 +117,8 @@ pub fn execute<H: Helper>(
         Cmd::CompleteHint => {
             complete_hint_line(s)?;
         }
+        #[cfg(windows)]
+        Cmd::EndOfLineWithHint => end_of_line_with_hint(s)?,
         Cmd::SelfInsert(n, c) => {
             s.edit_insert(c, n)?;
         }

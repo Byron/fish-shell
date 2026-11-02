@@ -48,6 +48,8 @@ def main():
             "    commandline -f edit-command-buffer\n"
             "end\n"
             "function fish_user_key_bindings\n"
+            "    bind ctrl-e 'if commandline --search-mode; or commandline --paging-mode; "
+            "commandline -f execute; else; commandline -f end-of-line; end'\n"
             "    bind ctrl-x,ctrl-e edit_command_buffer\n"
             "    bind ctrl-x,ctrl-t seed_trailing_editor\n"
             "end\n",

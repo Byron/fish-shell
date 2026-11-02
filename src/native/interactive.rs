@@ -427,9 +427,7 @@ mod windows {
                 }
                 editor.bind_sequence(
                     KeyEvent::ctrl('E'),
-                    pager.wrap(Some(EventHandler::Conditional(Box::new(EndOfLineKey {
-                        pager: pager.clone(),
-                    })))),
+                    pager.wrap(Some(EventHandler::Conditional(Box::new(EndOfLineKey)))),
                 );
                 editor.bind_sequence(
                     KeyEvent(KeyCode::Enter, Modifiers::ALT),
@@ -883,7 +881,6 @@ mod windows {
                             rustyline::At::AfterEnd,
                             rustyline::Word::Emacs,
                         )),
-                        Action::EndOfLine => Cmd::Move(rustyline::Movement::EndOfLine),
                         Action::HistorySearchBackward | Action::HistorySearchForward => {
                             HistoryKey {
                                 search: Arc::clone(&self.search),
@@ -920,12 +917,6 @@ mod windows {
                         pager: self.pager.clone(),
                     }
                     .command(count, ctx),
-                ),
-                Action::EndOfLine => Some(
-                    EndOfLineKey {
-                        pager: self.pager.clone(),
-                    }
-                    .command(ctx),
                 ),
                 Action::HistorySearchBackward | Action::HistorySearchForward => HistoryKey {
                     search: Arc::clone(&self.search),

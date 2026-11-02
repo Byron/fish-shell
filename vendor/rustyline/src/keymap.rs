@@ -62,6 +62,11 @@ pub enum Cmd {
     CompleteBackward,
     /// complete-hint
     CompleteHint,
+    /// Move to the current line's end, or accept the current hint up to its first
+    /// newline when already at the end of input. Evaluated when executed, so
+    /// earlier commands in a sequence can change the input, cursor, or hint.
+    #[cfg(windows)]
+    EndOfLineWithHint,
     /// Dedent current line
     Dedent(Movement),
     /// downcase-word

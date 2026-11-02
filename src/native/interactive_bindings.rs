@@ -114,6 +114,7 @@ impl Action {
             Self::BackwardChar => Cmd::Move(Movement::BackwardChar(1)),
             Self::BackwardWord => Cmd::Move(Movement::BackwardWord(1, Word::Emacs)),
             Self::BeginningOfLine => Cmd::Move(Movement::BeginningOfLine),
+            Self::EndOfLine => Cmd::EndOfLineWithHint,
             Self::DeleteChar => Cmd::Kill(Movement::ForwardChar(1)),
             Self::BackwardDeleteChar => Cmd::Kill(Movement::BackwardChar(1)),
             Self::KillWord => Cmd::Kill(Movement::ForwardWord(1, At::AfterEnd, Word::Emacs)),
@@ -126,7 +127,6 @@ impl Action {
             Self::AcceptAutosuggestion
             | Self::ForwardChar
             | Self::ForwardWord
-            | Self::EndOfLine
             | Self::HistorySearchBackward
             | Self::HistorySearchForward
             | Self::Execute

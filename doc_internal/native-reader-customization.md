@@ -25,6 +25,12 @@ run. `commandline --function` accepts the names listed by `bind --function-names
 Completion generators and command substitutions can query their input but cannot
 modify the outer reader.
 
+`end-of-line` accepts the visible autosuggestion through the end of its current
+line when the cursor is already at the end of the draft. This also works when a
+callback queues it with `commandline -f end-of-line`, including after earlier
+buffer edits or cursor movements. It leaves the accepted text editable without
+submitting it, and does not accept the next line of a multiline suggestion.
+
 Bindings accept multiple callback strings and input functions. Callback
 strings run in order, then queued input functions run in order. Changes to binding
 registrations take effect on the next prompt. Named sequences and legacy control

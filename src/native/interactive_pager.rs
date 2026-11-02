@@ -103,6 +103,18 @@ impl PagerBindings {
             }
             Action::Complete => self.handle_key(KeyEvent::ctrl('I'), line, pos),
             Action::Repaint => None,
+            Action::EndOfLine => {
+                let pager = self.state.lock().ok()?.take()?;
+                if pager.original != line || pager.pos != pos {
+                    return None;
+                }
+                // Dismiss this menu without accepting a history suggestion that
+                // the callback's buffer refresh might reveal behind it.
+                Some(Cmd::Sequence(vec![
+                    Cmd::Move(rustyline::Movement::EndOfLine),
+                    Cmd::Repaint,
+                ]))
+            }
             _ => {
                 *self.state.lock().ok()? = None;
                 None
@@ -621,7 +633,13 @@ mod tests {
         assert!(!bindings.modes(line, 5).0);
 
         let bindings = open_pager(line, 5, 4);
-        assert_eq!(bindings.handle_action(Action::EndOfLine, line, 5), None);
+        assert_eq!(
+            bindings.handle_action(Action::EndOfLine, line, 5),
+            Some(Cmd::Sequence(vec![
+                Cmd::Move(rustyline::Movement::EndOfLine),
+                Cmd::Repaint,
+            ]))
+        );
         assert!(!bindings.modes(line, 5).0);
         assert!(bindings.take_completion(line, 5).is_none());
     }

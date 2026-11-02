@@ -17,6 +17,8 @@ mod emacs;
 mod history;
 mod vi_cmd;
 mod vi_insert;
+#[cfg(windows)]
+mod windows_end_of_line;
 
 fn init_editor(mode: EditMode, keys: &[KeyEvent]) -> DefaultEditor {
     let config = Config::builder().edit_mode(mode).build();

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check native Fish editing behavior in an isolated tmuxx ConPTY session.
 
-Usage: python tests/native_fish_feel_tmuxx.py FISH_EXE TMUXX_EXE
+Usage: python tests/native_fish_feel_tmuxx.py FISH_EXE TMUXX_EXE [--ctrl-e-only]
 
 The private owner, configuration, history, command PATH and working directory
 leave existing shells and user configuration untouched. Suggestions are checked
@@ -24,6 +24,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("fish", type=Path)
     parser.add_argument("tmuxx", type=Path)
+    parser.add_argument("--ctrl-e-only", action="store_true",
+                        help="run only callback end-of-line autosuggestion regressions")
     args = parser.parse_args()
     if os.name != "nt":
         parser.error("this test requires native Windows and tmuxx ConPTY")
@@ -37,7 +39,9 @@ def main():
         config.mkdir(parents=True)
         (config / "config.fish").write_text(
             "function fish_prompt; printf 'FEEL> '; end\n"
-            "set -g FEEL_variable FEEL_variable_value\n",
+            "set -g FEEL_variable FEEL_variable_value\n"
+            "bind ctrl-e 'if commandline --search-mode; or commandline --paging-mode; "
+            "commandline -f execute; else; commandline -f end-of-line; end'\n",
             encoding="utf-8",
         )
         directory = root / "FEEL_path_directory"
@@ -170,6 +174,101 @@ def main():
             keys("Enter")
             expect(output, count=2)
 
+        def callback_suggestions():
+            configure("bind ctrl-o 'commandline -f end-of-line end-of-line'")
+            for input_mode in ("fish", "bash"):
+                configure(f"fish_input_mode {input_mode}")
+                suggestion(f"FEEL_callback_ctrl_e_{input_mode}_魚", "C-e")
+
+                # Both queued actions use the state left by the preceding action:
+                # first reach the typed line's end, then accept its suggestion.
+                marker = f"FEEL_callback_twice_{input_mode}_魚"
+                prefix = f"echo {marker}"
+                output = f"{marker} alpha beta"
+                send(f"echo {output}")
+                expect(output)
+                literal(prefix)
+                expect_input(f"echo {output}")
+                typed_end = int(metadata("#{cursor_x}"))
+                keys("Left", "Left", "C-o")
+                expect_metadata("#{cursor_x}", str(typed_end + len(" alpha beta")))
+                assert capture().splitlines().count(output) == 1
+                literal("_edited")
+                keys("Enter")
+                expect(output + "_edited")
+
+                # A callback can replace the draft before queuing end-of-line.
+                # Accept the replacement's suggestion, including its own cursor.
+                old = f"FEEL_callback_old_{input_mode}_魚"
+                new = f"FEEL_callback_new_{input_mode}_魚"
+                send(f"echo {old} stale")
+                expect(f"{old} stale")
+                send(f"echo {new} fresh")
+                expect(f"{new} fresh")
+                configure(f"bind ctrl-y 'commandline -r -- \"echo {new}\"; "
+                          "commandline -f end-of-line'")
+                literal(f"echo {new}")
+                expect_input(f"echo {new} fresh")
+                replacement_end = int(metadata("#{cursor_x}"))
+                keys("C-c")
+                expect_input("")
+                literal(f"echo {old}")
+                expect_input(f"echo {old} stale")
+                keys("C-y")
+                expect_metadata("#{cursor_x}", str(replacement_end + len(" fresh")))
+                expect_input(f"echo {new} fresh")
+                assert capture().splitlines().count(f"{new} fresh") == 1
+                assert capture().splitlines().count(f"{old} stale") == 1
+                literal("_edited")
+                keys("Enter")
+                expect(f"{new} fresh_edited")
+                expect_input("")
+
+                marker = f"FEEL_callback_line_{input_mode}_魚"
+                never = f"FEEL_callback_never_{input_mode}"
+                paste(f"history append 'echo {marker} first\necho {never}'")
+                keys("Enter")
+                expect_input("")
+                literal(f"echo {marker}")
+                wait_for(lambda text: f"echo {never}" in text.rstrip().splitlines()[-1:],
+                         "missing callback multiline autosuggestion")
+                typed_end = int(metadata("#{cursor_x}"))
+                typed_row = metadata("#{cursor_y}")
+                keys("C-e")
+                expect_metadata("#{cursor_x}|#{cursor_y}",
+                                f"{typed_end + len(' first')}|{typed_row}")
+                keys("C-e")
+                expect_metadata("#{cursor_x}|#{cursor_y}",
+                                f"{typed_end + len(' first')}|{typed_row}")
+                literal("_edited")
+                expect_input(f"echo {marker} first_edited")
+                assert f"{marker} first" not in capture().splitlines()
+                assert never not in capture().splitlines()
+                keys("Enter")
+                expect(f"{marker} first_edited")
+                assert never not in capture().splitlines()
+            configure("fish_input_mode fish")
+            # Dismissing a menu must not accept the history hint it reveals.
+            configure("function FEEL_callback_menu; echo FEEL_callback_menu_result:$argv; end")
+            configure("complete -c FEEL_callback_menu -f -a 'alpha beta'")
+            configure("bind ctrl-y 'commandline -f end-of-line'")
+            send("FEEL_callback_menu remembered")
+            expect("FEEL_callback_menu_result:remembered")
+            literal("FEEL_callback_menu ")
+            expect_input("FEEL_callback_menu remembered")
+            typed_end = metadata("#{cursor_x}")
+            keys("Tab")
+            wait_for(lambda text: "Search:" in text and "alpha" in text and "beta" in text,
+                     "plain end-of-line callback fixture did not open the completion menu")
+            keys("C-y")
+            expect_input("FEEL_callback_menu remembered")
+            expect_metadata("#{cursor_x}", typed_end)
+            assert capture().splitlines().count("FEEL_callback_menu_result:remembered") == 1
+            literal("typed")
+            keys("Enter")
+            expect("FEEL_callback_menu_result:typed")
+            configure("bind --erase ctrl-e; bind --erase ctrl-o; bind --erase ctrl-y")
+
         owner = subprocess.Popen(
             base + ["-D", "-f", str(tmux_config)],
             env=env,
@@ -217,6 +316,13 @@ def main():
             keys("C-c")
             expect_input("")
             expect_metadata("#{pane_command_line}", "false")
+
+            callback_suggestions()
+            if args.ctrl_e_only:
+                print("PASS callback Ctrl-E: dotfiles binding, Unicode hint/cursor, queued actions, "
+                      "replacement draft, multiline first-line acceptance, pager dismissal, "
+                      "Fish/Bash, no submission")
+                return
 
             suggestion("FEEL_hint_right", "Right")
             suggestion("FEEL_hint_ctrl_f", "C-f")
@@ -653,7 +759,8 @@ def main():
                 time.sleep(0.03)
             else:
                 raise AssertionError(f"native Fish did not exit:\n{capture()}")
-            coverage = ("visible/color hints, full/word acceptance, substring history/draft restore, "
+            coverage = ("visible/color hints, full/word and callback end-of-line acceptance, "
+                        "substring history/draft restore, "
                         "editable multiline/cancellation, variable/command/cd/declarative "
                         "completion and searchable menu with Ctrl-N/P in Fish/Bash modes, "
                         "bracketed paste/undo/resize, "
