@@ -595,6 +595,8 @@ pub struct Editor<H: Helper, I: History> {
     kill_ring: KillRing,
     config: Config,
     custom_bindings: Bindings,
+    #[cfg(windows)]
+    initial_command: Option<Cmd>,
 }
 
 /// Default editor with no helper and `DefaultHistory`
@@ -632,6 +634,8 @@ impl<H: Helper, I: History> Editor<H, I> {
             kill_ring: KillRing::new(60),
             config,
             custom_bindings: Bindings::new(),
+            #[cfg(windows)]
+            initial_command: None,
         })
     }
 
@@ -654,6 +658,21 @@ impl<H: Helper, I: History> Editor<H, I> {
     /// right of the cursor.
     pub fn readline_with_initial(&mut self, prompt: &str, initial: (&str, &str)) -> Result<String> {
         self.readline_with(prompt, Some(initial))
+    }
+
+    /// Resume a draft, applying an ordinary editor command before reading keys.
+    /// A `SetBuffer` command records the replacement as one undoable edit.
+    #[cfg(windows)]
+    pub fn readline_with_initial_command(
+        &mut self,
+        prompt: &str,
+        initial: (&str, &str),
+        command: Cmd,
+    ) -> Result<String> {
+        self.initial_command = Some(command);
+        let result = self.readline_with(prompt, Some(initial));
+        self.initial_command = None;
+        result
     }
 
     fn readline_with(&mut self, prompt: &str, initial: Option<(&str, &str)>) -> Result<String> {
@@ -725,7 +744,8 @@ impl<H: Helper, I: History> Editor<H, I> {
         s.refresh_line()?;
 
         #[cfg(windows)]
-        let mut pending_commands = std::collections::VecDeque::new();
+        let mut pending_commands: std::collections::VecDeque<_> =
+            self.initial_command.take().into_iter().collect();
         loop {
             #[cfg(not(windows))]
             let mut cmd = s.next_cmd(&mut input_state, &mut rdr, false, false)?;

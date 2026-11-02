@@ -4,7 +4,8 @@ The Windows reader runs `bind` callbacks in the current Fish session, including
 comma-separated key sequences such as `ctrl-x,ctrl-e`.
 Callbacks can call functions, change variables or directories, and invoke normal
 commands. Standard input is isolated from the editor; output and diagnostics are
-printed without treating them as input. Ctrl-C cancels callback work.
+printed without treating them as input. Ctrl-C cancels callback work. The explicit
+external-editor action described below temporarily hands the terminal to the editor.
 
 ```fish
 function insert_git_status
@@ -34,13 +35,36 @@ A sequence prefix waits for another key. When it is also a complete binding,
 the reader waits up to 500 ms for a longer match before using that binding.
 Unmatched trailing keys return to normal editing. Unless explicitly bound as a
 continuation, Escape or Ctrl-G cancels the pending sequence and Ctrl-C cancels
-the current input. Custom binding modes remain
-unavailable. Terminal interaction by external full-screen
-programs from a binding is not supported: use a submitted command instead.
+the current input. Custom binding modes remain unavailable. Other full-screen
+programs should be launched as submitted commands, rather than ordinary callbacks.
 
 Validation includes semantic tests for Unicode edits, lexical extents, session
 changes and nested completion isolation, plus native ConPTY tests for callbacks,
 worker pipelines, queued execution and undo.
+
+## Editing the command in an external editor
+
+The shared `edit_command_buffer` function works with native terminal editors,
+including Helix:
+
+```fish
+set -gx VISUAL hx
+bind ctrl-x,ctrl-e edit_command_buffer
+```
+
+Fish uses `VISUAL`, or `EDITOR` when `VISUAL` is unset. It leaves the prompt's raw
+input mode while the editor runs, then restores the edited text as a draft.
+Saving and closing the editor does not execute the command. Press Enter to submit
+it, or undo to restore the original draft. Returning from the editor starts a new
+undo history containing the original draft and the edit.
+
+Failed saves, empty files and interruption preserve the original draft and cursor.
+Temporary command files are removed even when the editor is interrupted. Fish
+drafts use the matching `fish_indent.exe` beside the shell when available; Bash
+drafts use a `.sh` file and retain their original syntax without Fish formatting.
+The shared helper still handles editor selection and position arguments.
+The underlying `edit-command-buffer` input action must be queued on its own
+(optionally with `repaint`); text and cursor edits made before it are retained.
 
 ## Generated abbreviations
 

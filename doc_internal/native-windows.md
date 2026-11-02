@@ -460,6 +460,12 @@ and cancellation before user bindings. See
 [native reader customization](native-reader-customization.md) for supported
 editing operations and generated abbreviations.
 
+`bind ctrl-x,ctrl-e edit_command_buffer` opens the current draft in `VISUAL` or
+`EDITOR`, including terminal editors such as Helix. Fish restores the draft after
+the editor exits, without submitting it, and one undo restores the original text.
+Failed or interrupted edits retain the original draft. Bash input is edited as
+shell source without Fish formatting; Fish input uses the matching bundled formatter.
+
 The native Fish editor colors commands, keywords, quoted strings, variables,
 escapes, operators and comments as you type, and marks unknown literal commands
 and malformed escapes in red. Matching delimiters are emphasized at the cursor.

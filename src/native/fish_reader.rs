@@ -1,4 +1,5 @@
-//! Editing callbacks borrow a snapshot of the live reader, never its terminal.
+//! Editing callbacks borrow a snapshot of the live reader. Only the explicit
+//! external-editor handoff can borrow its terminal after raw mode has ended.
 use super::*;
 use crate::commandline_extent::{get_job_extent, get_process_extent, get_token_extent};
 use crate::native::interactive_bindings::Action;
@@ -20,6 +21,18 @@ pub(in crate::native) struct ReaderState {
 }
 
 impl Session {
+    pub(in crate::native) fn reader_temporary_directory(&self) -> std::path::PathBuf {
+        ["TMPDIR", "TMP", "TEMP"]
+            .into_iter()
+            .find_map(|name| {
+                self.values(name)
+                    .into_iter()
+                    .next()
+                    .filter(|path| !path.is_empty())
+            })
+            .map_or_else(std::env::temp_dir, std::path::PathBuf::from)
+    }
+
     pub(in crate::native) fn initialize_reader_bindings(
         &mut self,
         host: &mut impl Host,
@@ -159,6 +172,21 @@ impl Session {
                 if self.exit_requested() || host.cancelled() {
                     break;
                 }
+            }
+            let actions = &self.reader_state.as_ref().unwrap().actions;
+            if actions.contains(&Action::EditCommandBuffer)
+                && (actions
+                    .iter()
+                    .filter(|action| **action == Action::EditCommandBuffer)
+                    .count()
+                    != 1
+                    || actions.iter().any(|action| {
+                        !matches!(action, Action::EditCommandBuffer | Action::Repaint)
+                    }))
+            {
+                return Err(Error::new(
+                    "commandline: edit-command-buffer must be queued without other input actions except repaint",
+                ));
             }
             Ok(())
         })();
@@ -337,6 +365,68 @@ mod tests {
         fn jobs(&self) -> Vec<Vec<u8>> {
             Vec::new()
         }
+    }
+
+    #[test]
+    fn external_editor_action_keeps_edits_and_rejects_mixed_input_actions() {
+        let mut session = Session::new().unwrap();
+        let mut host = Capture::default();
+        let state = session.reader_callback(
+            &["commandline -r 'echo 🐟'; commandline -C 5; commandline -f edit-command-buffer repaint".into()],
+            "original", 0, ReaderModes::default(), &mut host,
+        ).unwrap();
+        assert_eq!(state.line, "echo 🐟");
+        assert_eq!(state.cursor, 5);
+        assert_eq!(state.actions, [Action::EditCommandBuffer, Action::Repaint]);
+        for source in [
+            "commandline -f edit-command-buffer execute",
+            "commandline -f backward-char; commandline -f edit-command-buffer",
+            "commandline -f edit-command-buffer edit-command-buffer",
+        ] {
+            let error = session
+                .reader_callback(
+                    &[source.into()],
+                    "original",
+                    0,
+                    ReaderModes::default(),
+                    &mut host,
+                )
+                .err()
+                .unwrap();
+            assert!(error.message.contains("must be queued"), "{source}");
+            assert!(session.reader_state.is_none());
+            assert!(session.completion_line.is_none());
+        }
+    }
+
+    #[test]
+    fn external_editor_temporary_directory_uses_current_session_variables() {
+        let mut session = Session::new().unwrap();
+        let mut host = Capture::default();
+        session
+            .eval(
+                "set -g TMPDIR ''; set -g TMP 'C:/first temp'; set -g TEMP 'C:/second temp'",
+                &mut host,
+            )
+            .unwrap();
+        assert_eq!(
+            session.reader_temporary_directory(),
+            std::path::PathBuf::from("C:/first temp")
+        );
+        session
+            .eval("set -g TMPDIR relative-temp", &mut host)
+            .unwrap();
+        assert_eq!(
+            session.reader_temporary_directory(),
+            std::path::PathBuf::from("relative-temp")
+        );
+        session
+            .eval("set -e TMPDIR; set -e TMP", &mut host)
+            .unwrap();
+        assert_eq!(
+            session.reader_temporary_directory(),
+            std::path::PathBuf::from("C:/second temp")
+        );
     }
 
     #[test]

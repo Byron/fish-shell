@@ -25,6 +25,36 @@ fn init_editor(mode: EditMode, keys: &[KeyEvent]) -> DefaultEditor {
     editor
 }
 
+#[cfg(windows)]
+#[test]
+fn resumed_draft_replacement_is_one_undoable_edit() {
+    for (keys, expected) in [
+        (vec![E::ENTER], "edited 🐟"),
+        (vec![E::ctrl('_'), E::ENTER], "original Ω suffix"),
+    ] {
+        let mut editor = init_editor(EditMode::Emacs, &keys);
+        let line = editor
+            .readline_with_initial_command(
+                ">>",
+                ("original Ω", " suffix"),
+                Cmd::SetBuffer {
+                    buffer: "edited 🐟".into(),
+                    cursor: "edited 🐟".len(),
+                },
+            )
+            .unwrap();
+        assert_eq!(line, expected);
+        // DummyTerminal replays its configured keys for each reader.
+        editor.term.keys = vec![E::ENTER];
+        assert_eq!(
+            editor
+                .readline_with_initial(">>", ("fresh draft", ""))
+                .unwrap(),
+            "fresh draft"
+        );
+    }
+}
+
 struct SimpleCompleter;
 impl Completer for SimpleCompleter {
     type Candidate = String;

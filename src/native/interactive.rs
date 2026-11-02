@@ -200,6 +200,7 @@ fn home_dir() -> Option<PathBuf> {
 mod windows {
     use super::*;
     use crate::native::InputLanguage;
+    use crate::native::fish::reader_builtin::{ReaderModes, ReaderState};
     use crate::native::interactive_abbreviations::Abbreviations;
     use crate::native::interactive_bindings::{Action, Bindings};
     use crate::native::interactive_keys::{EndOfLineKey, HistoryKey, HistorySearch, SuggestionKey};
@@ -226,6 +227,17 @@ mod windows {
         search: Arc<Mutex<HistorySearch>>,
         custom_bindings: Vec<(Event, Option<EventHandler>)>,
         initialized_bindings: bool,
+        external_edit: Arc<Mutex<Option<ExternalEdit>>>,
+    }
+
+    struct ExternalEdit {
+        reader: ReaderState,
+        language: InputLanguage,
+    }
+
+    struct ResumedDraft {
+        original: ReaderState,
+        edited: ReaderState,
     }
 
     fn readline_error(error: ReadlineError) -> Error {
@@ -274,6 +286,7 @@ mod windows {
                     abbreviations: Arc::clone(&abbreviations),
                     search: Arc::clone(&self.search),
                     input_language: Arc::clone(&input_language),
+                    external_edit: Arc::clone(&self.external_edit),
                 };
                 let previous = self.editor.bind_sequence(
                     key.clone(),
@@ -464,6 +477,7 @@ mod windows {
                 search,
                 custom_bindings: Vec::new(),
                 initialized_bindings: false,
+                external_edit: Arc::new(Mutex::new(None)),
             })
         }
 
@@ -497,6 +511,14 @@ mod windows {
         }
 
         pub(super) fn read_line(&mut self, prompt: &str) -> Result<ReadEvent> {
+            self.read_line_resuming(prompt, None)
+        }
+
+        fn read_line_resuming(
+            &mut self,
+            prompt: &str,
+            resumed: Option<&ResumedDraft>,
+        ) -> Result<ReadEvent> {
             self.suspended.store(false, Ordering::Relaxed);
             self.editor.helper().unwrap().pager.reset();
             let entries = (0..self.editor.history().len())
@@ -510,7 +532,19 @@ mod windows {
                 })
                 .collect();
             self.search.lock().unwrap().reset(entries);
-            match self.editor.readline(prompt) {
+            let result = if let Some(resumed) = resumed {
+                self.editor.readline_with_initial_command(
+                    prompt,
+                    resumed.original.line.split_at(resumed.original.cursor),
+                    Cmd::SetBuffer {
+                        buffer: resumed.edited.line.clone(),
+                        cursor: resumed.edited.cursor,
+                    },
+                )
+            } else {
+                self.editor.readline(prompt)
+            };
+            match result {
                 Ok(line) => Ok(ReadEvent::Line(line)),
                 Err(ReadlineError::Eof) => Ok(ReadEvent::Eof),
                 Err(ReadlineError::Interrupted) => {
@@ -554,27 +588,72 @@ mod windows {
                 return (session, host, Ok(ReadEvent::Eof));
             }
             let service = Arc::clone(&self.editor.helper().unwrap().service);
-            service.lock().unwrap().begin_read(session, host);
-            let should_end = service.lock().unwrap().reader_should_end();
-            let mut result = if should_end {
-                Ok(ReadEvent::Eof)
-            } else {
-                self.read_line(prompt)
-            };
-            let (mut runtime, error, output) = service.lock().unwrap().end_read();
-            if let Some(error) = error {
-                result = Err(error);
-            }
-            if !output.is_empty() {
+            let mut resumed = None;
+            loop {
+                service.lock().unwrap().begin_read(session, host);
+                let should_end = service.lock().unwrap().reader_should_end();
+                let mut result = if should_end {
+                    Ok(ReadEvent::Eof)
+                } else {
+                    self.read_line_resuming(prompt, resumed.as_ref())
+                };
+                let (mut runtime, error, output) = service.lock().unwrap().end_read();
+                if let Some(error) = error {
+                    result = Err(error);
+                }
                 use rash::host::Host as _;
-                // Rustyline has restored console modes and finished its frame.
-                if let Err(error) = runtime.host.write(2, &output, &[], false)
+                if !output.is_empty()
+                    && let Err(error) = runtime.host.write(2, &output, &[], false)
                     && result.is_ok()
                 {
                     result = Err(error);
                 }
+                session = runtime.session;
+                host = runtime.host;
+                let request = self.external_edit.lock().unwrap().take();
+                let Some(request) =
+                    request.filter(|_| matches!(result, Ok(ReadEvent::Interrupted)))
+                else {
+                    return (session, host, result);
+                };
+
+                // Only this explicit input action borrows the real console.
+                // Rustyline has restored modes; ordinary callbacks and completion
+                // generators continue to use their isolated host and input.
+                let edited = if host.take_console_interrupt() {
+                    None
+                } else {
+                    let edit = external_editor(&mut session, &mut host, &request);
+                    if host.take_console_interrupt() {
+                        None
+                    } else {
+                        match edit {
+                            Ok(reader) => Some(reader),
+                            Err(error) => {
+                                if let Err(error) = host.write(
+                                    2,
+                                    format!("fish: {}\n", error.message).as_bytes(),
+                                    &[],
+                                    false,
+                                ) {
+                                    return (session, host, Err(error));
+                                }
+                                None
+                            }
+                        }
+                    }
+                };
+                if session.exit_requested() {
+                    return (session, host, Ok(ReadEvent::Eof));
+                }
+                let edited = edited.unwrap_or_else(|| request.reader.clone());
+                resumed = Some(ResumedDraft {
+                    original: request.reader,
+                    edited,
+                });
+                self.set_input_config(session.abbreviations.clone(), &session.bindings);
+                self.set_variables(&session.editor_variables());
             }
-            (runtime.session, runtime.host, result)
         }
 
         pub(super) fn add_history(&mut self, source: &str) -> Result<()> {
@@ -608,6 +687,36 @@ mod windows {
             self.editor.set_history_ignore_space(true);
             Ok(())
         }
+    }
+
+    fn external_editor(
+        session: &mut crate::native::fish::Session,
+        host: &mut crate::native::host::NativeHost,
+        request: &ExternalEdit,
+    ) -> Result<ReaderState> {
+        // A native owner cleans source and cursor files even if Ctrl-C stops
+        // the shared helper before its shell cleanup commands could run.
+        let temporary =
+            crate::native::temporary::Directory::create(&session.reader_temporary_directory())?;
+        let directory = temporary
+            .path()
+            .to_str()
+            .ok_or_else(|| Error::new("external editor temporary path is not Unicode"))?
+            .replace('\\', "/")
+            .replace('\'', "\\'");
+        let language = match request.language {
+            InputLanguage::Fish => "fish",
+            InputLanguage::Bash => "bash",
+        };
+        session.reader_callback(
+            &[format!(
+                "__fish_edit_command_buffer {language} '{directory}'"
+            )],
+            &request.reader.line,
+            request.reader.cursor,
+            ReaderModes::default(),
+            host,
+        )
     }
 
     struct InputKey {
@@ -704,6 +813,18 @@ mod windows {
         abbreviations: Arc<Mutex<Abbreviations>>,
         search: Arc<Mutex<HistorySearch>>,
         input_language: Arc<Mutex<InputLanguage>>,
+        external_edit: Arc<Mutex<Option<ExternalEdit>>>,
+    }
+
+    impl UserAction {
+        fn edit_command_buffer(&self, reader: ReaderState) -> Option<Cmd> {
+            *self.external_edit.lock().ok()? = Some(ExternalEdit {
+                reader,
+                language: *self.input_language.lock().ok()?,
+            });
+            self.pager.reset();
+            Some(Cmd::Interrupt)
+        }
     }
 
     impl ConditionalEventHandler for UserAction {
@@ -736,6 +857,9 @@ mod windows {
                 let Some(reader) = reader else {
                     return Some(Cmd::Noop);
                 };
+                if reader.actions.contains(&Action::EditCommandBuffer) {
+                    return self.edit_command_buffer(reader);
+                }
                 let mut commands = vec![Cmd::SetBuffer {
                     buffer: reader.line.clone(),
                     cursor: reader.cursor,
@@ -773,6 +897,14 @@ mod windows {
                 }));
                 return Some(Cmd::Sequence(commands));
             };
+            if action == Action::EditCommandBuffer {
+                return self.edit_command_buffer(ReaderState {
+                    line: ctx.line().into(),
+                    cursor: ctx.pos(),
+                    actions: Vec::new(),
+                    modes: ReaderModes::default(),
+                });
+            }
             if let Some(command) = self.pager.handle_action(action, ctx.line(), ctx.pos()) {
                 return Some(command);
             }

@@ -35,10 +35,11 @@ pub(super) enum Action {
     Repaint,
     Execute,
     Complete,
+    EditCommandBuffer,
 }
 
 impl Action {
-    const ALL: [Self; 22] = [
+    const ALL: [Self; 23] = [
         Self::AcceptAutosuggestion,
         Self::ForwardChar,
         Self::BackwardChar,
@@ -61,6 +62,7 @@ impl Action {
         Self::Repaint,
         Self::Execute,
         Self::Complete,
+        Self::EditCommandBuffer,
     ];
 
     pub fn name(self) -> &'static str {
@@ -87,6 +89,7 @@ impl Action {
             Self::Repaint => "repaint",
             Self::Execute => "execute",
             Self::Complete => "complete",
+            Self::EditCommandBuffer => "edit-command-buffer",
         }
     }
 
@@ -127,7 +130,8 @@ impl Action {
             | Self::HistorySearchBackward
             | Self::HistorySearchForward
             | Self::Execute
-            | Self::Complete => return None,
+            | Self::Complete
+            | Self::EditCommandBuffer => return None,
         })
     }
 }
