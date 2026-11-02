@@ -215,6 +215,11 @@ impl Session {
                 self.status = 0;
             }
             "cd" => {
+                let args = if args.first().is_some_and(|arg| arg == "--") {
+                    &args[1..]
+                } else {
+                    args
+                };
                 if args.len() > 1 {
                     return Err(Error::new("cd: too many arguments"));
                 }

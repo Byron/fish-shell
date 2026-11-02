@@ -98,6 +98,9 @@ descriptors 0, 1 and 2; list variables, quoting and simple integer indices;
 `if`/`else`, `begin`, `for`, `while`, `switch`, functions, `not`, and logical
 chains. Initial builtins include `echo`, `set`, `cd`, `pwd`, `count`, `test`, `[`,
 `true`, `false`, `source`, `eval`, `exit`, `return`, `break` and `continue`.
+`cd -- DIRECTORY` accepts a literal directory argument, including spaces and
+leading dashes, so worktree shell helpers such as `tix wt` can change directories.
+`cd --` without a directory changes to `HOME`, like bare `cd`.
 `echo` shares POSIX option parsing and escape rendering, including grouped flags,
 `-s`, `--` and literal byte escapes. Shared completion helpers therefore handle
 cached command names and option-looking arguments consistently.

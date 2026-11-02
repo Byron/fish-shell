@@ -87,6 +87,55 @@ fn quote(value: &str) -> String {
 }
 
 #[test]
+fn cd_accepts_an_option_terminator_before_a_literal_directory() {
+    let fixture = Fixture::new();
+    for directory in ["worktree space 文", "-worktree", "--"] {
+        fs::create_dir(fixture.0.join(directory)).unwrap();
+    }
+    let source = format!(
+        r#"
+        function switch_worktree --argument-names target
+            builtin cd -- "$target"
+        end
+        switch_worktree {target}
+        pwd
+        builtin cd --
+        pwd
+        builtin cd -- -worktree
+        pwd
+        builtin cd ..
+        builtin cd -- --
+        pwd
+        "#,
+        target = quote(&fixture.path("worktree space 文")),
+    );
+    assert_eq!(
+        stdout(fixture.run(&source)),
+        format!(
+            "{}\n{}\n{}\n{}\n",
+            fixture.path("worktree space 文"),
+            fixture.path("").trim_end_matches('\\'),
+            fixture.path("-worktree"),
+            fixture.path("--"),
+        ),
+    );
+}
+
+#[test]
+fn cd_still_rejects_multiple_directory_arguments() {
+    let fixture = Fixture::new();
+    for source in ["builtin cd -- . ..", "builtin cd . --"] {
+        let output = fixture.run(source);
+        assert_eq!(output.status.code(), Some(2), "{source}");
+        assert!(output.stdout.is_empty(), "{source}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("cd: too many arguments"),
+            "{output:?}",
+        );
+    }
+}
+
+#[test]
 fn nested_helpers_find_the_config_home_before_aliases_are_defined() {
     let fixture = Fixture::new();
     fs::create_dir_all(fixture.0.join("config/fish")).unwrap();
