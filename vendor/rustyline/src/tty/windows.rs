@@ -81,6 +81,7 @@ fn get_console_mode(handle: HANDLE) -> Result<console::CONSOLE_MODE> {
 #[derive(Default)]
 pub struct ConsoleBuffer {
     pending: VecDeque<ConsoleInput>,
+    decoded: VecDeque<KeyEvent>,
 }
 #[cfg(not(test))]
 pub type Buffer = ConsoleBuffer;
@@ -131,6 +132,7 @@ pub struct ConsoleRawReader {
     decoder: vt::Decoder,
     utf16: ConsoleInputDecoder,
     pending: VecDeque<ConsoleInput>,
+    decoded: VecDeque<KeyEvent>,
     escape_timeout: Duration,
     escape_deadline: Option<Instant>,
     paste: Option<vt::Paste>,
@@ -144,13 +146,15 @@ impl ConsoleRawReader {
         config: &Config,
         buffer: Option<ConsoleBuffer>,
     ) -> Self {
+        let buffer = buffer.unwrap_or_default();
         Self {
             conin,
             pipe_reader,
             vt_input,
             decoder: vt::Decoder::default(),
             utf16: ConsoleInputDecoder::default(),
-            pending: buffer.unwrap_or_default().pending,
+            pending: buffer.pending,
+            decoded: buffer.decoded,
             escape_timeout: Duration::from_millis(u64::from(config.keyseq_timeout().unwrap_or(50))),
             escape_deadline: None,
             paste: None,
@@ -158,30 +162,52 @@ impl ConsoleRawReader {
     }
 
     fn next_event(&mut self, external_print: bool) -> Result<Event> {
+        self.next_event_until(external_print, None)
+            .map(|event| event.expect("an untimed wait cannot time out"))
+    }
+
+    fn next_event_until(
+        &mut self,
+        external_print: bool,
+        deadline: Option<Instant>,
+    ) -> Result<Option<Event>> {
         use foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
         use threading::{WaitForMultipleObjects, INFINITE};
 
+        if let Some(key) = self.decoded.pop_front() {
+            if key == KeyEvent(K::BracketedPasteStart, M::NONE) && self.paste.is_none() {
+                self.paste = Some(vt::Paste::default());
+            }
+            return Ok(Some(Event::KeyPress(key)));
+        }
         // A resize may interrupt read_pasted_text. Resume through normal key
         // dispatch so the editor can repaint without losing the paste buffer.
         if self.paste.is_some() {
-            return Ok(Event::KeyPress(KeyEvent(K::BracketedPasteStart, M::NONE)));
+            return Ok(Some(Event::KeyPress(KeyEvent(
+                K::BracketedPasteStart,
+                M::NONE,
+            ))));
         }
         loop {
             if let Some(input) = self.pending.pop_front() {
                 if let Some(key) = self.decode_input(input) {
-                    return Ok(Event::KeyPress(key));
+                    return Ok(Some(Event::KeyPress(key)));
                 }
                 continue;
             }
             let pipe = self.pipe_reader.as_ref().filter(|_| external_print);
             if let Some(pipe) = pipe {
                 if let Some(message) = pipe.next_message()? {
-                    return Ok(Event::ExternalPrint(message));
+                    return Ok(Some(Event::ExternalPrint(message)));
                 }
             }
             let handles = [self.conin, pipe.map_or(0, |pipe| pipe.event.0)];
             let count = if pipe.is_some() { 2 } else { 1 };
-            let timeout = self.escape_deadline.map_or(INFINITE, |deadline| {
+            let wake_at = match (self.escape_deadline, deadline) {
+                (Some(escape), Some(input)) => Some(escape.min(input)),
+                (escape, input) => escape.or(input),
+            };
+            let timeout = wake_at.map_or(INFINITE, |deadline| {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 u32::try_from(remaining.as_millis().saturating_add(1)).unwrap_or(u32::MAX - 1)
             });
@@ -192,9 +218,17 @@ impl ConsoleRawReader {
                 // A sender may signal after we already consumed its message.
                 // Check the queue without blocking on a stale notification.
                 continue;
-            } else if rc == WAIT_TIMEOUT && self.decoder.escape_pending() {
-                self.escape_deadline = None;
-                return Ok(Event::KeyPress(self.decoder.finish_escape()));
+            } else if rc == WAIT_TIMEOUT {
+                let now = Instant::now();
+                if self.escape_deadline.is_some_and(|escape| escape <= now)
+                    && self.decoder.escape_pending()
+                {
+                    self.escape_deadline = None;
+                    return Ok(Some(Event::KeyPress(self.decoder.finish_escape())));
+                }
+                if deadline.is_some_and(|deadline| deadline <= now) {
+                    return Ok(None);
+                }
             } else {
                 return Err(io::Error::last_os_error().into());
             }
@@ -255,6 +289,16 @@ impl RawReader for ConsoleRawReader {
         self.next_event(true)
     }
 
+    fn wait_for_input_timeout(&mut self, _: bool, timeout: Duration) -> Result<Option<Event>> {
+        self.next_event_until(true, Some(Instant::now() + timeout))
+    }
+
+    fn buffer_keys(&mut self, keys: &mut VecDeque<KeyEvent>) {
+        while let Some(key) = keys.pop_back() {
+            self.decoded.push_front(key);
+        }
+    }
+
     fn next_key(&mut self, _: bool) -> Result<KeyEvent> {
         match self.next_event(false)? {
             Event::KeyPress(key) => Ok(key),
@@ -289,6 +333,7 @@ impl RawReader for ConsoleRawReader {
     fn unbuffer(self) -> Option<ConsoleBuffer> {
         Some(ConsoleBuffer {
             pending: self.pending,
+            decoded: self.decoded,
         })
     }
 }

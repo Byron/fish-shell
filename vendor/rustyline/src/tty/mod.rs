@@ -26,6 +26,18 @@ pub trait RawReader {
     type Buffer;
     /// Blocking wait for either a key press or an external print
     fn wait_for_input(&mut self, single_esc_abort: bool) -> Result<Event>; // TODO replace calls to `next_key` by `wait_for_input` where relevant
+    /// Wait for a native key-sequence continuation, allowing an ambiguous
+    /// shorter binding to run when the timeout expires.
+    #[cfg(windows)]
+    fn wait_for_input_timeout(
+        &mut self,
+        single_esc_abort: bool,
+        timeout: std::time::Duration,
+    ) -> Result<Option<Event>>;
+    /// Return sequence lookahead to a reader which can preserve it across
+    /// readline calls. Forward-only test readers may leave it with InputState.
+    #[cfg(windows)]
+    fn buffer_keys(&mut self, _keys: &mut std::collections::VecDeque<KeyEvent>) {}
     /// Blocking read of key pressed.
     fn next_key(&mut self, single_esc_abort: bool) -> Result<KeyEvent>;
     /// For CTRL-V support

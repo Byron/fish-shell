@@ -37,6 +37,15 @@ def main():
         (config / "config.fish").write_text("set -g editor_config configured\n", encoding="utf-8")
         (config / "functions").mkdir()
         (config / "completions").mkdir()
+        (config / "functions" / "fish_user_key_bindings.fish").write_text(
+            "function fish_user_key_bindings\n"
+            "    bind ctrl-x,ctrl-e 'commandline -r \"echo EDITOR_sequence\"'\n"
+            "    bind ctrl-t 'commandline -i short'\n"
+            "    bind ctrl-t,ctrl-r 'commandline -r \"echo EDITOR_longer\"'\n"
+            "    bind ctrl-o 'commandline -f execute'\n"
+            "    bind ctrl-o,ctrl-e 'commandline -r \"echo EDITOR_long_execute\"'\n"
+            "    bind alt-q,a,b 'commandline -r \"echo EDITOR_three\"'\n"
+            "end\n", encoding="utf-8")
         (config / "functions" / "EDITOR-alias.fish").write_text(
             "function EDITOR-alias --wraps 'EDITOR-target fixed'; EDITOR-target fixed $argv; end\n",
             encoding="utf-8")
@@ -142,6 +151,75 @@ def main():
 
             pane = new_session("editor", "-i")
             expect_prompt(pane)
+            assert "unsupported key" not in capture(pane), capture(pane)
+
+            # Startup hooks register sequences before the first read. Prefixes
+            # wait for the remaining keys without editing or submitting input.
+            literal(pane, "draft 🐟")
+            keys(pane, "C-x")
+            await_last_line(pane, "fish> draft 🐟")
+            keys(pane, "C-e")
+            await_last_line(pane, "fish> echo EDITOR_sequence")
+            assert "EDITOR_sequence" not in capture(pane).splitlines()
+            keys(pane, "Enter")
+            expect(pane, "EDITOR_sequence")
+            await_last_line(pane, "fish>")
+
+            # Arbitrary prefixes, longer bindings sharing an exact prefix, and
+            # mismatches all retain the keys which were not part of a binding.
+            keys(pane, "M-q")
+            literal(pane, "ab")
+            await_last_line(pane, "fish> echo EDITOR_three")
+            keys(pane, "Enter")
+            expect(pane, "EDITOR_three")
+            await_last_line(pane, "fish>")
+            keys(pane, "C-t", "C-r")
+            await_last_line(pane, "fish> echo EDITOR_longer")
+            keys(pane, "Enter")
+            expect(pane, "EDITOR_longer")
+            await_last_line(pane, "fish>")
+            keys(pane, "C-t")
+            await_last_line(pane, "fish> short")
+            keys(pane, "C-u", "C-t")
+            literal(pane, "z")
+            await_last_line(pane, "fish> shortz")
+            keys(pane, "C-u", "C-x")
+            literal(pane, "z")
+            await_last_line(pane, "fish> z")
+            keys(pane, "C-u")
+            literal(pane, "draft")
+            keys(pane, "C-x", "Escape")
+            await_last_line(pane, "fish> draft")
+            keys(pane, "C-x", "C-c")
+            await_last_line(pane, "fish>")
+            for ending, key in [("escape", "Escape"), ("ctrl-g", "C-g"), ("ctrl-c", "C-c")]:
+                send(pane, f"bind ctrl-x,{ending} 'commandline -i bound'")
+                await_last_line(pane, "fish>")
+                keys(pane, "C-x", key)
+                await_last_line(pane, "fish> bound")
+                keys(pane, "C-u")
+                send(pane, f"bind --erase ctrl-x,{ending}")
+                await_last_line(pane, "fish>")
+
+            # Lookahead also survives a shorter binding submitting the line;
+            # the unmatched key belongs to the next prompt, not this command.
+            literal(pane, "echo EDITOR_lookahead")
+            keys(pane, "C-o")
+            literal(pane, "z")
+            expect(pane, "EDITOR_lookahead")
+            await_last_line(pane, "fish> z")
+            keys(pane, "C-u")
+
+            send(pane, "function EDITOR_menu; end; complete -c EDITOR_menu -f -a 'alpha beta'; bind right,ctrl-e 'commandline -r \"echo EDITOR_menu_chord\"'")
+            await_last_line(pane, "fish>")
+            literal(pane, "EDITOR_menu ")
+            keys(pane, "Tab", "Right", "C-e")
+            await_last_line(pane, "fish> echo EDITOR_menu_chord")
+            keys(pane, "Enter")
+            expect(pane, "EDITOR_menu_chord")
+            send(pane, "bind --erase right,ctrl-e")
+            await_last_line(pane, "fish>")
+
             literal(pane, "EDITOR-alias gen")
             keys(pane, "Tab", "Enter")
             expect(pane, "AUTOLOAD:generated-choice")

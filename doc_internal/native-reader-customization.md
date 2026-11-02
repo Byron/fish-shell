@@ -1,6 +1,7 @@
 # Native reader customization
 
-The Windows reader runs single-key `bind` callbacks in the current Fish session.
+The Windows reader runs `bind` callbacks in the current Fish session, including
+comma-separated key sequences such as `ctrl-x,ctrl-e`.
 Callbacks can call functions, change variables or directories, and invoke normal
 commands. Standard input is isolated from the editor; output and diagnostics are
 printed without treating them as input. Ctrl-C cancels callback work.
@@ -23,10 +24,18 @@ run. `commandline --function` accepts the names listed by `bind --function-names
 Completion generators and command substitutions can query their input but cannot
 modify the outer reader.
 
-Single-key bindings accept multiple callback strings and input functions. Callback
+Bindings accept multiple callback strings and input functions. Callback
 strings run in order, then queued input functions run in order. Changes to binding
-registrations take effect on the next prompt. Custom binding modes and multikey
-sequences are still unavailable. Terminal interaction by external full-screen
+registrations take effect on the next prompt. Named sequences and legacy control
+sequences can be listed, queried and erased like individual keys. Use `comma` or
+`minus` to name literal punctuation inside a sequence.
+
+A sequence prefix waits for another key. When it is also a complete binding,
+the reader waits up to 500 ms for a longer match before using that binding.
+Unmatched trailing keys return to normal editing. Unless explicitly bound as a
+continuation, Escape or Ctrl-G cancels the pending sequence and Ctrl-C cancels
+the current input. Custom binding modes remain
+unavailable. Terminal interaction by external full-screen
 programs from a binding is not supported: use a submitted command instead.
 
 Validation includes semantic tests for Unicode edits, lexical extents, session

@@ -1,14 +1,14 @@
 //! User key bindings for the native Windows editor.
 //!
-//! Each single-key binding contains input functions or Fish callback scripts.
+//! Each key sequence contains input functions or Fish callback scripts.
 
-use rustyline::{Anchor, At, Cmd, KeyCode, KeyEvent, Modifiers, Movement, Word};
+use rustyline::{Anchor, At, Cmd, Event, KeyCode, KeyEvent, Modifiers, Movement, Word};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Bindings {
-    entries: BTreeMap<Key, Vec<String>>,
+    entries: BTreeMap<KeySequence, Vec<String>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -135,7 +135,7 @@ impl Action {
 impl Bindings {
     /// Return a snapshot to install after restoring the previous user bindings.
     /// The reader wraps every action with its completion-pager handler.
-    pub fn entries(&self) -> Vec<(KeyEvent, Vec<String>)> {
+    pub fn entries(&self) -> Vec<(Event, Vec<String>)> {
         self.entries
             .iter()
             .map(|(key, actions)| (key.event(), actions.clone()))
@@ -172,9 +172,7 @@ impl Bindings {
                     break;
                 }
                 _ if option.starts_with('-') && option != "-" => {
-                    return Err(format!(
-                        "bind: unsupported option {option}; native bindings support single keys"
-                    ));
+                    return Err(format!("bind: unsupported option {option}"));
                 }
                 _ => break,
             };
@@ -224,7 +222,7 @@ impl Bindings {
                 // Validate every key before mutating the registry.
                 let keys = words
                     .iter()
-                    .map(|word| Key::parse(word))
+                    .map(|word| KeySequence::parse(word))
                     .collect::<Result<Vec<_>, _>>()?;
                 let missing = keys.iter().any(|key| !self.entries.contains_key(key));
                 if operation == Some(Operation::Erase) {
@@ -235,7 +233,10 @@ impl Bindings {
                 Ok((i32::from(missing), String::new()))
             }
             None if words.len() <= 1 => {
-                let selected = words.first().map(|word| Key::parse(word)).transpose()?;
+                let selected = words
+                    .first()
+                    .map(|word| KeySequence::parse(word))
+                    .transpose()?;
                 let mut result = String::new();
                 for (key, actions) in &self.entries {
                     if selected.as_ref().is_none_or(|selected| selected == key) {
@@ -255,7 +256,7 @@ impl Bindings {
                 Ok((i32::from(selected.is_some() && result.is_empty()), result))
             }
             None => {
-                let key = Key::parse(&words[0])?;
+                let key = KeySequence::parse(&words[0])?;
                 self.entries.insert(key, words[1..].to_vec());
                 Ok((0, String::new()))
             }
@@ -265,6 +266,7 @@ impl Bindings {
 
 const KEY_NAMES: &[&str] = &[
     "backspace",
+    "comma",
     "delete",
     "down",
     "end",
@@ -272,6 +274,7 @@ const KEY_NAMES: &[&str] = &[
     "escape",
     "home",
     "left",
+    "minus",
     "pagedown",
     "pageup",
     "right",
@@ -279,6 +282,58 @@ const KEY_NAMES: &[&str] = &[
     "tab",
     "up",
 ];
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+struct KeySequence(Vec<Key>);
+
+impl KeySequence {
+    fn parse(source: &str) -> Result<Self, String> {
+        // Preserve literal comma and existing legacy single-key spellings.
+        if let Ok(key) = Key::parse(source) {
+            return Ok(Self(vec![key]));
+        }
+        if source
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_control())
+        {
+            let mut keys = Vec::new();
+            let mut chars = source.chars().peekable();
+            while let Some(character) = chars.next() {
+                let mut key = Key::parse(&character.to_string())?;
+                if character == '\x1b'
+                    && let Some(character) = chars.next()
+                {
+                    // CSI/SS3 strings describe terminal encodings, not named
+                    // keys. Keep rejecting these instead of binding fragments.
+                    if matches!(character, '[' | 'O') && chars.peek().is_some() {
+                        return Err(format!(
+                            "bind: unsupported terminal escape sequence {}; use named keys",
+                            source.escape_default()
+                        ));
+                    }
+                    key = Key::parse(&character.to_string())?;
+                    key.alt = true;
+                }
+                keys.push(key);
+            }
+            return Ok(Self(keys));
+        }
+        source
+            .split(',')
+            .map(Key::parse)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Self)
+    }
+
+    fn event(&self) -> Event {
+        Event::KeySeq(self.0.iter().map(Key::event).collect())
+    }
+
+    fn name(&self) -> String {
+        self.0.iter().map(Key::name).collect::<Vec<_>>().join(",")
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 enum Code {
@@ -312,7 +367,7 @@ impl Key {
     fn parse(source: &str) -> Result<Self, String> {
         let unsupported = || {
             format!(
-                "bind: native bindings require one key such as ctrl-x, alt-x, or left; unsupported key: {}",
+                "bind: unsupported key {}; use names such as ctrl-x, alt-x, or left, separated by commas for a sequence",
                 source.escape_default()
             )
         };
@@ -352,6 +407,7 @@ impl Key {
         let code = match base.to_ascii_lowercase().as_str() {
             "backspace" => KeyCode::Backspace,
             "backtab" => KeyCode::BackTab,
+            "comma" => KeyCode::Char(','),
             "delete" => KeyCode::Delete,
             "down" => KeyCode::Down,
             "end" => KeyCode::End,
@@ -359,6 +415,7 @@ impl Key {
             "escape" | "esc" => KeyCode::Esc,
             "home" => KeyCode::Home,
             "left" => KeyCode::Left,
+            "minus" => KeyCode::Char('-'),
             "pagedown" => KeyCode::PageDown,
             "pageup" => KeyCode::PageUp,
             "right" => KeyCode::Right,
@@ -469,6 +526,8 @@ impl Key {
         }
         match self.code {
             Code::Char(' ') => name.push_str("space"),
+            Code::Char(',') => name.push_str("comma"),
+            Code::Char('-') => name.push_str("minus"),
             Code::Char(character) if self.control && character.is_ascii_alphabetic() => {
                 name.push(character.to_ascii_lowercase());
             }
@@ -559,10 +618,90 @@ mod tests {
             "shift-backtab",
             "escape",
             "ctrl-_",
+            ",",
+            "ctrl-,",
+            "comma",
+            "minus",
         ] {
             let key = Key::parse(name).unwrap();
             assert_eq!(Key::parse(&key.name()).unwrap(), key, "{name}");
         }
+    }
+
+    #[test]
+    fn named_and_raw_key_sequences_round_trip_with_literal_punctuation() {
+        for (named, raw) in [
+            ("ctrl-x,ctrl-e", "\x18\x05"),
+            ("ctrl-x,alt-e,ctrl-e", "\x18\x1be\x05"),
+            ("ctrl-x,comma,alt-e", "\x18,\x1be"),
+            ("ctrl-x,escape", "\x18\x1b"),
+        ] {
+            let named = KeySequence::parse(named).unwrap();
+            assert_eq!(KeySequence::parse(raw).unwrap(), named);
+            assert_eq!(KeySequence::parse(&named.name()).unwrap(), named);
+        }
+        for source in [",", "ctrl-,", "comma,minus", "ctrl-x,🐟", "a,b,c"] {
+            let sequence = KeySequence::parse(source).unwrap();
+            assert_eq!(KeySequence::parse(&sequence.name()).unwrap(), sequence);
+        }
+        assert_eq!(KeySequence::parse(",").unwrap().0.len(), 1);
+        assert_eq!(KeySequence::parse("ctrl-,").unwrap().name(), "ctrl-comma");
+    }
+
+    #[test]
+    fn sequence_bindings_survive_queries_worker_transfer_and_selective_erasure() {
+        let mut bindings = Bindings::default();
+        bindings
+            .run_builtin(&words(&["ctrl-x", "repaint"]))
+            .unwrap();
+        bindings
+            .run_builtin(&words(&["ctrl-x,ctrl-e", "edit_command_buffer"]))
+            .unwrap();
+        assert_eq!(
+            bindings
+                .run_builtin(&words(&["--query", "\x18\x05"]))
+                .unwrap()
+                .0,
+            0
+        );
+        bindings
+            .run_builtin(&words(&["\x18\x05", "echo edited", "repaint"]))
+            .unwrap();
+        let mut worker: Bindings =
+            bincode::deserialize(&bincode::serialize(&bindings).unwrap()).unwrap();
+        assert_eq!(worker.entries(), bindings.entries());
+        assert_eq!(
+            worker.run_builtin(&words(&["ctrl-x,ctrl-e"])).unwrap().1,
+            "bind -- 'ctrl-x,ctrl-e' 'echo edited' 'repaint'\n"
+        );
+        assert_eq!(
+            worker
+                .run_builtin(&words(&["--erase", "ctrl-x,ctrl-e"]))
+                .unwrap()
+                .0,
+            0
+        );
+        assert_eq!(
+            worker
+                .run_builtin(&words(&["--query", "ctrl-x"]))
+                .unwrap()
+                .0,
+            0
+        );
+        assert_eq!(
+            worker
+                .run_builtin(&words(&["--query", "ctrl-x,ctrl-e"]))
+                .unwrap()
+                .0,
+            1
+        );
+        assert_eq!(
+            bindings
+                .run_builtin(&words(&["--query", "ctrl-x,ctrl-e"]))
+                .unwrap()
+                .0,
+            0
+        );
     }
 
     #[test]
@@ -583,7 +722,7 @@ mod tests {
         assert_eq!(
             bindings.entries(),
             vec![(
-                KeyEvent::normalize(KeyEvent::ctrl('x')),
+                KeyEvent::normalize(KeyEvent::ctrl('x')).into(),
                 vec!["undo".into()]
             )]
         );
@@ -609,12 +748,15 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_key_sequences_and_modes_do_not_change_existing_bindings() {
+    fn malformed_key_sequences_and_modes_do_not_change_existing_bindings() {
         let mut bindings = Bindings::default();
         bindings.run_builtin(&words(&["ctrl-x", "undo"])).unwrap();
         for arguments in [
-            vec!["ctrl-x,ctrl-e", "undo"],
+            vec!["ctrl-x,,ctrl-e", "undo"],
+            vec!["ctrl-x,", "undo"],
+            vec![",ctrl-e", "undo"],
             vec!["\x1b[A", "undo"],
+            vec!["\x18\x1bOP", "undo"],
             vec!["--mode", "insert", "ctrl-x", "undo"],
             vec!["--erase", "ctrl-x", "not-a-key"],
         ] {

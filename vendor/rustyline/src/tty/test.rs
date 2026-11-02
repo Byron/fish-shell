@@ -28,6 +28,11 @@ impl<'a> RawReader for Iter<'a, KeyEvent> {
         self.next_key(single_esc_abort).map(Event::KeyPress)
     }
 
+    #[cfg(windows)]
+    fn wait_for_input_timeout(&mut self, _: bool, _: std::time::Duration) -> Result<Option<Event>> {
+        Ok(self.next().copied().map(Event::KeyPress))
+    }
+
     fn next_key(&mut self, _: bool) -> Result<KeyEvent> {
         match self.next() {
             Some(key) => Ok(*key),
@@ -58,6 +63,22 @@ impl RawReader for IntoIter<KeyEvent> {
 
     fn wait_for_input(&mut self, single_esc_abort: bool) -> Result<Event> {
         self.next_key(single_esc_abort).map(Event::KeyPress)
+    }
+
+    #[cfg(windows)]
+    fn wait_for_input_timeout(&mut self, _: bool, _: std::time::Duration) -> Result<Option<Event>> {
+        Ok(self.next().map(Event::KeyPress))
+    }
+
+    #[cfg(windows)]
+    fn buffer_keys(&mut self, keys: &mut std::collections::VecDeque<KeyEvent>) {
+        if !keys.is_empty() {
+            *self = keys
+                .drain(..)
+                .chain(self.as_slice().iter().copied())
+                .collect::<Vec<_>>()
+                .into_iter();
+        }
     }
 
     fn next_key(&mut self, _: bool) -> Result<KeyEvent> {

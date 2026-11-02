@@ -8,6 +8,10 @@ use crate::{Config, EditMode};
 #[cfg(feature = "custom-bindings")]
 use crate::{Event, EventContext, EventHandler};
 
+#[cfg(all(windows, feature = "custom-bindings"))]
+#[path = "keymap/windows_sequence.rs"]
+mod windows_sequence;
+
 /// The number of times one command should be repeated.
 pub type RepeatCount = usize;
 
@@ -376,6 +380,8 @@ pub struct InputState<'b> {
     num_args: i16,
     last_cmd: Cmd,                        // vi only
     last_char_search: Option<CharSearch>, // vi only
+    #[cfg(all(windows, feature = "custom-bindings"))]
+    sequence: windows_sequence::SequenceState,
 }
 
 /// Provide indirect mutation to user input.
@@ -429,6 +435,8 @@ impl<'b> InputState<'b> {
             num_args: 0,
             last_cmd: Cmd::Noop,
             last_char_search: None,
+            #[cfg(all(windows, feature = "custom-bindings"))]
+            sequence: windows_sequence::SequenceState::new(config),
         }
     }
 
@@ -446,6 +454,23 @@ impl<'b> InputState<'b> {
         single_esc_abort: bool,
         ignore_external_print: bool,
     ) -> Result<Cmd> {
+        #[cfg(all(windows, feature = "custom-bindings"))]
+        return self.next_windows_cmd(rdr, wrt, single_esc_abort, ignore_external_print);
+
+        #[cfg(not(all(windows, feature = "custom-bindings")))]
+        {
+            let key = self.read_key(rdr, wrt, single_esc_abort, ignore_external_print)?;
+            self.command_for_key(rdr, wrt, key)
+        }
+    }
+
+    fn read_key<R: RawReader>(
+        &self,
+        rdr: &mut R,
+        wrt: &mut dyn Refresher,
+        single_esc_abort: bool,
+        ignore_external_print: bool,
+    ) -> Result<KeyEvent> {
         let single_esc_abort = self.single_esc_abort(single_esc_abort);
         let key;
         if ignore_external_print {
@@ -464,6 +489,15 @@ impl<'b> InputState<'b> {
                 }
             }
         }
+        Ok(key)
+    }
+
+    fn command_for_key<R: RawReader>(
+        &mut self,
+        rdr: &mut R,
+        wrt: &mut dyn Refresher,
+        key: KeyEvent,
+    ) -> Result<Cmd> {
         match self.mode {
             EditMode::Emacs => self.emacs(rdr, wrt, key),
             EditMode::Vi if self.input_mode != InputMode::Command => self.vi_insert(rdr, wrt, key),
@@ -535,10 +569,16 @@ impl<'b> InputState<'b> {
         wrt: &mut dyn Refresher,
         mut key: KeyEvent,
     ) -> Result<Cmd> {
+        #[cfg(all(windows, feature = "custom-bindings"))]
+        let numeric_prefix = matches!(key, E(K::Char('-' | '0'..='9'), M::ALT));
         if let E(K::Char(digit @ '-'), M::ALT) = key {
             key = self.emacs_digit_argument(rdr, wrt, digit)?;
         } else if let E(K::Char(digit @ '0'..='9'), M::ALT) = key {
             key = self.emacs_digit_argument(rdr, wrt, digit)?;
+        }
+        #[cfg(all(windows, feature = "custom-bindings"))]
+        if numeric_prefix {
+            return self.repeated_sequence(rdr, wrt, key);
         }
         let (n, positive) = self.emacs_num_args(); // consume them in all cases
 
@@ -1170,6 +1210,7 @@ impl<'b> InputState<'b> {
         }
     }
 
+    #[cfg(not(windows))]
     fn custom_seq_binding<R: RawReader>(
         &self,
         rdr: &mut R,
@@ -1199,6 +1240,19 @@ impl<'b> InputState<'b> {
                 }
             }
         }
+        Ok(None)
+    }
+
+    #[cfg(windows)]
+    fn custom_seq_binding<R: RawReader>(
+        &self,
+        _: &mut R,
+        _: &dyn Refresher,
+        _: &mut Event,
+        _: RepeatCount,
+        _: bool,
+    ) -> Result<Option<Cmd>> {
+        // Native sequences were already resolved before ordinary key dispatch.
         Ok(None)
     }
 }

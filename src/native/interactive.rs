@@ -224,7 +224,7 @@ mod windows {
         history: Option<PathBuf>,
         suspended: Arc<AtomicBool>,
         search: Arc<Mutex<HistorySearch>>,
-        custom_bindings: Vec<(KeyEvent, Option<EventHandler>)>,
+        custom_bindings: Vec<(Event, Option<EventHandler>)>,
         initialized_bindings: bool,
     }
 
@@ -276,7 +276,7 @@ mod windows {
                     input_language: Arc::clone(&input_language),
                 };
                 let previous = self.editor.bind_sequence(
-                    key,
+                    key.clone(),
                     pager.wrap_user(EventHandler::Conditional(Box::new(handler))),
                 );
                 self.custom_bindings.push((key, previous));

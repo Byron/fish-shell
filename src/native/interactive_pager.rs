@@ -334,15 +334,20 @@ impl ConditionalEventHandler for PagerKey {
         positive: bool,
         ctx: &EventContext<'_>,
     ) -> Option<Cmd> {
-        self.pager
-            .handle_key_for_binding(*event.get(0)?, ctx.line(), ctx.pos(), self.kind)
-            .or_else(|| match &self.fallback {
-                Some(EventHandler::Simple(command)) => Some(command.clone()),
-                Some(EventHandler::Conditional(handler)) => {
-                    handler.handle(event, count, positive, ctx)
-                }
-                None => None,
-            })
+        // A completed chord is one user event. Its first key must not turn
+        // back into an unrelated pager navigation or cancellation action.
+        let key = *event.get(0)?;
+        let command = if event.get(1).is_none() {
+            self.pager
+                .handle_key_for_binding(key, ctx.line(), ctx.pos(), self.kind)
+        } else {
+            None
+        };
+        command.or_else(|| match &self.fallback {
+            Some(EventHandler::Simple(command)) => Some(command.clone()),
+            Some(EventHandler::Conditional(handler)) => handler.handle(event, count, positive, ctx),
+            None => None,
+        })
     }
 }
 

@@ -453,8 +453,9 @@ restores the previous default, and `bind --erase --all` removes all user overrid
 Binding lists can be sourced as Fish code. Multiple callbacks run in order before
 queued input actions; callbacks can edit the buffer through `commandline` and
 queue input actions through `commandline --function`. Native Fish autoloads and calls
-`fish_user_key_bindings` before the first read. Multikey sequences and custom
-binding modes remain unsupported. An open completion menu handles its navigation
+`fish_user_key_bindings` before the first read. Comma-separated key sequences,
+such as `ctrl-x,ctrl-e`, work alongside individual keys. Custom binding modes
+remain unsupported. An open completion menu handles its navigation
 and cancellation before user bindings. See
 [native reader customization](native-reader-customization.md) for supported
 editing operations and generated abbreviations.
@@ -997,7 +998,7 @@ or running tmuxx settings. A terminal still configured to use
 
 Concrete startup and completion gaps include edited or silent reads, FIFO
 helpers, extra file descriptors, signal and per-process/job-exit subscriptions,
-custom binding modes, multikey bindings, and advanced `status` introspection.
+custom binding modes and advanced `status` introspection.
 POSIX ownership, mode bits and terminal process-group
 behavior do not have equivalent native implementations. Dynamic completions
 that query an application's own commands still require that application;
