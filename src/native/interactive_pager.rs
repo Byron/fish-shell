@@ -4,6 +4,7 @@
 //! owns all row clearing, wrapping and cursor positioning, including after a
 //! resize. Navigation never edits the input; accepting a candidate is one edit.
 
+use super::interactive_bindings::Action;
 use super::interactive_runtime::CompletionService;
 use rustyline::completion::Pair;
 use rustyline::hint::Hint;
@@ -56,6 +57,12 @@ struct PendingCompletion {
     replacement: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BindingKind {
+    Default,
+    User,
+}
+
 impl PagerBindings {
     pub(super) fn new(service: Arc<Mutex<CompletionService>>) -> Self {
         Self {
@@ -79,6 +86,28 @@ impl PagerBindings {
             return (false, false);
         };
         (true, pager.matches.len() <= page_size(terminal_size().1))
+    }
+
+    /// Interpret an input function after a user callback has queried the menu.
+    /// Like Enter, execute accepts a completion without submitting the command.
+    pub(super) fn handle_action(&self, action: Action, line: &str, pos: usize) -> Option<Cmd> {
+        match action {
+            Action::Execute => {
+                let pager = self.state.lock().ok()?.take()?;
+                if pager.original != line || pager.pos != pos {
+                    return None;
+                }
+                Some(pager.accept().map_or(Cmd::Repaint, |(start, replacement)| {
+                    self.queue_completion(line, pos, start, replacement)
+                }))
+            }
+            Action::Complete => self.handle_key(KeyEvent::ctrl('I'), line, pos),
+            Action::Repaint => None,
+            _ => {
+                *self.state.lock().ok()? = None;
+                None
+            }
+        }
     }
 
     /// Use Rustyline's completion update for an exact byte-range replacement.
@@ -123,7 +152,7 @@ impl PagerBindings {
         EventHandler::Conditional(Box::new(PagerKey {
             pager: self.clone(),
             fallback,
-            open_on_tab: true,
+            kind: BindingKind::Default,
         }))
     }
 
@@ -133,7 +162,7 @@ impl PagerBindings {
         EventHandler::Conditional(Box::new(PagerKey {
             pager: self.clone(),
             fallback: Some(fallback),
-            open_on_tab: false,
+            kind: BindingKind::User,
         }))
     }
 
@@ -180,15 +209,15 @@ impl PagerBindings {
     }
 
     fn handle_key(&self, key: KeyEvent, line: &str, pos: usize) -> Option<Cmd> {
-        self.handle_key_with_open(key, line, pos, true)
+        self.handle_key_for_binding(key, line, pos, BindingKind::Default)
     }
 
-    fn handle_key_with_open(
+    fn handle_key_for_binding(
         &self,
         key: KeyEvent,
         line: &str,
         pos: usize,
-        open_on_tab: bool,
+        kind: BindingKind,
     ) -> Option<Cmd> {
         let mut state = self.state.lock().ok()?;
         if state
@@ -203,7 +232,7 @@ impl PagerBindings {
             || key == KeyEvent(KeyCode::Tab, Modifiers::NONE)
             || key == KeyEvent::ctrl('I');
         if state.is_none() {
-            if !tab || !open_on_tab {
+            if !tab || kind == BindingKind::User {
                 return None;
             }
             // Evaluation may emit output or invoke nested complete -C. Keep
@@ -252,11 +281,8 @@ impl PagerBindings {
             }
             KeyEvent(KeyCode::Enter, Modifiers::NONE)
             | KeyEvent(KeyCode::Char('J' | 'M'), Modifiers::CTRL) => {
-                let command = pager.accept().map_or(Cmd::Repaint, |(start, replacement)| {
-                    self.queue_completion(line, pos, start, replacement)
-                });
-                *state = None;
-                return Some(command);
+                drop(state);
+                return self.handle_action(Action::Execute, line, pos);
             }
             KeyEvent(KeyCode::Esc, Modifiers::NONE)
             | KeyEvent(KeyCode::Char('G'), Modifiers::CTRL) => {
@@ -282,7 +308,11 @@ impl PagerBindings {
             // Interrupt, undo, paste and modified navigation retain their normal
             // meaning. The input has not changed, so cancellation is lossless.
             _ => {
-                *state = None;
+                // User scripts must still see paging-mode before choosing an
+                // input function. That function decides whether to end paging.
+                if kind == BindingKind::Default {
+                    *state = None;
+                }
                 return None;
             }
         }
@@ -293,7 +323,7 @@ impl PagerBindings {
 struct PagerKey {
     pager: PagerBindings,
     fallback: Option<EventHandler>,
-    open_on_tab: bool,
+    kind: BindingKind,
 }
 
 impl ConditionalEventHandler for PagerKey {
@@ -305,7 +335,7 @@ impl ConditionalEventHandler for PagerKey {
         ctx: &EventContext<'_>,
     ) -> Option<Cmd> {
         self.pager
-            .handle_key_with_open(*event.get(0)?, ctx.line(), ctx.pos(), self.open_on_tab)
+            .handle_key_for_binding(*event.get(0)?, ctx.line(), ctx.pos(), self.kind)
             .or_else(|| match &self.fallback {
                 Some(EventHandler::Simple(command)) => Some(command.clone()),
                 Some(EventHandler::Conditional(handler)) => {
@@ -547,18 +577,82 @@ mod tests {
         ];
         for key in tabs {
             assert_eq!(
-                bindings.handle_key_with_open(key, "run ", 4, false),
+                bindings.handle_key_for_binding(key, "run ", 4, BindingKind::User),
                 Some(Cmd::Repaint)
             );
         }
         bindings.reset();
         for key in tabs {
-            assert_eq!(bindings.handle_key_with_open(key, "run ", 4, false), None);
+            assert_eq!(
+                bindings.handle_key_for_binding(key, "run ", 4, BindingKind::User),
+                None
+            );
             assert!(bindings.state.lock().unwrap().is_none());
         }
         // The default Tab action can still start completing after an override
         // has been erased, and an explicit `complete` action uses this path.
         assert!(bindings.handle_key(tabs[0], "ec", 2).is_some());
+    }
+
+    #[test]
+    fn user_callbacks_observe_paging_before_accepting_or_dismissing_it() {
+        let line = "run a suffix";
+        let bindings = open_pager(line, 5, 4);
+        bindings.handle_key(KeyEvent(KeyCode::Down, Modifiers::NONE), line, 5);
+        assert_eq!(
+            bindings.handle_key_for_binding(KeyEvent::ctrl('E'), line, 5, BindingKind::User),
+            None
+        );
+        assert!(bindings.modes(line, 5).0);
+        assert_eq!(bindings.handle_action(Action::Repaint, line, 5), None);
+        assert!(bindings.modes(line, 5).0);
+        assert_eq!(
+            bindings.handle_action(Action::Execute, line, 5),
+            Some(Cmd::Complete)
+        );
+        let (start, candidates) = bindings.take_completion(line, 5).unwrap();
+        assert_eq!(start, 4);
+        assert_eq!(candidates[0].replacement, "alpha ");
+        assert!(!bindings.modes(line, 5).0);
+
+        let bindings = open_pager(line, 5, 4);
+        assert_eq!(bindings.handle_action(Action::EndOfLine, line, 5), None);
+        assert!(!bindings.modes(line, 5).0);
+        assert!(bindings.take_completion(line, 5).is_none());
+    }
+
+    #[test]
+    fn execute_accepts_the_default_choice_and_ignores_empty_or_stale_completions() {
+        let bindings = open_pager("run ", 4, 4);
+        assert_eq!(
+            bindings.handle_action(Action::Execute, "run ", 4),
+            Some(Cmd::Complete)
+        );
+        let (_, candidates) = bindings.take_completion("run ", 4).unwrap();
+        assert_eq!(candidates[0].replacement, "alpha ");
+        assert!(!bindings.modes("run ", 4).0);
+
+        let bindings = open_pager("run ", 4, 4);
+        bindings
+            .state
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .matches
+            .clear();
+        assert_eq!(
+            bindings.handle_action(Action::Execute, "run ", 4),
+            Some(Cmd::Repaint)
+        );
+        assert!(bindings.take_completion("run ", 4).is_none());
+        assert!(!bindings.modes("run ", 4).0);
+
+        let bindings = open_pager("run ", 4, 4);
+        bindings.handle_key(KeyEvent(KeyCode::Down, Modifiers::NONE), "run ", 4);
+        assert_eq!(bindings.handle_action(Action::Execute, "edited", 6), None);
+        assert!(bindings.take_completion("run ", 4).is_none());
+        assert!(!bindings.modes("run ", 4).0);
     }
 
     #[test]

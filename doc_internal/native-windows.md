@@ -578,6 +578,10 @@ and token boundaries as POSIX Fish. Completion helpers can use `commandline -opc
 or `commandline -pxc`, as well as buffer, cursor, line and column queries.
 `--input` supplies explicit text for a query. Keybinding callbacks can query
 `--search-mode`, `--paging-mode` and `--paging-full-mode` (also `-S`, `-P`, `-F`).
+Callbacks see the open menu before their key takes effect. A callback's
+`commandline -f execute` accepts the selected completion and closes the menu,
+like Enter; a subsequent execute submits the command. Query/repaint callbacks
+leave the menu open.
 The shared `up-or-search` and `down-or-search` functions navigate history and
 multiline input; `commandline -f up-line` and `down-line` move vertically.
 Callbacks can replace, insert or append input and set the cursor. Completion

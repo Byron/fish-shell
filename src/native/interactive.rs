@@ -741,6 +741,12 @@ mod windows {
                     cursor: reader.cursor,
                 }];
                 commands.extend(reader.actions.into_iter().map(|action| {
+                    if let Some(command) =
+                        self.pager
+                            .handle_action(action, &reader.line, reader.cursor)
+                    {
+                        return command;
+                    }
                     match action {
                         Action::Execute => Cmd::AcceptOrInsertLine {
                             accept_in_the_middle: true,
@@ -767,6 +773,9 @@ mod windows {
                 }));
                 return Some(Cmd::Sequence(commands));
             };
+            if let Some(command) = self.pager.handle_action(action, ctx.line(), ctx.pos()) {
+                return Some(command);
+            }
             match action {
                 Action::AcceptAutosuggestion => Some(if ctx.has_hint() {
                     Cmd::CompleteHint

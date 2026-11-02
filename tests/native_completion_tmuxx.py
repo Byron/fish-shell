@@ -57,6 +57,10 @@ def main():
             "set -g fish_autosuggestion_enabled 0\n"
             "bind up up-or-search\n"
             "bind down down-or-search\n"
+            "bind ctrl-e 'if commandline --search-mode; or commandline --paging-mode; commandline -f execute; else; commandline -f end-of-line; end'\n"
+            "bind ctrl-o 'commandline --paging-mode; set -g CMP_paging $status; commandline --paging-full-mode; set -ga CMP_paging $status; commandline -f repaint'\n"
+            "function cmppager; echo CMP_pager_result:$argv; end\n"
+            "complete -c cmppager -f -a 'alpha beta'\n"
             "set -g CMP_calls\n"
             "function CMP_candidates\n"
             "    set -ga CMP_calls invoked\n"
@@ -178,6 +182,34 @@ def main():
                         "-F", "#{pane_id}", str(fish), "-i").strip()
             assert pane.startswith("%"), pane
             expect_input("")
+
+            # Conditional bindings see the reader state before the key acts.
+            literal("echo CMP_ctrl_e")
+            keys("Home", "C-e")
+            literal("_end")
+            keys("Enter")
+            expect("CMP_ctrl_e_end")
+            expect_input("")
+            literal("CMP_ctrl_e_end")
+            keys("Up")
+            expect_input("echo CMP_ctrl_e_end")
+            keys("C-e")
+            expect("CMP_ctrl_e_end", 2)
+            expect_input("")
+            literal("cmppager ")
+            keys("Tab", "C-o")
+            wait_for(lambda text: "2/2" in text[text.rfind("CMP>"):],
+                     "query/repaint binding dismissed the completion menu")
+            keys("Down", "C-e")
+            expect_input("cmppager alpha ")
+            assert "CMP_pager_result:alpha" not in capture().splitlines()
+            keys("Enter")
+            expect("CMP_pager_result:alpha")
+            expect_input("")
+            send("echo CMP_paging:$CMP_paging")
+            expect("CMP_paging:0 CMP_paging:0")
+            expect_input("")
+            assert "does not yet support" not in capture()
 
             # Shared Fish arrow helpers must work before and after the pager.
             send("echo CMP_history_first")
