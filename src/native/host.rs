@@ -24,6 +24,10 @@ pub(crate) use jobs::JobView;
 mod process;
 
 pub struct NativeHost {
+    #[cfg(windows)]
+    retired_cpu: rash::host::CpuTimes,
+    #[cfg(windows)]
+    cpu_error: Option<String>,
     jobs: BTreeMap<u32, jobs::Job>,
     /// Parent jobs can be inspected in workers, but never controlled or reaped.
     inherited_jobs: Vec<JobView>,
@@ -56,6 +60,10 @@ impl NativeHost {
             .checked_add(1)
             .ok_or_else(|| Error::new("job IDs exhausted"))?;
         Ok(Self {
+            #[cfg(windows)]
+            retired_cpu: Default::default(),
+            #[cfg(windows)]
+            cpu_error: None,
             jobs: BTreeMap::new(),
             inherited_jobs,
             next_job,
@@ -304,6 +312,11 @@ fn exit_status(status: std::process::ExitStatus) -> i32 {
 }
 
 impl Host for NativeHost {
+    #[cfg(windows)]
+    fn child_cpu_times(&self) -> Result<rash::host::CpuTimes> {
+        self.job_cpu_times()
+    }
+
     fn retain_job_resources(&mut self, last_pid: u32, resources: &[JobResource]) -> Result<()> {
         self.retain_resources(last_pid, resources)
     }

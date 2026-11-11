@@ -236,6 +236,10 @@ impl<'a, H: Host> CapturingHost<'a, H> {
 }
 
 impl<H: Host> Host for CapturingHost<'_, H> {
+    fn child_cpu_times(&self) -> Result<rash::host::CpuTimes> {
+        self.inner.child_cpu_times()
+    }
+
     fn supports_workers(&self) -> bool {
         self.inner.supports_workers()
     }

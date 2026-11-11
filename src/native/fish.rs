@@ -45,6 +45,8 @@ mod source_builtin;
 mod status_builtin;
 #[path = "fish_test.rs"]
 mod test_builtin;
+#[path = "fish_timer.rs"]
+mod timer;
 #[path = "fish_universal.rs"]
 mod universal;
 #[path = "fish_utilities.rs"]
@@ -228,6 +230,7 @@ fn check_syntax_depth(source: &str, depth: usize) -> Result<()> {
     let (source, tree) = parse(source)?;
     for node in tree.walk() {
         match node.kind() {
+            ast::Kind::JobPipeline(job) => timer::validate(job, &source)?,
             ast::Kind::Argument(arg) => expand::syntax(&text(&source, arg), depth)?,
             ast::Kind::VariableAssignment(arg) => expand::syntax(&text(&source, arg), depth)?,
             ast::Kind::Token(token) if token.token_type() == ParseTokenType::String => {
@@ -592,12 +595,7 @@ impl Session {
         // Reject unsupported syntax throughout this input before any command executes.
         for node in tree.walk() {
             match node.kind() {
-                ast::Kind::JobPipeline(job) if job.time.is_some() => {
-                    return Err(unsupported("the time keyword"));
-                }
-                ast::Kind::NotStatement(node) if node.time.is_some() => {
-                    return Err(unsupported("the time keyword"));
-                }
+                ast::Kind::JobPipeline(job) => timer::validate(job, &source)?,
                 ast::Kind::DecoratedStatement(node)
                     if node.decoration() == StatementDecoration::Exec =>
                 {
@@ -689,9 +687,13 @@ impl Session {
         host: &mut impl Host,
         output: &mut Output,
     ) -> Result<()> {
+        let timer = timer::wants_timing(node).then(|| timer::Snapshot::take(host));
         self.psub_resources.push_job();
         let result = self.eval_job_contents(node, source, host, output);
         self.psub_resources.pop_job();
+        if let Some(timer) = timer {
+            timer::report(timer, host);
+        }
         result
     }
 
@@ -1337,8 +1339,16 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct Capture(Vec<u8>);
+    struct Capture(Vec<u8>, bool);
     impl Host for Capture {
+        fn child_cpu_times(&self) -> Result<rash::host::CpuTimes> {
+            if self.1 {
+                Err(Error::new("test accounting failure"))
+            } else {
+                Ok(Default::default())
+            }
+        }
+
         fn run_pipeline(&mut self, _: &[Command], _: bool, _: bool) -> Result<RunResult> {
             Err(Error::new(
                 "unexpected external command in Fish semantic test",
@@ -1537,6 +1547,38 @@ mod tests {
         assert_eq!(session.values("value"), ["hello"]);
         assert_eq!(session.values("words"), ["one two", "three"]);
         assert!(session.functions.contains_key("say"));
+    }
+
+    #[test]
+    fn bash_input_times_commands_and_blocks_and_preserves_status() {
+        for (source, status) in [
+            ("time false", 1),
+            ("time ! false", 0),
+            ("! time false", 0),
+            ("time { echo hello; false; }", 1),
+            ("time for item in one two; do echo $item; done", 0),
+        ] {
+            let mut session = Session::new().unwrap();
+            session.input_language = super::super::InputLanguage::Bash;
+            let mut capture = Capture::default();
+            assert_eq!(session.eval_input(source, &mut capture).unwrap(), status);
+            let output = String::from_utf8(capture.0).unwrap();
+            assert_eq!(
+                output.matches("Executed in").count(),
+                1,
+                "{source}: {output}"
+            );
+            assert!(output.contains("external"), "{output}");
+        }
+    }
+
+    #[test]
+    fn timing_accounting_failure_preserves_command_status() {
+        let mut session = Session::new().unwrap();
+        let mut capture = Capture(Vec::new(), true);
+        assert_eq!(session.eval("time false", &mut capture).unwrap(), 1);
+        assert_eq!(session.pipeline, [1]);
+        assert_eq!(capture.0, b"time: test accounting failure\n");
     }
 
     #[test]

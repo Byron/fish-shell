@@ -79,7 +79,29 @@ pub enum ReadResult {
     Interrupted(Vec<u8>),
 }
 
+/// Cumulative CPU usage, independent of wall-clock time.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CpuTimes {
+    pub user: std::time::Duration,
+    pub system: std::time::Duration,
+}
+
+impl std::ops::AddAssign for CpuTimes {
+    fn add_assign(&mut self, other: Self) {
+        self.user += other.user;
+        self.system += other.system;
+    }
+}
+
 pub trait Host {
+    /// CPU consumed by this host's children, including retired jobs. Hosts
+    /// without process accounting must report that timing is unavailable.
+    fn child_cpu_times(&self) -> Result<CpuTimes> {
+        Err(crate::Error::new(
+            "child CPU accounting is unavailable on this host",
+        ))
+    }
+
     /// Hosts with native process isolation can run builtins and compound commands
     /// in pipeline/background processes using this interpreter's own executable.
     fn supports_workers(&self) -> bool {

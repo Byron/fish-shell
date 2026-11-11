@@ -16,7 +16,7 @@ Description
 
 Bash-style Fish input supports a subset of Bash spellings. It is not Bash evaluation: in particular, unquoted variables use Fish's expansion rules, without Bash word splitting. Unsupported constructs report errors before the submission executes. Fish never silently sends the input to a Bash evaluator.
 
-On Unix, ``time COMMAND`` measures commands, pipelines and supported blocks using Fish's :doc:`time` keyword. For example, ``time gix status`` prints the command's output followed by Fish's timing report. Command status is preserved, and ``time ! COMMAND`` negates it. Timing background jobs and Bash's ``time -p`` and ``TIMEFORMAT`` formatting are not supported; timing reports use Fish's format and cannot be redirected. Native Windows does not yet support the ``time`` keyword.
+``time COMMAND`` measures commands, pipelines and supported blocks using Fish's :doc:`time` keyword. For example, ``time gix status`` prints the command's output followed by Fish's timing report. Command status is preserved, and ``time ! COMMAND`` negates it. Timing background jobs and Bash's ``time -p`` and ``TIMEFORMAT`` formatting are not supported; timing reports use Fish's format and cannot be redirected.
 
 Backticks are ordinary characters, including inside strings, as in Fish. They do not execute command substitutions or require a matching backtick. ``$(...)`` command substitutions and special variables such as ``$?`` remain supported. Leading unquoted ``~/`` paths support completion and suggestions while preserving the ``~/`` spelling.
 

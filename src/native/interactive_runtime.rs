@@ -431,6 +431,10 @@ impl<'a> CompletionHost<'a> {
 }
 
 impl Host for CompletionHost<'_> {
+    fn child_cpu_times(&self) -> Result<rash::host::CpuTimes> {
+        self.host.child_cpu_times()
+    }
+
     fn supports_workers(&self) -> bool {
         self.host.supports_workers()
     }

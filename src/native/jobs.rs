@@ -251,6 +251,29 @@ impl Drop for Job {
 }
 
 impl NativeHost {
+    #[cfg(windows)]
+    pub(super) fn job_cpu_times(&self) -> Result<rash::host::CpuTimes> {
+        if let Some(error) = &self.cpu_error {
+            return Err(Error::new(error.clone()));
+        }
+        let mut total = self.retired_cpu;
+        for job in self.jobs.values() {
+            total += job.group.cpu_times()?;
+        }
+        Ok(total)
+    }
+
+    fn remove_job(&mut self, id: u32) -> Job {
+        let job = self.jobs.remove(&id).unwrap();
+        #[cfg(windows)]
+        match job.group.cpu_times() {
+            Ok(times) => self.retired_cpu += times,
+            // Accounting failure must not change the command's exit status.
+            Err(error) => self.cpu_error = Some(error.to_string()),
+        }
+        job
+    }
+
     pub(super) fn job_views(&self) -> BTreeMap<u32, JobView> {
         self.inherited_jobs
             .iter()
@@ -563,7 +586,7 @@ impl NativeHost {
             }
             match job.state() {
                 State::Done(_) => {
-                    let mut job = self.jobs.remove(&id).unwrap();
+                    let mut job = self.remove_job(id);
                     let mut result = job.result();
                     if cancelled_wait && let Ok(result) = &mut result {
                         result.status = 130;
@@ -835,7 +858,7 @@ impl NativeHost {
                     let job = self.jobs.get_mut(&id).unwrap();
                     job.group.disown()?;
                     job.owned = false;
-                    let mut job = self.jobs.remove(&id).unwrap();
+                    let mut job = self.remove_job(id);
                     // Keep child handles and worker snapshots until the detached
                     // job finishes, without retaining shell ownership or killing it.
                     std::thread::spawn(move || {

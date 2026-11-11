@@ -135,6 +135,36 @@ pub struct Group {
 }
 
 impl Group {
+    /// Job accounting includes exited children and their descendants, even
+    /// when interpreter workers create nested Job Objects of their own.
+    pub fn cpu_times(&self) -> io::Result<rash::host::CpuTimes> {
+        use windows_sys::Win32::System::JobObjects::{
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JobObjectBasicAccountingInformation,
+        };
+        let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+        if unsafe {
+            QueryInformationJobObject(
+                self.handle(),
+                JobObjectBasicAccountingInformation,
+                (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                std::mem::size_of_val(&info) as u32,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        fn duration(ticks: i64) -> std::time::Duration {
+            let ticks = ticks.max(0) as u64;
+            std::time::Duration::from_secs(ticks / 10_000_000)
+                + std::time::Duration::from_nanos((ticks % 10_000_000) * 100)
+        }
+        Ok(rash::host::CpuTimes {
+            user: duration(info.TotalUserTime),
+            system: duration(info.TotalKernelTime),
+        })
+    }
+
     pub fn new(kill_on_close: bool) -> io::Result<Self> {
         // An unnamed private job cannot be opened by name from another shell.
         let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };

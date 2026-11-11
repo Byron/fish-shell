@@ -26,6 +26,7 @@ pub(crate) mod string_display;
 pub(crate) mod string_fields;
 pub(crate) mod string_regex;
 pub(crate) mod test_expression;
+pub(crate) mod timer_format;
 pub(crate) mod universal_variables;
 pub(crate) mod variable_indices;
 

@@ -18,7 +18,11 @@ Description
 
 ``time`` causes fish to measure how long a command takes and print the results afterwards. The command can be a simple fish command or a block. The results can not currently be redirected.
 
-On Unix, :doc:`Bash-style interactive input <fish_input_mode>` also accepts ``time COMMAND``, including pipelines and supported Bash-spelled blocks such as ``time { echo hello; }``. It uses Fish's timing report; Bash's ``-p`` option and ``TIMEFORMAT`` are not supported.
+:doc:`Bash-style interactive input <fish_input_mode>` also accepts ``time COMMAND``, including pipelines and supported Bash-spelled blocks such as ``time { echo hello; }``. It uses Fish's timing report; Bash's ``-p`` option and ``TIMEFORMAT`` are not supported.
+
+On native Windows, CPU usage is measured with Windows process and Job Object accounting. The ``fish`` column covers the current shell process; the ``external`` column includes child commands, their descendants, and isolated fish workers used for pipelines. CPU used by other shell-owned background jobs during the measurement can also contribute. Disowned jobs are counted only up to detachment. Very short commands may show zero CPU time because of the system's accounting granularity.
+
+Timing background jobs directly is not supported.
 
 For checking timing after a command has completed, check :ref:`$CMD_DURATION <variables-special>`.
 
