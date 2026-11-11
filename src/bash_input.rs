@@ -258,7 +258,6 @@ impl Projection {
                             | "[["
                             | "]]"
                             | "!"
-                            | "time"
                             | "coproc"
                             | "and"
                             | "or"
@@ -269,13 +268,13 @@ impl Projection {
                     ) || (!fish
                         && matches!(
                             source[i..end].to_string().as_str(),
-                            "builtin" | "set" | "read" | "source" | "eval"
+                            "builtin" | "set" | "read" | "source" | "eval" | "time"
                         ))
                         || source[i..end].contains('=')
                     {
                         return Err(Unsupported::Syntax);
                     }
-                    command_start = false;
+                    command_start = fish && source[i..end] == *L!("time");
                 }
                 word = Some(Word {
                     source: i..i,
@@ -796,6 +795,37 @@ mod tests {
     }
 
     #[test]
+    fn fish_time_prefix_preserves_command_and_redirection_context() {
+        let vars = TestEnvironment::default();
+        let state = crate::bash_session::State {
+            fish_evaluation: true,
+            ..Default::default()
+        };
+        for source in [L!("time git sw"), L!("time cat >READ"), L!("time >READ")] {
+            let p = Projection::for_state(source, source.len(), &vars, &state).unwrap();
+            assert_eq!(p.text, source);
+            assert_eq!(p.boundaries[p.cursor], Some(source.len()));
+            let (edited, _) = p
+                .apply(&Completion::from_completion(L!("suffix").to_owned()), false)
+                .unwrap();
+            assert_eq!(edited, source.to_owned() + L!("suffix "));
+            assert!(Projection::new(source, source.len(), &vars).is_err());
+        }
+        for source in [L!("'time' if"), L!("\\time if"), L!("time >if cat")] {
+            assert!(Projection::for_state(source, source.len(), &vars, &state).is_ok());
+        }
+        for source in [
+            L!("time if true"),
+            L!("time >out for x"),
+            L!("time X=value git sw"),
+            L!("time ! true"),
+            L!("time cat $(touch sentinel)"),
+        ] {
+            assert!(Projection::for_state(source, source.len(), &vars, &state).is_err());
+        }
+    }
+
+    #[test]
     fn fish_home_prefix_preserves_expansion_and_source() {
         let vars = TestEnvironment::default();
         let state = crate::bash_session::State {
@@ -1111,14 +1141,18 @@ mod tests {
             fish_evaluation: true,
             ..Default::default()
         };
-        let source = L!("git -C ~/repo\\ ü\\ space switch topic-");
-        let p = Projection::for_state(source, source.len(), parser.vars(), &state).unwrap();
-        let (candidates, _) = p
-            .complete(CompletionRequestOptions::Completion, &mut parser.context())
-            .unwrap();
-        let c = candidates.iter().find(|c| c.completion == "one").unwrap();
-        assert!(!c.description.is_empty());
-        assert_eq!(p.apply(c, false).unwrap().0, source.to_owned() + L!("one "));
+        for source in [
+            L!("git -C ~/repo\\ ü\\ space switch topic-"),
+            L!("time git -C ~/repo\\ ü\\ space switch topic-"),
+        ] {
+            let p = Projection::for_state(source, source.len(), parser.vars(), &state).unwrap();
+            let (candidates, _) = p
+                .complete(CompletionRequestOptions::Completion, &mut parser.context())
+                .unwrap();
+            let c = candidates.iter().find(|c| c.completion == "one").unwrap();
+            assert!(!c.description.is_empty());
+            assert_eq!(p.apply(c, false).unwrap().0, source.to_owned() + L!("one "));
+        }
 
         std::fs::create_dir(dir.path().join("fixture-directory")).unwrap();
         std::fs::write(dir.path().join("fixture;$()` ü"), "").unwrap();

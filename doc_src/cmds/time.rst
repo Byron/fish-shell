@@ -18,6 +18,8 @@ Description
 
 ``time`` causes fish to measure how long a command takes and print the results afterwards. The command can be a simple fish command or a block. The results can not currently be redirected.
 
+On Unix, :doc:`Bash-style interactive input <fish_input_mode>` also accepts ``time COMMAND``, including pipelines and supported Bash-spelled blocks such as ``time { echo hello; }``. It uses Fish's timing report; Bash's ``-p`` option and ``TIMEFORMAT`` are not supported.
+
 For checking timing after a command has completed, check :ref:`$CMD_DURATION <variables-special>`.
 
 Your system most likely also has a ``time`` command. To use that use something like ``command time``, as in ``command time sleep 10``. Because it's not inside fish, it won't have access to fish functions and won't be able to time blocks and such.

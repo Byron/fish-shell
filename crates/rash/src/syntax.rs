@@ -44,6 +44,7 @@ pub enum LogicalOp {
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Pipeline {
     pub negate: bool,
+    pub timed: bool,
     pub commands: Vec<Command>,
 }
 
@@ -909,11 +910,12 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     fn pipeline(&mut self) -> Result<Pipeline, ParseError> {
         self.expand_alias()?;
-        let negate = self.at_word(b"!")?;
+        let mut negate = self.at_word(b"!")?;
         if negate {
             self.bump()?;
         }
-        if self.at_word(b"time")? || self.at_word(b"select")? || self.at_word(b"coproc")? {
+        let timed = self.time_prefix(&mut negate)?;
+        if self.at_word(b"select")? || self.at_word(b"coproc")? {
             return Err(error(
                 ParseErrorKind::Unsupported,
                 self.peek()?.word.span.start,
@@ -926,7 +928,37 @@ impl<'a, 'b> Parser<'a, 'b> {
             self.newlines()?;
             commands.push(self.command()?);
         }
-        Ok(Pipeline { negate, commands })
+        Ok(Pipeline {
+            negate,
+            timed,
+            commands,
+        })
+    }
+
+    fn time_prefix(&mut self, negate: &mut bool) -> Result<bool, ParseError> {
+        if !self.at_word(b"time")? {
+            return Ok(false);
+        }
+        self.bump()?;
+        if self.at(TokenKind::Word)? && self.peek()?.word.raw.starts_with(b"-") {
+            return Err(error(
+                ParseErrorKind::Unsupported,
+                self.peek()?.word.span.start,
+                "time options are not supported yet",
+            ));
+        }
+        if !*negate && self.at_word(b"!")? {
+            *negate = true;
+            self.bump()?;
+        }
+        if self.at_word(b"time")? {
+            return Err(error(
+                ParseErrorKind::Unsupported,
+                self.peek()?.word.span.start,
+                "repeated time prefixes are not supported yet",
+            ));
+        }
+        Ok(true)
     }
 
     fn expand_alias(&mut self) -> Result<(), ParseError> {
@@ -1573,6 +1605,60 @@ mod tests {
         assert_eq!(unit.body[0].chain.first.commands.len(), 2);
         assert_eq!(unit.body[0].chain.rest[0].0, LogicalOp::And);
         assert_eq!(unit.body[0].chain.rest[1].0, LogicalOp::Or);
+    }
+
+    #[test]
+    fn time_prefix_covers_the_pipeline_and_preserves_negation() {
+        for (input, negate) in [
+            (b"time gix status | cat".as_slice(), false),
+            (b"time ! false | cat", true),
+            (b"! time false | cat", true),
+        ] {
+            let unit = parse_one(input).unwrap();
+            let pipeline = &unit.body[0].chain.first;
+            assert!(pipeline.timed);
+            assert_eq!(pipeline.negate, negate);
+            assert_eq!(pipeline.commands.len(), 2);
+            for command in &pipeline.commands {
+                for word in simple(command) {
+                    assert_eq!(&input[word.span.clone()], word.raw);
+                }
+            }
+        }
+        let unit = parse_one(b"time { true; }").unwrap();
+        assert!(unit.body[0].chain.first.timed);
+        assert!(matches!(
+            unit.body[0].chain.first.commands[0].kind,
+            CommandKind::Group(_)
+        ));
+        assert_eq!(check(b"echo \"$(time true)\""), SyntaxStatus::Complete);
+        for input in [
+            b"'time' true".as_slice(),
+            b"\\time true",
+            b"command time true",
+            b"value=one time true",
+        ] {
+            assert!(!parse_one(input).unwrap().body[0].chain.first.timed);
+        }
+    }
+
+    #[test]
+    fn time_requires_a_command_and_rejects_unsupported_prefixes() {
+        for input in [b"time".as_slice(), b"! time", b"time !"] {
+            assert_eq!(check(input), SyntaxStatus::Incomplete);
+        }
+        for input in [
+            b"time -p true".as_slice(),
+            b"time -- true",
+            b"time time true",
+            b"time ! time true",
+            b"! time time true",
+        ] {
+            assert_eq!(
+                parse_one(input).unwrap_err().kind,
+                ParseErrorKind::Unsupported
+            );
+        }
     }
 
     #[test]

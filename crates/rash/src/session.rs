@@ -662,6 +662,7 @@ impl<'a> Runner<'a> {
                 self.pipeline(
                     &Pipeline {
                         negate: false,
+                        timed: false,
                         commands: vec![command],
                     },
                     true,
@@ -698,6 +699,9 @@ impl<'a> Runner<'a> {
     }
 
     fn pipeline(&mut self, pipeline: &Pipeline, background: bool) -> Result<Flow> {
+        if pipeline.timed {
+            return Err(Error::new("rash: the time keyword is not implemented"));
+        }
         if pipeline.commands.len() == 1 && !background {
             let flow = self.command(&pipeline.commands[0])?;
             if pipeline.negate {
@@ -2498,6 +2502,21 @@ mod tests {
     }
     fn session() -> Session {
         Session::new(BTreeMap::new(), b"/".to_vec(), true, false)
+    }
+
+    #[test]
+    fn timing_is_rejected_without_running_the_pipeline() {
+        let mut session = session();
+        let mut host = MemoryHost::default();
+        let error = session
+            .eval(b"time echo must-not-run", &mut host)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("time keyword is not implemented")
+        );
+        assert!(host.output.is_empty());
     }
 
     #[test]

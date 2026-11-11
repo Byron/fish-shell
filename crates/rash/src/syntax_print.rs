@@ -84,6 +84,9 @@ impl Printer {
     }
 
     fn pipeline(&mut self, pipeline: &Pipeline, depth: usize) {
+        if pipeline.timed {
+            self.put(b"time ");
+        }
         if pipeline.negate {
             self.put(b"! ");
         }
@@ -343,6 +346,19 @@ mod tests {
         assert_eq!(
             format_function(&name.raw, body),
             b"f () \n{ \n    printf 'value:%s\\n' \"$x\"\n}\n"
+        );
+    }
+
+    #[test]
+    fn function_definition_retains_pipeline_timing() {
+        let parsed = super::super::parse_one(b"f() { ! time false | cat; }").unwrap();
+        let CommandKind::Function { name, body } = &parsed.body[0].chain.first.commands[0].kind
+        else {
+            panic!("function");
+        };
+        assert_eq!(
+            format_function(&name.raw, body),
+            b"f () \n{ \n    time ! false | cat\n}\n"
         );
     }
 }

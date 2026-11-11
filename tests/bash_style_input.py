@@ -76,6 +76,29 @@ def main(binary):
             shell.run("printf 'STATUS:%s\\n' $?", "STATUS:1\r\n")
             print("PASS Fish aliases/functions/abbreviations, immediate cwd/state, scalar/list expansion and status", flush=True)
 
+            timed_output = home / "timed-output"
+            for source, expected, status in (
+                ("time /usr/bin/true", None, 0),
+                ("time false", None, 1),
+                ("time ! false", None, 0),
+                ("! time true", None, 1),
+                ("time hi timed", "FISH:changed:timed\r\n", 0),
+                ("time printf 'TIMED-PIPE\\n' | cat", "TIMED-PIPE\r\n", 0),
+                ("time true | false", None, 1),
+                ("printf 'TIMED-SUB:%s\\n' \"$(time printf value)\"", "TIMED-SUB:value\r\n", 0),
+                ("time { timed_state=persisted; false; }", None, 1),
+                ("time for item in a b; do echo TIMED:$item; done", "TIMED:a\r\nTIMED:b\r\n", 0),
+                (f"time printf redirected > {timed_output}", None, 0),
+            ):
+                start = len(shell.log.getvalue())
+                shell.run(source, expected, status)
+                report = shell.log.getvalue()[start:]
+                assert report.count(b"Executed in") == 1, (source, report)
+                assert b"usr time" in report and b"sys time" in report, (source, report)
+            assert timed_output.read_text() == "redirected"
+            shell.run("printf 'TIMED-STATE:%s\\n' $timed_state", "TIMED-STATE:persisted\r\n")
+            print("PASS timing commands, functions, pipelines and blocks with preserved status, state and redirection", flush=True)
+
             tick_sentinel = home / "backticks-must-not-run"
             literal_command = f"`touch {tick_sentinel}`"
             shell.run("printf '%s\\n' \"" + literal_command + "\"", literal_command + "\r\n")
@@ -106,7 +129,8 @@ def main(binary):
             shell.run(f"source {shlex.quote(str(fish_source))}; sourced_helper", "SOURCE:sourced\r\n")
             sentinel = root / "must-not-run"
             for unsupported in ("echo ${missing:=fallback}", "((counter+=1))", "(echo subshell)",
-                                "echo $(printf before; echo ${missing:=fallback})"):
+                                "echo $(printf before; echo ${missing:=fallback})",
+                                "time -p true", "time true &", "true && time true &"):
                 source = f"touch {sentinel}; {unsupported}"
                 shell.child.sendline(source)
                 text, _ = shell.buffer()
@@ -121,6 +145,8 @@ def main(binary):
                 ('git -C "$repo" switch topic-', 'git -C "$repo" switch topic-completion '),
                 ('g -C "$repo" switch topic-', 'g -C "$repo" switch topic-completion '),
                 ("git --ver", "git --version "),
+                ("time git --ver", "time git --version "),
+                ("time fish_on", "time fish_only "),
                 ("fish_on", "fish_only "),
                 ("option_probe --target=va", "option_probe --target=value "),
             ):

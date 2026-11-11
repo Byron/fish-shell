@@ -108,6 +108,15 @@ impl<'a> Printer<'a> {
 
     fn list(&mut self, list: &List) -> Result<(), Error> {
         for item in list {
+            if item.background
+                && item
+                    .chain
+                    .rest
+                    .last()
+                    .map_or(item.chain.first.timed, |(_, pipeline)| pipeline.timed)
+            {
+                return Err(Error::unsupported("timing background commands"));
+            }
             self.chain(&item.chain)?;
             if item.background {
                 self.put(b" &");
@@ -130,6 +139,9 @@ impl<'a> Printer<'a> {
     }
 
     fn pipeline(&mut self, pipeline: &Pipeline) -> Result<(), Error> {
+        if pipeline.timed {
+            self.put(b"time ");
+        }
         if pipeline.negate {
             self.put(b"not ");
         }
@@ -609,6 +621,39 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
+    #[crate::tests::prelude::serial]
+    fn times_commands_pipelines_and_blocks() {
+        assert_eq!(check("time gix status"), "time gix status\n");
+        assert_eq!(
+            check("time printf hi | cat && echo done"),
+            "time printf hi | cat && echo done\n"
+        );
+        assert_eq!(check("time true && true &"), "time true && true &\n");
+        for source in ["time ! false", "! time false"] {
+            assert_eq!(check(source), "time not false\n");
+        }
+        assert_eq!(
+            check("time VALUE='a b' command env >out"),
+            "time VALUE='a b' command env >out\n"
+        );
+        assert_eq!(
+            check("time { echo first; echo second; }"),
+            "time begin\necho first\necho second\nend\n"
+        );
+        assert_eq!(
+            check("time for x in a b; do echo $x; done"),
+            "time for x in a b\necho $x\nend\n"
+        );
+        assert_eq!(
+            check("f() { time false; }; echo $(time printf hi)"),
+            "function 'f'\nbegin\ntime false\nend\nend\necho $(time printf hi\n)\n"
+        );
+        assert_eq!(check("command time true"), "command time true\n");
+        assert_eq!(check("echo time"), "echo time\n");
+    }
+
+    #[test]
     #[cfg_attr(not(windows), crate::tests::prelude::serial)]
     fn substitutions_quotes_and_redirects() {
         assert_eq!(
@@ -705,11 +750,22 @@ mod tests {
             "echo @(a|b)",
             "echo ${a[0]}",
             "echo $0",
+            "time true &",
+            "true && time true &",
+            "false || time true &",
+            "time -p true",
+            "time true; echo ${x:=fallback}",
         ] {
             let error = translate(&WString::from(source)).expect_err(source);
             assert!(!error.incomplete, "{source}: {error:?}");
         }
-        for source in ["if true; then", "echo \"", "echo $(true", "echo hi |"] {
+        for source in [
+            "if true; then",
+            "echo \"",
+            "echo $(true",
+            "echo hi |",
+            "time",
+        ] {
             assert!(
                 translate(&WString::from(source)).unwrap_err().incomplete,
                 "{source}"
