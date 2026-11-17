@@ -44,8 +44,13 @@ def main(binary):
         config = (
             "set -g private_fish original; set -g words 'one two' three; "
             "function ..; cd ..; end; "
+            "function __abbr_multicd; "
+            "set -l levels (math (string length -- $argv[1]) - 1); "
+            "echo cd (string repeat -n $levels ../); end; "
+            "abbr --add multicd --position command --regex '^\\.\\.+$' --function __abbr_multicd; "
             "function fish_only; printf 'FISH:%s:%s\\n' $private_fish $argv; end; "
             "alias hi fish_only; alias g git; abbr --add fh fish_only; "
+            "abbr --add blocked 'echo ABBREVIATION-MUST-NOT-RUN; true'; "
             "function observe --on-event fish_postexec; "
             f"printf '%s\\n' $status $PWD $private_fish > {observed}; end; "
             "function inspect_context; "
@@ -64,6 +69,26 @@ def main(binary):
             assert shell.buffer()[0] == "fish_only "
             shell.clear()
             shell.run("fh abbreviated", "FISH:original:abbreviated\r\n")
+            shell.run("fh", "FISH:original:\r\n")
+            deep = child / "grandchild" / "great-grandchild"
+            deep.mkdir(parents=True)
+            for levels in range(1, 5):
+                dots = "." * (levels + 1)
+                shell.child.send(dots + " ")
+                assert shell.buffer()[0] == "cd " + "../" * levels + " "
+                shell.clear()
+                shell.run(f"cd {shlex.quote(str(deep))}")
+                shell.run(dots)
+                shell.run("printf 'MULTICD:%s\\n' $PWD", f"MULTICD:{deep.parents[levels - 1]}\r\n")
+            shell.run("printf '<%s>\\n' ...", "<...>\r\n")
+            shell.run("'...'", status=127)
+            shell.child.send("blocked ")
+            assert shell.buffer()[0] == "blocked "
+            shell.clear()
+            start = len(shell.log.getvalue())
+            shell.run("blocked", status=127)
+            assert b"ABBREVIATION-MUST-NOT-RUN" not in shell.log.getvalue()[start:]
+            print("PASS literal and function-generated abbreviations on Space and Enter, with command-only matching", flush=True)
             shell.run("private_fish=changed; fish_only now", "FISH:changed:now\r\n")
             assert observed.read_text().splitlines()[-1] == "changed"
             shell.run("printf '<%s>\\n' $words", "<one two>\r\n<three>\r\n")

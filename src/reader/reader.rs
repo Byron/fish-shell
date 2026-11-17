@@ -4709,7 +4709,13 @@ impl<'a> Reader<'a> {
     fn expand_for_execute(&mut self) -> Result<(), ParseIssue> {
         if self.conf.bash_input {
             let source = self.command_line.text().to_owned();
-            return crate::bash_syntax::check(&source, self.parser);
+            let test_res = crate::bash_syntax::check(&source, self.parser);
+            if !test_res.is_err_and(|p| p.error) && self.expand_abbreviation_at_cursor(0) {
+                self.super_highlight_me_plenty();
+                let source = self.command_line.text().to_owned();
+                return crate::bash_syntax::check(&source, self.parser);
+            }
+            return test_res;
         }
         // Expand abbreviations at the cursor.
         // The first expansion is "user visible" and enters into history.
